@@ -16,9 +16,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not BOT_TOKEN or not OPENROUTER_API_KEY:
-    raise EnvironmentError("BOT_TOKEN и OPENROUTER_API_KEY должны быть установлены!")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not BOT_TOKEN or not GROQ_API_KEY:
+    raise EnvironmentError("BOT_TOKEN и GROQ_API_KEY должны быть установлены!")
 
 CHANNEL = "@eva_numerologg"
 REVIEWS_CHANNEL = "@eva_numerolog_otz"
@@ -81,10 +81,11 @@ async def check_subscription(user_id: int) -> bool:
 
 async def ask_ai(prompt: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
-headers = {
-    "Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}",
-    "Content-Type": "application/json"
-}
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
             {
@@ -114,9 +115,11 @@ def is_valid_date(date_str: str) -> bool:
     except ValueError:
         return False
 
-def main_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💫 Мой бесплатный разбор", callback_data="free")],
+def main_menu(user=None):
+    buttons = []
+    if user and not user.get("free_used"):
+        buttons.append([InlineKeyboardButton(text="💫 Мой бесплатный разбор", callback_data="free")])
+    buttons.extend([
         [InlineKeyboardButton(text="💑 Совместимость двух людей — 49 ⭐", callback_data="buy_compat")],
         [InlineKeyboardButton(text="💘 Когда встретишь того самого — 49 ⭐", callback_data="buy_when")],
         [InlineKeyboardButton(text="💍 Портрет идеального партнёра — 49 ⭐", callback_data="buy_portrait")],
@@ -128,6 +131,7 @@ def main_menu():
         [InlineKeyboardButton(text="💰 Денежный код — 49 ⭐", callback_data="buy_money")],
         [InlineKeyboardButton(text="🌙 Сильные и слабые дни месяца — 49 ⭐", callback_data="buy_days")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def check_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -143,19 +147,32 @@ def review_menu():
 @dp.message(Command("start"))
 async def start(message: Message, state: FSMContext):
     await state.clear()
-    get_user(message.from_user.id)
-    await message.answer(
-        "🔮 Привет! Я Ева — твой личный нумеролог.\n\n"
-        "Числа хранят тайны твоей судьбы, любви и предназначения. "
-        "Я помогу тебе раскрыть их.\n\n"
-        f"✨ Подпишись на наш канал {CHANNEL} и получи бесплатный разбор числа судьбы!\n\n"
-        "После подписки нажми кнопку ниже 👇",
-        reply_markup=check_menu()
-    )
+    user = get_user(message.from_user.id)
+    if user["subscribed_channel"]:
+        is_subscribed = await check_subscription(message.from_user.id)
+        if not is_subscribed:
+            user["subscribed_channel"] = False
+            save_users(users)
+    if not user["subscribed_channel"]:
+        await message.answer(
+            "🔮 Привет! Я Ева — твой личный нумеролог.\n\n"
+            "Числа хранят тайны твоей судьбы, любви и предназначения. "
+            "Я помогу тебе раскрыть их.\n\n"
+            f"✨ Подпишись на наш канал {CHANNEL} и получи бесплатный разбор числа судьбы!\n\n"
+            "После подписки нажми кнопку ниже 👇",
+            reply_markup=check_menu()
+        )
+    else:
+        await message.answer(
+            "🔮 Привет! Я Ева — твой личный нумеролог.\n\n"
+            "Выбери свой разбор 👇",
+            reply_markup=main_menu(user)
+        )
 
 @dp.message(Command("menu"))
 async def menu_cmd(message: Message):
-    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu())
+    user = get_user(message.from_user.id)
+    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, state: FSMContext):
@@ -170,8 +187,8 @@ async def check_sub(callback: CallbackQuery, state: FSMContext):
         return
     user["subscribed_channel"] = True
     save_users(users)
-    if user["free_used"] and user["birth_date"]:
-        await callback.message.answer("✅ Ты уже подписана! Выбери разбор:", reply_markup=main_menu())
+    if user["free_used"]:
+        await callback.message.answer("✅ Ты уже подписана! Выбери разбор:", reply_markup=main_menu(user))
         await callback.answer()
         return
     await callback.message.answer(
@@ -201,7 +218,7 @@ async def free_handler(callback: CallbackQuery, state: FSMContext):
     if user["free_used"]:
         await callback.message.answer(
             "💫 Бесплатный разбор ты уже получила.\n\nВыбери платный разбор 🔮",
-            reply_markup=main_menu()
+            reply_markup=main_menu(user)
         )
         await callback.answer()
         return
@@ -310,7 +327,7 @@ async def handle_date(message: Message, state: FSMContext):
     number = calculate_destiny(text)
     waiting = user.get("waiting")
     if waiting is None:
-        await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu())
+        await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu(user))
         await state.clear()
         return
     if waiting == "free":
@@ -360,7 +377,7 @@ async def handle_date(message: Message, state: FSMContext):
         if waiting == "free":
             await message.answer(
                 "✨ Это было только начало! Выбери платный разбор и узнай больше о своей судьбе 🔮",
-                reply_markup=main_menu()
+                reply_markup=main_menu(user)
             )
         else:
             await message.answer("✨ Понравился разбор?", reply_markup=review_menu())
@@ -397,7 +414,8 @@ async def handle_review(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "show_menu")
 async def show_menu(callback: CallbackQuery):
-    await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu())
+    user = get_user(callback.from_user.id)
+    await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
     await callback.answer()
 
 async def send_daily_horoscope():
