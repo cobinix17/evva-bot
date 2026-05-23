@@ -1,0 +1,4 @@
+aiogram>=3.0
+httpx
+fpdf2
+aiohttp
