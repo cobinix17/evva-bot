@@ -85,7 +85,6 @@ headers = {
     "Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}",
     "Content-Type": "application/json"
 }
-    data = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
             {
