@@ -16,11 +16,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not BOT_TOKEN or not GROQ_API_KEY:
-    raise EnvironmentError("BOT_TOKEN и GROQ_API_KEY должны быть установлены!")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not BOT_TOKEN or not OPENROUTER_API_KEY:
+    raise EnvironmentError("BOT_TOKEN и OPENROUTER_API_KEY должны быть установлены!")
 
 CHANNEL = "@eva_numerologg"
+REVIEWS_CHANNEL = "@eva_numerolog_otz"
 ADMIN_ID = 5854618444
 
 logging.basicConfig(level=logging.INFO)
@@ -57,7 +58,8 @@ def get_user(user_id):
             "birth_date": None,
             "destiny_number": None,
             "purchased": [],
-            "waiting": None
+            "waiting": None,
+            "review_left": False
         }
     if user_id == ADMIN_ID:
         users[uid]["free_used"] = True
@@ -77,18 +79,18 @@ async def check_subscription(user_id: int) -> bool:
     except:
         return False
 
-async def ask_groq(prompt: str) -> str:
-    url = "https://api.groq.com/openai/v1/chat/completions"
+async def ask_ai(prompt: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
     data = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "deepseek/deepseek-chat",
         "messages": [
             {
                 "role": "system",
-                "content": "Ты — Ева, тёплый и мудрый нумеролог. Общаешься как близкая подруга которая глубоко разбирается в нумерологии. Пишешь ИСКЛЮЧИТЕЛЬНО на русском языке — никаких английских, испанских, китайских или других иностранных слов. Если не знаешь слово по-русски — опиши его по-русски. Пишешь красиво, с эмодзи, атмосферно. Обращаешься на ты. Ответы длинные, подробные, эмоциональные — создающие ощущение что это написано именно про этого человека. Минимум 400 слов. Используй абзацы и структуру для удобного чтения."
+                "content": "Ты — Ева, тёплый и мудрый нумеролог. Общаешься как близкая подруга которая глубоко разбирается в нумерологии. Пишешь ИСКЛЮЧИТЕЛЬНО на русском языке — никаких иностранных слов. Пишешь красиво, с эмодзи, атмосферно. Обращаешься на ты. Ответы длинные, подробные, эмоциональные — создающие ощущение что это написано именно про этого человека. Минимум 400 слов. Используй абзацы и структуру для удобного чтения."
             },
             {"role": "user", "content": prompt}
         ]
@@ -291,7 +293,7 @@ async def handle_two_dates(message: Message, state: FSMContext):
         n1 = calculate_destiny(parts[0])
         n2 = calculate_destiny(parts[1])
         prompt = f"Сделай максимально подробный и эмоциональный нумерологический разбор совместимости двух людей. Первый родился {parts[0]}, число судьбы {n1}. Второй родился {parts[1]}, число судьбы {n2}. Опиши характер каждого, их совместимость в любви и отношениях, эмоциональную связь, возможные конфликты, сильные стороны пары, прогноз отношений. Пиши как близкая подруга-нумеролог, тепло и атмосферно."
-        answer = await ask_groq(prompt)
+        answer = await ask_ai(prompt)
         await message.answer(f"💑 Разбор совместимости\n\n{answer}")
         await message.answer("✨ Понравился разбор?", reply_markup=review_menu())
     except Exception as e:
@@ -353,7 +355,7 @@ async def handle_date(message: Message, state: FSMContext):
             await state.clear()
             return
 
-        answer = await ask_groq(prompt)
+        answer = await ask_ai(prompt)
         await message.answer(f"{title}\n\n{answer}")
 
         if waiting == "free":
@@ -370,16 +372,26 @@ async def handle_date(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "leave_review")
 async def leave_review(callback: CallbackQuery, state: FSMContext):
+    user = get_user(callback.from_user.id)
+    if user.get("review_left"):
+        await callback.answer("Ты уже оставила отзыв, спасибо! 💫", show_alert=True)
+        return
+    if not user.get("purchased"):
+        await callback.answer("Отзыв можно оставить только после покупки разбора!", show_alert=True)
+        return
     await callback.message.answer("💬 Напиши свой отзыв — опубликую его в канале!")
     await state.set_state(Form.waiting_review)
     await callback.answer()
 
 @dp.message(Form.waiting_review)
 async def handle_review(message: Message, state: FSMContext):
+    user = get_user(message.from_user.id)
     review_text = f"⭐ Отзыв о боте Ева:\n\n{message.text}"
     try:
-        await bot.send_message("@eva_numerolog_otz", review_text)
-        await message.answer("✅ Спасибо! Твой отзыв опубликован в канале 💫")
+        await bot.send_message(REVIEWS_CHANNEL, review_text)
+        user["review_left"] = True
+        save_users(users)
+        await message.answer("✅ Спасибо! Твой отзыв опубликован 💫")
     except:
         await message.answer("✅ Спасибо за отзыв!")
     await state.clear()
@@ -407,7 +419,7 @@ async def send_daily_horoscope():
                     number = user["destiny_number"]
                     today = date.today().strftime("%d.%m.%Y")
                     prompt = f"Составь короткий личный прогноз на сегодня {today} для человека с числом судьбы {number}. Что принесёт этот день в любви, делах и энергии. Пиши тепло, коротко 150-200 слов, с эмодзи."
-                    horoscope = await ask_groq(prompt)
+                    horoscope = await ask_ai(prompt)
                     await bot.send_message(
                         int(uid),
                         f"🌅 Доброе утро! Твой прогноз на сегодня:\n\n{horoscope}\n\n🔮 Хочешь больше? /menu"
@@ -426,8 +438,8 @@ async def send_daily_channel_post():
         try:
             today = date.today().strftime("%d.%m.%Y")
             day_num = date.today().day
-            prompt = f"Напиши интересный нумерологический пост для Telegram канала на сегодня {today}. Число дня: {day_num}. Тема: что значит это число, какая энергия сегодня, советы на день. Пиши красиво, с эмодзи, атмосферно. 150-200 слов."
-            post = await ask_groq(prompt)
+            prompt = f"Напиши интересный нумерологический пост для Telegram канала на сегодня {today}. Число дня: {day_num}. Тема: что значит это число, какая энергия сегодня, советы на день. Пиши красиво, с эмодзи, атмосферно. 150-200 слов. ТОЛЬКО на русском языке."
+            post = await ask_ai(prompt)
             await bot.send_message(
                 CHANNEL,
                 f"🔮 Нумерология дня\n\n{post}\n\n✨ Узнай свой личный разбор @nnumerology_bot"
