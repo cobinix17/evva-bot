@@ -30,7 +30,7 @@ async def debug_all(message: Message, state: FSMContext):
     await message.answer(
         f"📩 Получил: \"{message.text}\"\n"
         f"Состояние: {current_state}"
-
+) 
 users = {}
 
 class Form(StatesGroup):
