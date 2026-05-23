@@ -86,7 +86,7 @@ async def ask_ai(prompt: str) -> str:
         "Content-Type": "application/json"
     }
     data = {
-        "model": "model": "deepseek/deepseek-r1:free",
+        "model": "deepseek/deepseek-r1:free",
         "messages": [
             {
                 "role": "system",
