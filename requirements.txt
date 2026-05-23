@@ -1,4 +1,3 @@
-aiogram>=3.0
+aiogram
 httpx
-fpdf2
 aiohttp
