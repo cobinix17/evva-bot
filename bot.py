@@ -24,13 +24,6 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-@dp.message()
-async def debug_all(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-    await message.answer(
-        f"📩 Получил: \"{message.text}\"\n"
-        f"Состояние: {current_state}"
-) 
 users = {}
 
 class Form(StatesGroup):
