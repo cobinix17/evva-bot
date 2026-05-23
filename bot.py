@@ -80,13 +80,13 @@ async def check_subscription(user_id: int) -> bool:
         return False
 
 async def ask_ai(prompt: str) -> str:
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    url = "https://api.groq.com/openai/v1/chat/completions"
+headers = {
+    "Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}",
+    "Content-Type": "application/json"
+}
     data = {
-        "model": "deepseek/deepseek-r1:free",
+        "model": "llama-3.3-70b-versatile",
         "messages": [
             {
                 "role": "system",
