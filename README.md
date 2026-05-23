@@ -1,1 +1,0 @@
-# evva-bot
