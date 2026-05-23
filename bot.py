@@ -378,7 +378,7 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
 async def handle_review(message: Message, state: FSMContext):
     review_text = f"⭐ Отзыв о боте Ева:\n\n{message.text}"
     try:
-        await bot.send_message(CHANNEL, review_text)
+        await bot.send_message("@eva_numerolog_otz", review_text)
         await message.answer("✅ Спасибо! Твой отзыв опубликован в канале 💫")
     except:
         await message.answer("✅ Спасибо за отзыв!")
