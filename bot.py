@@ -5,10 +5,10 @@ import json
 import httpx
 from datetime import datetime, date, timedelta
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     Message, CallbackQuery, LabeledPrice, PreCheckoutQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -80,26 +80,45 @@ async def check_subscription(user_id: int) -> bool:
         return False
 
 async def ask_ai(prompt: str) -> str:
+    models = [
+        "llama-3.3-70b-versatile",
+        "gemma2-9b-it",
+        "llama-3.1-8b-instant"
+    ]
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    data = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {
-                "role": "system",
-                "content": "Ты — Ева, тёплый и мудрый нумеролог. Общаешься как близкая подруга которая глубоко разбирается в нумерологии. Пишешь ИСКЛЮЧИТЕЛЬНО на русском языке — никаких иностранных слов. Пишешь красиво, с эмодзи, атмосферно. Обращаешься на ты. Ответы длинные, подробные, эмоциональные — создающие ощущение что это написано именно про этого человека. Минимум 400 слов. Используй абзацы и структуру для удобного чтения."
-            },
-            {"role": "user", "content": prompt}
-        ]
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=headers, json=data, timeout=90)
-        response.raise_for_status()
-        result = response.json()
-        return result["choices"][0]["message"]["content"]
+    system_prompt = (
+        "Ты — Ева, тёплый и мудрый нумеролог. Общаешься как близкая подруга которая глубоко разбирается в нумерологии. "
+        "Пишешь ИСКЛЮЧИТЕЛЬНО на русском языке — никаких иностранных слов, никаких английских, испанских или китайских слов. "
+        "Все слова только русские. Пишешь красиво, с эмодзи, атмосферно. Обращаешься на ты. "
+        "Ответы длинные, подробные, эмоциональные — создающие ощущение что это написано именно про этого человека. "
+        "Минимум 400 слов. Используй абзацы и структуру для удобного чтения. "
+        "Заканчивай ответ полным предложением, никогда не обрывай на середине."
+    )
+    last_error = None
+    for model in models:
+        try:
+            data = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 2000
+            }
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=headers, json=data, timeout=90)
+                response.raise_for_status()
+                result = response.json()
+                return result["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_error = e
+            logging.warning(f"Model {model} failed: {e}, trying next...")
+            continue
+    raise last_error
 
 def calculate_destiny(date_str: str) -> int:
     digits = [int(d) for d in date_str if d.isdigit()]
@@ -144,7 +163,7 @@ def review_menu():
         [InlineKeyboardButton(text="🔮 Другие разборы", callback_data="show_menu")]
     ])
 
-@dp.message(Command("start"))
+@dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
     await state.clear()
     user = get_user(message.from_user.id)
@@ -164,15 +183,40 @@ async def start(message: Message, state: FSMContext):
         )
     else:
         await message.answer(
-            "🔮 Привет! Я Ева — твой личный нумеролог.\n\n"
-            "Выбери свой разбор 👇",
+            "🔮 Привет! Я Ева — твой личный нумеролог.\n\nВыбери свой разбор 👇",
             reply_markup=main_menu(user)
         )
 
-@dp.message(Command("menu"))
-async def menu_cmd(message: Message):
+@dp.message(Command("menu"), StateFilter("*"))
+async def menu_cmd(message: Message, state: FSMContext):
+    await state.clear()
     user = get_user(message.from_user.id)
     await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
+
+@dp.message(Command("admin"), StateFilter("*"))
+async def admin_panel(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    total = len(users)
+    free_used = sum(1 for u in users.values() if u.get("free_used"))
+    bought = sum(1 for u in users.values() if u.get("purchased"))
+    total_purchases = sum(len(u.get("purchased", [])) for u in users.values())
+    reviews = sum(1 for u in users.values() if u.get("review_left"))
+    razbory_count = {}
+    for u in users.values():
+        for r in u.get("purchased", []):
+            razbory_count[r] = razbory_count.get(r, 0) + 1
+    top = sorted(razbory_count.items(), key=lambda x: x[1], reverse=True)
+    top_text = "\n".join([f"  {k}: {v}" for k, v in top[:5]]) if top else "  нет покупок"
+    await message.answer(
+        f"📊 Статистика бота Ева\n\n"
+        f"👥 Всего пользователей: {total}\n"
+        f"💫 Получили бесплатный разбор: {free_used}\n"
+        f"💳 Купили хотя бы один разбор: {bought}\n"
+        f"🛒 Всего покупок: {total_purchases}\n"
+        f"⭐ Оставили отзыв: {reviews}\n\n"
+        f"🏆 Топ разборов:\n{top_text}"
+    )
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, state: FSMContext):
@@ -435,7 +479,7 @@ async def send_daily_horoscope():
                 try:
                     number = user["destiny_number"]
                     today = date.today().strftime("%d.%m.%Y")
-                    prompt = f"Составь короткий личный прогноз на сегодня {today} для человека с числом судьбы {number}. Что принесёт этот день в любви, делах и энергии. Пиши тепло, коротко 150-200 слов, с эмодзи."
+                    prompt = f"Составь короткий личный прогноз на сегодня {today} для человека с числом судьбы {number}. Что принесёт этот день в любви, делах и энергии. Пиши тепло, коротко 150-200 слов, с эмодзи. Заканчивай полным предложением."
                     horoscope = await ask_ai(prompt)
                     await bot.send_message(
                         int(uid),
@@ -483,4 +527,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
