@@ -163,39 +163,16 @@ def review_menu():
         [InlineKeyboardButton(text="🔮 Другие разборы", callback_data="show_menu")]
     ])
 
-# ==================== ИСПРАВЛЕННАЯ ФУНКЦИЯ send_invoice ====================
 async def send_invoice(chat_id, title, description, payload, amount):
     prices = [LabeledPrice(label=title, amount=amount)]
-    
-    try:
-        await bot.send_invoice(
-            chat_id=chat_id,
-            title=title,
-            description=description,
-            payload=payload,
-            provider_token="",
-            currency="XTR",
-            prices=prices
-        )
-    except Exception as e:
-        error_text = str(e).lower()
-        if "this payment method is not available for the selected product" in error_text or "payment" in error_text:
-            await bot.send_message(
-                chat_id=chat_id,
-                text="⭐ Для покупки разбора нужно 49 звёзд.\n\n"
-                     "Купить звёзды можно прямо в Telegram:\n"
-                     "→ Зайди в <b>Настройки → Звёзды</b>\n"
-                     "→ Купи нужное количество\n\n"
-                     "После покупки просто вернись в бот и нажми на нужный разбор снова.",
-                parse_mode="HTML"
-            )
-        else:
-            await bot.send_message(
-                chat_id=chat_id,
-                text="❌ Произошла ошибка при оплате. Попробуй позже."
-            )
-            logging.error(f"Payment error: {e}")
-# =====================================================================
+    await bot.send_invoice(
+        chat_id=chat_id,
+        title=title,
+        description=description,
+        payload=payload,
+        currency="XTR",
+        prices=prices
+    )
 
 RAZBORY = {
     "compat": ("💑 Совместимость двух людей", "Полный нумерологический разбор совместимости"),
@@ -209,11 +186,6 @@ RAZBORY = {
     "money": ("💰 Денежный код", "Твой личный денежный код и как его активировать"),
     "days": ("🌙 Сильные и слабые дни месяца", "Твои личные сильные и слабые дни по числам"),
 }
-
-async def send_invoice_old(chat_id, title, description, payload, amount):  # старая функция на всякий случай
-    pass
-
-# Весь остальной код ниже — точно как у тебя был:
 
 @dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
@@ -326,6 +298,7 @@ async def free_handler(callback: CallbackQuery, state: FSMContext):
     await state.set_state(Form.waiting_date)
     await callback.answer()
 
+# ==================== ИЗМЕНЁННЫЙ BUY_HANDLER ====================
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_handler(callback: CallbackQuery, state: FSMContext):
     key = callback.data.replace("buy_", "")
@@ -341,10 +314,21 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
             await state.set_state(Form.waiting_date)
         await callback.answer()
         return
+    
     if key in RAZBORY:
         title, desc = RAZBORY[key]
-        await send_invoice(callback.message.chat.id, title, desc, key, 49)
+        await callback.message.answer(
+            f"⭐ Покупка: <b>{title}</b>\n\nЦена: 49 звёзд\n\n"
+            "Если у тебя нет звёзд — сначала пополни баланс:\n"
+            "→ Настройки Telegram → Звёзды\n\n"
+            "После пополнения нажми кнопку ниже ещё раз.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Оплатить 49 ⭐", callback_data=f"confirm_{key}")]
+            ])
+        )
     await callback.answer()
+# ============================================================
 
 @dp.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
@@ -364,6 +348,8 @@ async def successful_payment(message: Message, state: FSMContext):
     else:
         await message.answer("✅ Оплата прошла! Введи свою дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         await state.set_state(Form.waiting_date)
+
+# Остальной код без изменений (handle_two_dates, handle_date и т.д.)
 
 @dp.message(Form.waiting_second_date)
 async def handle_two_dates(message: Message, state: FSMContext):
