@@ -1,5 +1,4 @@
 import os
-import re
 import logging
 import asyncio
 import json
@@ -65,7 +64,7 @@ def get_user(user_id):
     if user_id == ADMIN_ID:
         users[uid]["free_used"] = True
         users[uid]["subscribed_channel"] = True
-        for r in ["compat", "when", "portrait", "unlucky", "matrix", "mission", "karma", "career", "money", "days"]:
+        for r in ["compat", "when", "portrait", "unlucky", "matrix", "mission", "karma", "career", "money", "days", "ex", "cold", "toxic", "lonely", "breakup"]:
             if r not in users[uid]["purchased"]:
                 users[uid]["purchased"].append(r)
     save_users(users)
@@ -80,113 +79,6 @@ async def check_subscription(user_id: int) -> bool:
     except:
         return False
 
-# ==================== ПОСТОБРАБОТКА ТЕКСТА ====================
-# Словарь замен латинских букв на кириллицу (на случай транслита)
-LATIN_TO_CYRILLIC = {
-    'a': 'а', 'e': 'е', 'o': 'о', 'p': 'р', 'c': 'с', 'x': 'х',
-    'A': 'А', 'E': 'Е', 'O': 'О', 'P': 'Р', 'C': 'С', 'X': 'Х',
-    'B': 'В', 'H': 'Н', 'K': 'К', 'M': 'М', 'T': 'Т',
-}
-
-# Стоп-слова: иностранные слова которые иногда проскакивают
-FOREIGN_STOPWORDS = [
-    r'\band\b', r'\bthe\b', r'\bof\b', r'\bin\b', r'\bto\b', r'\ba\b',
-    r'\bis\b', r'\bfor\b', r'\byou\b', r'\bwith\b', r'\bthis\b',
-    r'\bthat\b', r'\bon\b', r'\bare\b', r'\bas\b', r'\bor\b',
-    r'\bde\b', r'\bla\b', r'\bel\b', r'\bles\b', r'\bun\b',
-    r'\bund\b', r'\bder\b', r'\bdie\b', r'\bdas\b',
-    r'\bи\b'  # не трогаем — это русский союз
-]
-
-def clean_foreign_text(text: str) -> str:
-    """
-    Убирает из текста иностранные латинские слова и вставки.
-    Сохраняет эмодзи, цифры, знаки препинания и русский текст.
-    """
-    if not text:
-        return text
-
-    lines = text.split('\n')
-    cleaned_lines = []
-
-    for line in lines:
-        # Убираем целые слова на латинице (кроме одиночных букв-эмодзи-замен)
-        # Паттерн: слово из латинских букв длиной 2+ символа
-        line = re.sub(r'\b[a-zA-Z]{2,}\b', _replace_latin_word, line)
-        cleaned_lines.append(line)
-
-    result = '\n'.join(cleaned_lines)
-
-    # Убираем лишние пробелы которые могли остаться
-    result = re.sub(r' {2,}', ' ', result)
-    result = re.sub(r' ([,\.!?:;])', r'\1', result)
-
-    return result.strip()
-
-def _replace_latin_word(match):
-    """
-    Для каждого латинского слова пытается найти русский эквивалент.
-    Если не знает — просто удаляет слово.
-    """
-    word = match.group(0)
-
-    # Исключения: оставляем как есть (технические обозначения)
-    exceptions = {'AI', 'OK', 'VIP', 'SMS', 'PIN', 'ID', 'URL', 'PDF'}
-    if word.upper() in exceptions:
-        return word
-
-    # Известные замены
-    known_replacements = {
-        'love': 'любовь',
-        'Love': 'Любовь',
-        'LOVE': 'ЛЮБОВЬ',
-        'life': 'жизнь',
-        'Life': 'Жизнь',
-        'soul': 'душа',
-        'Soul': 'Душа',
-        'karma': 'карма',
-        'Karma': 'Карма',
-        'energy': 'энергия',
-        'Energy': 'Энергия',
-        'destiny': 'судьба',
-        'Destiny': 'Судьба',
-        'yes': 'да',
-        'no': 'нет',
-        'very': 'очень',
-        'good': 'хорошо',
-        'bad': 'плохо',
-        'new': 'новый',
-        'time': 'время',
-        'day': 'день',
-        'year': 'год',
-        'path': 'путь',
-        'way': 'путь',
-        'light': 'свет',
-        'heart': 'сердце',
-        'true': 'истинный',
-        'power': 'сила',
-        'mind': 'разум',
-        'spirit': 'дух',
-        'world': 'мир',
-        'number': 'число',
-        'Number': 'Число',
-        'strong': 'сильный',
-        'deep': 'глубокий',
-        'free': 'свободный',
-        'money': 'деньги',
-        'work': 'работа',
-        'happy': 'счастливый',
-        'happiness': 'счастье',
-    }
-
-    if word in known_replacements:
-        return known_replacements[word]
-
-    # Если слово неизвестно — удаляем его
-    return ''
-
-# ==============================================================
-
 async def ask_ai(prompt: str) -> str:
     models = [
         "llama-3.3-70b-versatile",
@@ -200,15 +92,11 @@ async def ask_ai(prompt: str) -> str:
     }
     system_prompt = (
         "Ты — Ева, тёплый и мудрый нумеролог. Общаешься как близкая подруга которая глубоко разбирается в нумерологии. "
-        "ВАЖНЕЙШЕЕ ПРАВИЛО: пишешь ИСКЛЮЧИТЕЛЬНО на русском языке. "
-        "Категорически запрещено использовать любые иностранные слова: английские, испанские, немецкие, французские, китайские — любые. "
-        "Если хочешь написать слово — найди русский аналог. "
-        "Например: вместо 'love' пиши 'любовь', вместо 'energy' пиши 'энергия', вместо 'karma' пиши 'карма'. "
+        "Пишешь ИСКЛЮЧИТЕЛЬНО на русском языке — никаких иностранных слов. "
         "Все слова только русские. Пишешь красиво, с эмодзи, атмосферно. Обращаешься на ты. "
         "Ответы длинные, подробные, эмоциональные — создающие ощущение что это написано именно про этого человека. "
         "Минимум 400 слов. Используй абзацы и структуру для удобного чтения. "
-        "Заканчивай ответ полным предложением, никогда не обрывай на середине. "
-        "Перед отправкой ответа проверь: нет ли в нём хоть одного нерусского слова. Если есть — замени на русское."
+        "Заканчивай ответ полным предложением, никогда не обрывай на середине."
     )
     last_error = None
     for model in models:
@@ -225,10 +113,7 @@ async def ask_ai(prompt: str) -> str:
                 response = await client.post(url, headers=headers, json=data, timeout=90)
                 response.raise_for_status()
                 result = response.json()
-                raw_text = result["choices"][0]["message"]["content"]
-                # Применяем постобработку — убираем иностранные слова
-                clean_text = clean_foreign_text(raw_text)
-                return clean_text
+                return result["choices"][0]["message"]["content"]
         except Exception as e:
             last_error = e
             logging.warning(f"Model {model} failed: {e}, trying next...")
@@ -264,6 +149,11 @@ def main_menu(user=None):
         [InlineKeyboardButton(text="💼 Карьерный путь — 49 ⭐", callback_data="buy_career")],
         [InlineKeyboardButton(text="💰 Денежный код — 49 ⭐", callback_data="buy_money")],
         [InlineKeyboardButton(text="🌙 Сильные и слабые дни месяца — 49 ⭐", callback_data="buy_days")],
+        [InlineKeyboardButton(text="💔 Вернётся ли бывший — 49 ⭐", callback_data="buy_ex")],
+        [InlineKeyboardButton(text="❄️ Почему он охладел — 49 ⭐", callback_data="buy_cold")],
+        [InlineKeyboardButton(text="☠️ Токсичная или кармическая связь — 49 ⭐", callback_data="buy_toxic")],
+        [InlineKeyboardButton(text="😔 Почему ты одинока — 49 ⭐", callback_data="buy_lonely")],
+        [InlineKeyboardButton(text="💔 Разбор после расставания — 49 ⭐", callback_data="buy_breakup")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -277,30 +167,6 @@ def review_menu():
         [InlineKeyboardButton(text="😍 Оставить отзыв", callback_data="leave_review")],
         [InlineKeyboardButton(text="🔮 Другие разборы", callback_data="show_menu")]
     ])
-
-async def send_invoice(chat_id, title, description, payload, amount):
-    prices = [LabeledPrice(label=title, amount=amount)]
-    await bot.send_invoice(
-        chat_id=chat_id,
-        title=title,
-        description=description,
-        payload=payload,
-        currency="XTR",
-        prices=prices
-    )
-
-RAZBORY = {
-    "compat": ("💑 Совместимость двух людей", "Полный нумерологический разбор совместимости"),
-    "when": ("💘 Когда встретишь того самого", "Нумерологический прогноз встречи с партнёром"),
-    "portrait": ("💍 Портрет идеального партнёра", "Какой он будет — по твоим числам"),
-    "unlucky": ("💔 Почему не везёт в любви", "Нумерологический анализ причин неудач в любви"),
-    "matrix": ("🔮 Матрица судьбы", "Полный разбор матрицы судьбы по дате рождения"),
-    "mission": ("🌟 Предназначение и миссия", "Твоё истинное предназначение по числам"),
-    "karma": ("🔴 Кармический долг", "Что мешает тебе в жизни и как это исправить"),
-    "career": ("💼 Карьерный путь", "Твой идеальный карьерный путь по числам"),
-    "money": ("💰 Денежный код", "Твой личный денежный код и как его активировать"),
-    "days": ("🌙 Сильные и слабые дни месяца", "Твои личные сильные и слабые дни по числам"),
-}
 
 @dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
@@ -413,6 +279,35 @@ async def free_handler(callback: CallbackQuery, state: FSMContext):
     await state.set_state(Form.waiting_date)
     await callback.answer()
 
+RAZBORY = {
+    "compat": ("💑 Совместимость двух людей", "Полный нумерологический разбор совместимости"),
+    "when": ("💘 Когда встретишь того самого", "Нумерологический прогноз встречи с партнёром"),
+    "portrait": ("💍 Портрет идеального партнёра", "Какой он будет — по твоим числам"),
+    "unlucky": ("💔 Почему не везёт в любви", "Нумерологический анализ причин неудач в любви"),
+    "matrix": ("🔮 Матрица судьбы", "Полный разбор матрицы судьбы по дате рождения"),
+    "mission": ("🌟 Предназначение и миссия", "Твоё истинное предназначение по числам"),
+    "karma": ("🔴 Кармический долг", "Что мешает тебе в жизни и как это исправить"),
+    "career": ("💼 Карьерный путь", "Твой идеальный карьерный путь по числам"),
+    "money": ("💰 Денежный код", "Твой личный денежный код и как его активировать"),
+    "days": ("🌙 Сильные и слабые дни месяца", "Твои личные сильные и слабые дни по числам"),
+    "ex": ("💔 Вернётся ли бывший", "Нумерологический анализ ситуации с бывшим"),
+    "cold": ("❄️ Почему он охладел", "Нумерологический разбор причин охлаждения"),
+    "toxic": ("☠️ Токсичная или кармическая связь", "Анализ токсичности ваших отношений"),
+    "lonely": ("😔 Почему ты одинока", "Нумерологический разбор причин одиночества"),
+    "breakup": ("💔 Разбор после расставания", "Нумерологический анализ расставания и что дальше"),
+}
+
+async def send_invoice(chat_id, title, description, payload, amount):
+    prices = [LabeledPrice(label=title, amount=amount)]
+    await bot.send_invoice(
+        chat_id=chat_id,
+        title=title,
+        description=description,
+        payload=payload,
+        currency="XTR",
+        prices=prices
+    )
+
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_handler(callback: CallbackQuery, state: FSMContext):
     key = callback.data.replace("buy_", "")
@@ -428,27 +323,9 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
             await state.set_state(Form.waiting_date)
         await callback.answer()
         return
-
     if key in RAZBORY:
         title, desc = RAZBORY[key]
-        await callback.message.answer(
-            f"⭐ Покупка: <b>{title}</b>\n\nЦена: 49 звёзд\n\n"
-            "Если у тебя нет звёзд — сначала пополни баланс:\n"
-            "→ Настройки Telegram → Звёзды\n\n"
-            "После пополнения нажми кнопку ниже ещё раз.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💳 Оплатить 49 ⭐", callback_data=f"confirm_{key}")]
-            ])
-        )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("confirm_"))
-async def confirm_handler(callback: CallbackQuery):
-    key = callback.data.replace("confirm_", "")
-    if key in RAZBORY:
-        title, desc = RAZBORY[key]
-        await send_invoice(callback.from_user.id, title, desc, key, 49)
+        await send_invoice(callback.message.chat.id, title, desc, key, 49)
     await callback.answer()
 
 @dp.pre_checkout_query()
@@ -485,7 +362,7 @@ async def handle_two_dates(message: Message, state: FSMContext):
     try:
         n1 = calculate_destiny(parts[0])
         n2 = calculate_destiny(parts[1])
-        prompt = f"Сделай максимально подробный и эмоциональный нумерологический разбор совместимости двух людей. Первый родился {parts[0]}, число судьбы {n1}. Второй родился {parts[1]}, число судьбы {n2}. Опиши характер каждого, их совместимость в любви и отношениях, эмоциональную связь, возможные конфликты, сильные стороны пары, прогноз отношений. Пиши как близкая подруга-нумеролог, тепло и атмосферно. Только на русском языке."
+        prompt = f"Сделай максимально подробный и эмоциональный нумерологический разбор совместимости двух людей. Первый родился {parts[0]}, число судьбы {n1}. Второй родился {parts[1]}, число судьбы {n2}. Опиши характер каждого, их совместимость в любви и отношениях, эмоциональную связь, возможные конфликты, сильные стороны пары, прогноз отношений. Пиши как близкая подруга-нумеролог, тепло и атмосферно."
         answer = await ask_ai(prompt)
         await message.answer(f"💑 Разбор совместимости\n\n{answer}")
         await message.answer("✨ Понравился разбор?", reply_markup=review_menu())
@@ -515,35 +392,50 @@ async def handle_date(message: Message, state: FSMContext):
     await message.answer("⏳ Ева составляет твой разбор, подожди немного...")
     try:
         if waiting == "free":
-            prompt = f"Сделай подробный и эмоциональный нумерологический разбор числа судьбы {number} для человека рождённого {text}. Опиши характер, сильные и слабые стороны, жизненный путь, отношение к любви и отношениям. Пиши тепло, как близкая подруга-нумеролог. Создай ощущение что это написано именно про этого человека. Только на русском языке."
+            prompt = f"Сделай подробный и эмоциональный нумерологический разбор числа судьбы {number} для человека рождённого {text}. Опиши характер, сильные и слабые стороны, жизненный путь, отношение к любви и отношениям. Пиши тепло, как близкая подруга-нумеролог. Создай ощущение что это написано именно про этого человека."
             title = f"💫 Твоё число судьбы: {number}"
         elif waiting == "when":
-            prompt = f"Сделай подробный нумерологический прогноз когда человек с числом судьбы {number}, рождённый {text}, встретит своего партнёра. Опиши в каком возрасте или периоде жизни это произойдёт, при каких обстоятельствах, какие знаки укажут что это тот самый. Пиши тепло, романтично, атмосферно. Только на русском языке."
+            prompt = f"Сделай подробный нумерологический прогноз когда человек с числом судьбы {number}, рождённый {text}, встретит своего партнёра. Опиши в каком возрасте или периоде жизни это произойдёт, при каких обстоятельствах, какие знаки укажут что это тот самый. Пиши тепло, романтично, атмосферно."
             title = "💘 Когда встретишь того самого"
         elif waiting == "portrait":
-            prompt = f"Составь подробный нумерологический портрет идеального партнёра для человека с числом судьбы {number}, рождённого {text}. Опиши его характер, внешность, профессию, как он будет относиться к своей второй половине. Пиши романтично и атмосферно. Только на русском языке."
+            prompt = f"Составь подробный нумерологический портрет идеального партнёра для человека с числом судьбы {number}, рождённого {text}. Опиши его характер, внешность, профессию, как он будет относиться к своей второй половине. Пиши романтично и атмосферно."
             title = "💍 Портрет твоего идеального партнёра"
         elif waiting == "unlucky":
-            prompt = f"Объясни с точки зрения нумерологии почему человеку с числом судьбы {number}, рождённому {text}, не везёт в любви. Какие кармические причины, какие паттерны поведения мешают, как это исправить. Пиши тепло, с пониманием и поддержкой. Только на русском языке."
+            prompt = f"Объясни с точки зрения нумерологии почему человеку с числом судьбы {number}, рождённому {text}, не везёт в любви. Какие кармические причины, какие паттерны поведения мешают, как это исправить. Пиши тепло, с пониманием и поддержкой."
             title = "💔 Почему не везёт в любви"
         elif waiting == "matrix":
-            prompt = f"Сделай полный разбор матрицы судьбы для человека рождённого {text} с числом судьбы {number}. Опиши личный потенциал, кармические задачи, таланты, деньги, любовь, предназначение. Пиши подробно и атмосферно. Только на русском языке."
+            prompt = f"Сделай полный разбор матрицы судьбы для человека рождённого {text} с числом судьбы {number}. Опиши личный потенциал, кармические задачи, таланты, деньги, любовь, предназначение. Пиши подробно и атмосферно."
             title = "🔮 Матрица судьбы"
         elif waiting == "mission":
-            prompt = f"Раскрой предназначение и жизненную миссию человека с числом судьбы {number}, рождённого {text}. Что он пришёл сделать в этот мир, какие таланты должен раскрыть, какой след оставить. Пиши вдохновляюще и глубоко. Только на русском языке."
+            prompt = f"Раскрой предназначение и жизненную миссию человека с числом судьбы {number}, рождённого {text}. Что он пришёл сделать в этот мир, какие таланты должен раскрыть, какой след оставить. Пиши вдохновляюще и глубоко."
             title = "🌟 Предназначение и миссия"
         elif waiting == "karma":
-            prompt = f"Опиши кармический долг человека с числом судьбы {number}, рождённого {text}. Что мешает ему в жизни, какие уроки он должен пройти, как освободиться от кармических блоков. Пиши с пониманием и глубиной. Только на русском языке."
+            prompt = f"Опиши кармический долг человека с числом судьбы {number}, рождённого {text}. Что мешает ему в жизни, какие уроки он должен пройти, как освободиться от кармических блоков. Пиши с пониманием и глубиной."
             title = "🔴 Кармический долг"
         elif waiting == "career":
-            prompt = f"Опиши идеальный карьерный путь для человека с числом судьбы {number}, рождённого {text}. Какие профессии подходят, в чём его сильные стороны на работе, как достичь успеха. Пиши конкретно и вдохновляюще. Только на русском языке."
+            prompt = f"Опиши идеальный карьерный путь для человека с числом судьбы {number}, рождённого {text}. Какие профессии подходят, в чём его сильные стороны на работе, как достичь успеха. Пиши конкретно и вдохновляюще."
             title = "💼 Карьерный путь"
         elif waiting == "money":
-            prompt = f"Раскрой денежный код человека с числом судьбы {number}, рождённого {text}. Какие отношения с деньгами заложены в числах, как активировать денежный поток, какие блоки мешают финансовому успеху. Пиши практично и вдохновляюще. Только на русском языке."
+            prompt = f"Раскрой денежный код человека с числом судьбы {number}, рождённого {text}. Какие отношения с деньгами заложены в числах, как активировать денежный поток, какие блоки мешают финансовому успеху. Пиши практично и вдохновляюще."
             title = "💰 Денежный код"
         elif waiting == "days":
-            prompt = f"Составь разбор сильных и слабых дней месяца для человека с числом судьбы {number}, рождённого {text}. Какие числа месяца самые благоприятные для важных дел, любви, финансов, а какие лучше провести спокойно. Пиши структурированно и понятно. Только на русском языке."
+            prompt = f"Составь разбор сильных и слабых дней месяца для человека с числом судьбы {number}, рождённого {text}. Какие числа месяца самые благоприятные для важных дел, любви, финансов, а какие лучше провести спокойно. Пиши структурированно и понятно."
             title = "🌙 Сильные и слабые дни месяца"
+        elif waiting == "ex":
+            prompt = f"Сделай нумерологический анализ — вернётся ли бывший к человеку с числом судьбы {number}, рождённому {text}. Опиши энергетику их связи, есть ли шанс на воссоединение, что нужно сделать или отпустить. Пиши с теплом и пониманием."
+            title = "💔 Вернётся ли бывший"
+        elif waiting == "cold":
+            prompt = f"Объясни нумерологически почему партнёр охладел к человеку с числом судьбы {number}, рождённому {text}. Какие числовые несовместимости могли привести к этому, что происходит на энергетическом уровне, как изменить ситуацию. Пиши тепло и честно."
+            title = "❄️ Почему он охладел"
+        elif waiting == "toxic":
+            prompt = f"Проанализируй нумерологически является ли связь токсичной или кармической для человека с числом судьбы {number}, рождённого {text}. Опиши признаки токсичности в числах, кармические уроки этих отношений, как освободиться. Пиши глубоко и с пониманием."
+            title = "☠️ Токсичная или кармическая связь"
+        elif waiting == "lonely":
+            prompt = f"Объясни нумерологически почему человек с числом судьбы {number}, рождённый {text}, чувствует себя одиноким. Какие числовые паттерны создают одиночество, как изменить энергетику и привлечь нужных людей. Пиши с теплом и поддержкой."
+            title = "😔 Почему ты одинока"
+        elif waiting == "breakup":
+            prompt = f"Сделай нумерологический разбор после расставания для человека с числом судьбы {number}, рождённого {text}. Объясни почему это произошло с точки зрения чисел, какие уроки несёт это расставание, что ждёт впереди в личной жизни. Пиши с теплом и надеждой."
+            title = "💔 Разбор после расставания"
         else:
             await state.clear()
             return
@@ -612,7 +504,7 @@ async def send_daily_horoscope():
                 try:
                     number = user["destiny_number"]
                     today = date.today().strftime("%d.%m.%Y")
-                    prompt = f"Составь короткий личный прогноз на сегодня {today} для человека с числом судьбы {number}. Что принесёт этот день в любви, делах и энергии. Пиши тепло, коротко 150-200 слов, с эмодзи. Заканчивай полным предложением. Только на русском языке."
+                    prompt = f"Составь короткий личный прогноз на сегодня {today} для человека с числом судьбы {number}. Что принесёт этот день в любви, делах и энергии. Пиши тепло, коротко 150-200 слов, с эмодзи. Заканчивай полным предложением."
                     horoscope = await ask_ai(prompt)
                     await bot.send_message(
                         int(uid),
@@ -621,11 +513,42 @@ async def send_daily_horoscope():
                 except Exception as e:
                     logging.error(f"Horoscope error for {uid}: {e}")
 
+async def send_daily_tip():
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=19, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target = target + timedelta(days=1)
+        wait = (target - now).total_seconds()
+        await asyncio.sleep(wait)
+        user_ids = list(users.keys())
+        for uid in user_ids:
+            user = users.get(uid)
+            if not user:
+                continue
+            if user.get("birth_date") and user.get("destiny_number"):
+                try:
+                    number = user["destiny_number"]
+                    tips = [
+                        f"Знаешь ли ты что число судьбы {number} даёт тебе особый дар? Сегодня хороший день чтобы его раскрыть ✨",
+                        f"Числа говорят — сегодня твоя энергия числа {number} особенно сильна 🔮 Используй это!",
+                        f"Маленький секрет числа {number}: ты притягиваешь то о чём думаешь чаще всего 💫",
+                        f"Число судьбы {number} — это не случайность. Это твой уникальный код вселенной 🌟",
+                        f"Сегодняшний вечер идеален для того чтобы прислушаться к своей интуиции — число {number} усиливает её 🌙",
+                    ]
+                    import random
+                    tip = random.choice(tips)
+                    await bot.send_message(
+                        int(uid),
+                        f"💜 Ева напоминает:\n\n{tip}\n\n🔮 Узнай больше о своей судьбе — /menu"
+                    )
+                except Exception as e:
+                    logging.error(f"Tip error for {uid}: {e}")
+
 async def send_daily_channel_post():
     while True:
         now = datetime.now()
-        # 9:00 UTC = 12:00 МСК
-        target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        target = now.replace(hour=10, minute=0, second=0, microsecond=0)
         if now >= target:
             target = target + timedelta(days=1)
         wait = (target - now).total_seconds()
@@ -633,7 +556,7 @@ async def send_daily_channel_post():
         try:
             today = date.today().strftime("%d.%m.%Y")
             day_num = date.today().day
-            prompt = f"Напиши интересный нумерологический пост для Telegram канала на сегодня {today}. Число дня: {day_num}. Тема: что значит это число, какая энергия сегодня, советы на день. Пиши красиво, с эмодзи, атмосферно. 150-200 слов. Только на русском языке — никаких иностранных слов."
+            prompt = f"Напиши интересный нумерологический пост для Telegram канала на сегодня {today}. Число дня: {day_num}. Тема: что значит это число, какая энергия сегодня, советы на день. Пиши красиво, с эмодзи, атмосферно. 150-200 слов. ТОЛЬКО на русском языке."
             post = await ask_ai(prompt)
             await bot.send_message(
                 CHANNEL,
@@ -657,6 +580,7 @@ async def run_web():
 async def main():
     asyncio.create_task(run_web())
     asyncio.create_task(send_daily_horoscope())
+    asyncio.create_task(send_daily_tip())
     asyncio.create_task(send_daily_channel_post())
     await dp.start_polling(bot)
 
