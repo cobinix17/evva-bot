@@ -3,6 +3,8 @@ import logging
 import asyncio
 import json
 import httpx
+import asyncpg
+import random
 from datetime import datetime, date, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, StateFilter
@@ -17,6 +19,8 @@ from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 if not BOT_TOKEN or not GROQ_API_KEY:
     raise EnvironmentError("BOT_TOKEN и GROQ_API_KEY должны быть установлены!")
 
@@ -29,46 +33,69 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-USERS_FILE = "users.json"
+db_pool = None
 
-def load_users():
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+async def init_db():
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            free_used BOOLEAN DEFAULT FALSE,
+            subscribed_channel BOOLEAN DEFAULT FALSE,
+            birth_date TEXT,
+            destiny_number INTEGER,
+            purchased TEXT DEFAULT '[]',
+            waiting TEXT,
+            review_left BOOLEAN DEFAULT FALSE
+        )
+    ''')
 
-def save_users(users_dict):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(users_dict, f, ensure_ascii=False, indent=2)
+async def get_user(user_id: int) -> dict:
+    row = await db_pool.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+    if not row:
+        await db_pool.execute(
+            'INSERT INTO users (user_id) VALUES ($1)', user_id
+        )
+        row = await db_pool.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+    user = dict(row)
+    user['purchased'] = json.loads(user['purchased'])
+    if user_id == ADMIN_ID:
+        user['free_used'] = True
+        user['subscribed_channel'] = True
+        all_razbory = ["compat", "when", "portrait", "unlucky", "matrix", "mission", "karma", "career", "money", "days", "ex", "cold", "toxic", "lonely", "breakup"]
+        for r in all_razbory:
+            if r not in user['purchased']:
+                user['purchased'].append(r)
+    return user
 
-users = load_users()
+async def save_user(user_id: int, user: dict):
+    purchased = json.dumps(user['purchased'])
+    await db_pool.execute('''
+        UPDATE users SET
+            free_used = $1,
+            subscribed_channel = $2,
+            birth_date = $3,
+            destiny_number = $4,
+            purchased = $5,
+            waiting = $6,
+            review_left = $7
+        WHERE user_id = $8
+    ''',
+        user['free_used'],
+        user['subscribed_channel'],
+        user['birth_date'],
+        user['destiny_number'],
+        purchased,
+        user['waiting'],
+        user['review_left'],
+        user_id
+    )
 
 class Form(StatesGroup):
     waiting_date = State()
     waiting_second_date = State()
     waiting_review = State()
-
-def get_user(user_id):
-    uid = str(user_id)
-    if uid not in users:
-        users[uid] = {
-            "free_used": False,
-            "subscribed_channel": False,
-            "birth_date": None,
-            "destiny_number": None,
-            "purchased": [],
-            "waiting": None,
-            "review_left": False
-        }
-    if user_id == ADMIN_ID:
-        users[uid]["free_used"] = True
-        users[uid]["subscribed_channel"] = True
-        for r in ["compat", "when", "portrait", "unlucky", "matrix", "mission", "karma", "career", "money", "days", "ex", "cold", "toxic", "lonely", "breakup"]:
-            if r not in users[uid]["purchased"]:
-                users[uid]["purchased"].append(r)
-    save_users(users)
-    return users[uid]
 
 async def check_subscription(user_id: int) -> bool:
     if user_id == ADMIN_ID:
@@ -171,12 +198,12 @@ def review_menu():
 @dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
     await state.clear()
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     if user["subscribed_channel"]:
         is_subscribed = await check_subscription(message.from_user.id)
         if not is_subscribed:
             user["subscribed_channel"] = False
-            save_users(users)
+            await save_user(message.from_user.id, user)
     if not user["subscribed_channel"]:
         await message.answer(
             "🔮 Привет! Я Ева — твой личный нумеролог.\n\n"
@@ -195,22 +222,27 @@ async def start(message: Message, state: FSMContext):
 @dp.message(Command("menu"), StateFilter("*"))
 async def menu_cmd(message: Message, state: FSMContext):
     await state.clear()
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
 
 @dp.message(Command("admin"), StateFilter("*"))
 async def admin_panel(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    total = len(users)
-    free_used = sum(1 for u in users.values() if u.get("free_used"))
-    bought = sum(1 for u in users.values() if u.get("purchased"))
-    total_purchases = sum(len(u.get("purchased", [])) for u in users.values())
-    reviews = sum(1 for u in users.values() if u.get("review_left"))
+    total = await db_pool.fetchval('SELECT COUNT(*) FROM users')
+    free_used = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE free_used = TRUE')
+    reviews = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE review_left = TRUE')
+    rows = await db_pool.fetch('SELECT purchased FROM users')
+    total_purchases = 0
     razbory_count = {}
-    for u in users.values():
-        for r in u.get("purchased", []):
-            razbory_count[r] = razbory_count.get(r, 0) + 1
+    bought = 0
+    for row in rows:
+        purchased = json.loads(row['purchased'])
+        if purchased:
+            bought += 1
+            total_purchases += len(purchased)
+            for r in purchased:
+                razbory_count[r] = razbory_count.get(r, 0) + 1
     top = sorted(razbory_count.items(), key=lambda x: x[1], reverse=True)
     top_text = "\n".join([f"  {k}: {v}" for k, v in top[:5]]) if top else "  нет покупок"
     await message.answer(
@@ -225,7 +257,7 @@ async def admin_panel(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, state: FSMContext):
-    user = get_user(callback.from_user.id)
+    user = await get_user(callback.from_user.id)
     is_subscribed = await check_subscription(callback.from_user.id)
     if not is_subscribed:
         await callback.answer("❌ Ты ещё не подписалась!", show_alert=True)
@@ -235,7 +267,7 @@ async def check_sub(callback: CallbackQuery, state: FSMContext):
         )
         return
     user["subscribed_channel"] = True
-    save_users(users)
+    await save_user(callback.from_user.id, user)
     if user["free_used"]:
         await callback.message.answer("✅ Ты уже подписана! Выбери разбор:", reply_markup=main_menu(user))
         await callback.answer()
@@ -246,13 +278,13 @@ async def check_sub(callback: CallbackQuery, state: FSMContext):
         "Например: 15.03.1995"
     )
     user["waiting"] = "free"
-    save_users(users)
+    await save_user(callback.from_user.id, user)
     await state.set_state(Form.waiting_date)
     await callback.answer()
 
 @dp.callback_query(F.data == "free")
 async def free_handler(callback: CallbackQuery, state: FSMContext):
-    user = get_user(callback.from_user.id)
+    user = await get_user(callback.from_user.id)
     if not user["subscribed_channel"]:
         is_subscribed = await check_subscription(callback.from_user.id)
         if not is_subscribed:
@@ -263,7 +295,7 @@ async def free_handler(callback: CallbackQuery, state: FSMContext):
             await callback.answer()
             return
         user["subscribed_channel"] = True
-        save_users(users)
+        await save_user(callback.from_user.id, user)
     if user["free_used"]:
         await callback.message.answer(
             "💫 Бесплатный разбор ты уже получила.\n\nВыбери платный разбор 🔮",
@@ -272,7 +304,7 @@ async def free_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     user["waiting"] = "free"
-    save_users(users)
+    await save_user(callback.from_user.id, user)
     await callback.message.answer(
         "✨ Введи свою дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995"
     )
@@ -311,10 +343,10 @@ async def send_invoice(chat_id, title, description, payload, amount):
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_handler(callback: CallbackQuery, state: FSMContext):
     key = callback.data.replace("buy_", "")
-    user = get_user(callback.from_user.id)
+    user = await get_user(callback.from_user.id)
     if key in user["purchased"]:
         user["waiting"] = key
-        save_users(users)
+        await save_user(callback.from_user.id, user)
         if key == "compat":
             await callback.message.answer("💑 Введи две даты рождения через запятую:\nНапример: 15.03.1995, 22.07.1998")
             await state.set_state(Form.waiting_second_date)
@@ -334,12 +366,12 @@ async def pre_checkout(query: PreCheckoutQuery):
 
 @dp.message(F.successful_payment)
 async def successful_payment(message: Message, state: FSMContext):
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     payload = message.successful_payment.invoice_payload
     if payload not in user["purchased"]:
         user["purchased"].append(payload)
     user["waiting"] = payload
-    save_users(users)
+    await save_user(message.from_user.id, user)
     if payload == "compat":
         await message.answer("✅ Оплата прошла! Введи две даты рождения через запятую:\nНапример: 15.03.1995, 22.07.1998")
         await state.set_state(Form.waiting_second_date)
@@ -349,7 +381,7 @@ async def successful_payment(message: Message, state: FSMContext):
 
 @dp.message(Form.waiting_second_date)
 async def handle_two_dates(message: Message, state: FSMContext):
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     text = message.text.strip()
     if "," not in text:
         await message.answer("❌ Введи две даты через запятую.\nНапример: 15.03.1995, 22.07.1998")
@@ -373,7 +405,7 @@ async def handle_two_dates(message: Message, state: FSMContext):
 
 @dp.message(Form.waiting_date)
 async def handle_date(message: Message, state: FSMContext):
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     text = message.text.strip()
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
@@ -388,11 +420,11 @@ async def handle_date(message: Message, state: FSMContext):
         user["birth_date"] = text
         user["destiny_number"] = number
         user["free_used"] = True
-        save_users(users)
+        await save_user(message.from_user.id, user)
     await message.answer("⏳ Ева составляет твой разбор, подожди немного...")
     try:
         if waiting == "free":
-            prompt = f"Сделай подробный и эмоциональный нумерологический разбор числа судьбы {number} для человека рождённого {text}. Опиши характер, сильные и слабые стороны, жизненный путь, отношение к любви и отношениям. Пиши тепло, как близкая подруга-нумеролог. Создай ощущение что это написано именно про этого человека."
+            prompt = f"Сделай подробный и эмоциональный нумерологический разбор числа судьбы {number} для человека рождённого {text}. Опиши характер, сильные и слабые стороны, жизненный путь, отношение к любви и отношениям. Пиши тепло, как близкая подруга-нумеролог."
             title = f"💫 Твоё число судьбы: {number}"
         elif waiting == "when":
             prompt = f"Сделай подробный нумерологический прогноз когда человек с числом судьбы {number}, рождённый {text}, встретит своего партнёра. Опиши в каком возрасте или периоде жизни это произойдёт, при каких обстоятельствах, какие знаки укажут что это тот самый. Пиши тепло, романтично, атмосферно."
@@ -457,7 +489,7 @@ async def handle_date(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "leave_review")
 async def leave_review(callback: CallbackQuery, state: FSMContext):
-    user = get_user(callback.from_user.id)
+    user = await get_user(callback.from_user.id)
     if user.get("review_left"):
         await callback.answer("Ты уже оставила отзыв, спасибо! 💫", show_alert=True)
         return
@@ -470,12 +502,12 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(Form.waiting_review)
 async def handle_review(message: Message, state: FSMContext):
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     review_text = f"⭐ Отзыв о боте Ева:\n\n{message.text}"
     try:
         await bot.send_message(REVIEWS_CHANNEL, review_text)
         user["review_left"] = True
-        save_users(users)
+        await save_user(message.from_user.id, user)
         await message.answer("✅ Спасибо! Твой отзыв опубликован 💫")
     except:
         await message.answer("✅ Спасибо за отзыв!")
@@ -483,7 +515,7 @@ async def handle_review(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "show_menu")
 async def show_menu(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
+    user = await get_user(callback.from_user.id)
     await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
     await callback.answer()
 
@@ -495,40 +527,36 @@ async def send_daily_horoscope():
             target = target + timedelta(days=1)
         wait = (target - now).total_seconds()
         await asyncio.sleep(wait)
-        user_ids = list(users.keys())
-        for uid in user_ids:
-            user = users.get(uid)
-            if not user:
-                continue
-            if user.get("birth_date") and user.get("destiny_number"):
+        try:
+            rows = await db_pool.fetch('SELECT user_id, birth_date, destiny_number FROM users WHERE birth_date IS NOT NULL AND destiny_number IS NOT NULL')
+            for row in rows:
                 try:
-                    number = user["destiny_number"]
+                    number = row['destiny_number']
                     today = date.today().strftime("%d.%m.%Y")
                     prompt = f"Составь короткий личный прогноз на сегодня {today} для человека с числом судьбы {number}. Что принесёт этот день в любви, делах и энергии. Пиши тепло, коротко 150-200 слов, с эмодзи. Заканчивай полным предложением."
                     horoscope = await ask_ai(prompt)
                     await bot.send_message(
-                        int(uid),
+                        row['user_id'],
                         f"🌅 Доброе утро! Твой прогноз на сегодня:\n\n{horoscope}\n\n🔮 Хочешь больше? /menu"
                     )
                 except Exception as e:
-                    logging.error(f"Horoscope error for {uid}: {e}")
+                    logging.error(f"Horoscope error for {row['user_id']}: {e}")
+        except Exception as e:
+            logging.error(f"Horoscope batch error: {e}")
 
 async def send_daily_tip():
     while True:
         now = datetime.now()
-        target = now.replace(hour=19, minute=0, second=0, microsecond=0)
+        target = now.replace(hour=17, minute=0, second=0, microsecond=0)
         if now >= target:
             target = target + timedelta(days=1)
         wait = (target - now).total_seconds()
         await asyncio.sleep(wait)
-        user_ids = list(users.keys())
-        for uid in user_ids:
-            user = users.get(uid)
-            if not user:
-                continue
-            if user.get("birth_date") and user.get("destiny_number"):
+        try:
+            rows = await db_pool.fetch('SELECT user_id, destiny_number FROM users WHERE destiny_number IS NOT NULL')
+            for row in rows:
                 try:
-                    number = user["destiny_number"]
+                    number = row['destiny_number']
                     tips = [
                         f"Знаешь ли ты что число судьбы {number} даёт тебе особый дар? Сегодня хороший день чтобы его раскрыть ✨",
                         f"Числа говорят — сегодня твоя энергия числа {number} особенно сильна 🔮 Используй это!",
@@ -536,14 +564,15 @@ async def send_daily_tip():
                         f"Число судьбы {number} — это не случайность. Это твой уникальный код вселенной 🌟",
                         f"Сегодняшний вечер идеален для того чтобы прислушаться к своей интуиции — число {number} усиливает её 🌙",
                     ]
-                    import random
                     tip = random.choice(tips)
                     await bot.send_message(
-                        int(uid),
+                        row['user_id'],
                         f"💜 Ева напоминает:\n\n{tip}\n\n🔮 Узнай больше о своей судьбе — /menu"
                     )
                 except Exception as e:
-                    logging.error(f"Tip error for {uid}: {e}")
+                    logging.error(f"Tip error for {row['user_id']}: {e}")
+        except Exception as e:
+            logging.error(f"Tip batch error: {e}")
 
 async def send_daily_channel_post():
     while True:
@@ -578,6 +607,7 @@ async def run_web():
     await site.start()
 
 async def main():
+    await init_db()
     asyncio.create_task(run_web())
     asyncio.create_task(send_daily_horoscope())
     asyncio.create_task(send_daily_tip())
