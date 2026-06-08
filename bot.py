@@ -523,7 +523,7 @@ async def _start_onboarding(message: Message, user: dict):
             "✨ Привет! Давай познакомимся поближе.\n\n"
             "Как мне тебя называть? Введи своё имя 👇"
         )
-    await Form.waiting_name.set()
+    await Form.waiting_name.set() 
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, state: FSMContext):
