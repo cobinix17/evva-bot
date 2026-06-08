@@ -29,7 +29,7 @@ if not BOT_TOKEN or not GROQ_API_KEY:
 CHANNEL         = "@eva_numerologg"
 REVIEWS_CHANNEL = "@eva_numerolog_otz"
 ADMIN_ID        = 5854618444
-CONTACT_URL     = "https://t.me/your_manager"  # ← замени на свой контакт
+CONTACT_URL     = "https://t.me/eva_numer"  # ← замени на свой контакт
 
 logging.basicConfig(level=logging.INFO)
 bot     = Bot(token=BOT_TOKEN)
