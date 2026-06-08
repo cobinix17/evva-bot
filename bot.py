@@ -347,7 +347,7 @@ def strip_foreign_words(text: str) -> str:
     cleaned = FOREIGN_PATTERN.sub('', text)
     cleaned = re.sub(r' {2,}', ' ', cleaned)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-    return cleaned.strip()
+    return cleaned.strip() 
 
 async def check_subscription(user_id: int) -> bool:
     if user_id == ADMIN_ID:
