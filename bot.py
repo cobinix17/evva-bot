@@ -20,7 +20,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
-# ─── ENV ────────────────────────────────────────────────────────────────────────
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -31,7 +30,7 @@ if not BOT_TOKEN or not GROQ_API_KEY:
 CHANNEL         = "@eva_numerologg"
 REVIEWS_CHANNEL = "@eva_numerolog_otz"
 ADMIN_ID        = 5854618444
-CONTACT_URL     = "https://t.me/your_manager"  # ← замени на свой контакт
+CONTACT_URL     = "https://t.me/eva_numer"
 
 logging.basicConfig(level=logging.INFO)
 bot     = Bot(token=BOT_TOKEN)
@@ -39,7 +38,7 @@ storage = MemoryStorage()
 dp      = Dispatcher(storage=storage)
 db_pool = None
 
-# ─── АНТИФЛУД ────────────────────────────────────────────────────────────────────
+# антифлуд
 user_last_request = defaultdict(float)
 FLOOD_TIMEOUT = 3
 
@@ -50,7 +49,25 @@ def is_flood(user_id: int) -> bool:
     user_last_request[user_id] = now
     return False
 
-# ─── ПРОМТЫ ──────────────────────────────────────────────────────────────────────
+# разбивка длинных сообщений
+async def send_long(chat_id, text: str):
+    limit = 4000
+    if len(text) <= limit:
+        await bot.send_message(chat_id, text)
+        return
+    parts = []
+    while len(text) > limit:
+        split_at = text.rfind('\n', 0, limit)
+        if split_at == -1:
+            split_at = limit
+        parts.append(text[:split_at])
+        text = text[split_at:].lstrip()
+    if text:
+        parts.append(text)
+    for part in parts:
+        await bot.send_message(chat_id, part)
+        await asyncio.sleep(0.3)
+
 PROMPTS = {
     "free": (
         "Сделай подробный и эмоциональный нумерологический разбор числа судьбы {number} "
@@ -235,7 +252,6 @@ TITLES = {
 
 PAID_RAZBORY = {k: v for k, v in TITLES.items() if k != "free"}
 
-# ─── DB ──────────────────────────────────────────────────────────────────────────
 async def init_db():
     global db_pool
     db_pool = await asyncpg.create_pool(DATABASE_URL)
@@ -281,7 +297,6 @@ async def get_user(user_id: int) -> dict:
     return user
 
 async def save_user(user_id: int, user: dict):
-    purchased = json.dumps(user['purchased'])
     await db_pool.execute('''
         UPDATE users SET
             first_name         = $1,
@@ -299,22 +314,19 @@ async def save_user(user_id: int, user: dict):
         user['subscribed_channel'],
         user.get('birth_date'),
         user.get('destiny_number'),
-        purchased,
+        json.dumps(user['purchased']),
         user.get('waiting'),
         user['review_left'],
         user_id
     )
 
-# ─── FSM ─────────────────────────────────────────────────────────────────────────
 class Form(StatesGroup):
     waiting_name        = State()
     waiting_birth_date  = State()
     waiting_date        = State()
     waiting_second_date = State()
     waiting_review      = State()
-    waiting_coupon_use  = State()
 
-# ─── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────────────────────────────────────────
 def calculate_destiny(date_str: str) -> int:
     digits = [int(d) for d in date_str if d.isdigit()]
     total  = sum(digits)
@@ -362,8 +374,8 @@ async def ask_ai(prompt: str) -> str:
         "Если хочешь написать иностранное слово — найди русский аналог. "
         "Весь ответ от первого до последнего символа — только кириллица и знаки препинания. "
         "Пишешь красиво, с эмодзи, атмосферно. Обращаешься на ты. "
-        "Ответы длинные, подробные, эмоциональные — ощущение что написано именно про этого человека. "
-        "Минимум 400 слов. Используй абзацы и структуру. "
+        "Ответы подробные, эмоциональные — ощущение что написано именно про этого человека. "
+        "Минимум 300 слов, максимум 800 слов. Используй абзацы. "
         "Заканчивай ответ полным предложением, никогда не обрывай на середине."
     )
     last_error = None
@@ -375,7 +387,7 @@ async def ask_ai(prompt: str) -> str:
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": prompt},
                 ],
-                "max_tokens": 2000,
+                "max_tokens": 1500,
             }
             async with httpx.AsyncClient() as client:
                 response = await client.post(url, headers=headers, json=data, timeout=90)
@@ -390,89 +402,50 @@ async def ask_ai(prompt: str) -> str:
 def build_prompt(key: str, **kwargs) -> str:
     return PROMPTS.get(key, "").format(**kwargs)
 
-# ─── КУПОНЫ ──────────────────────────────────────────────────────────────────────
-async def create_coupon(code: str) -> bool:
-    expires = datetime.now() + timedelta(hours=48)
-    try:
-        await db_pool.execute(
-            'INSERT INTO coupons (code, expires_at) VALUES ($1, $2)',
-            code.upper(), expires
-        )
-        return True
-    except Exception:
-        return False
-
-async def use_coupon(code: str, user_id: int):
-    """Возвращает: 'ok', 'not_found', 'expired', 'used'"""
-    row = await db_pool.fetchrow(
-        'SELECT * FROM coupons WHERE code = $1', code.upper()
-    )
-    if not row:
-        return 'not_found'
-    if row['used_by'] is not None:
-        return 'used'
-    if row['expires_at'] < datetime.now():
-        return 'expired'
-    await db_pool.execute(
-        'UPDATE coupons SET used_by = $1 WHERE code = $2',
-        user_id, code.upper()
-    )
-    return 'ok'
-
-# ─── КЛАВИАТУРЫ ──────────────────────────────────────────────────────────────────
 def check_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Я подписалась!", callback_data="check_sub")],
     ])
 
-def main_menu(user=None, discount=False) -> InlineKeyboardMarkup:
-    price = "29" if discount else "49"
+def main_menu(user=None) -> InlineKeyboardMarkup:
     buttons = []
     if user and not user.get("free_used"):
         buttons.append([InlineKeyboardButton(text="💫 Мой бесплатный разбор", callback_data="free")])
 
-    if discount:
-        buttons.append([InlineKeyboardButton(
-            text=f"🎁 Тебе скидка! Все разборы по {price} ⭐", callback_data="noop"
-        )])
-
     buttons.append([InlineKeyboardButton(text="── Судьба и личность ──", callback_data="noop")])
     buttons += [
-        [InlineKeyboardButton(text=f"🔮 Матрица судьбы — {price} ⭐",             callback_data="buy_matrix")],
-        [InlineKeyboardButton(text=f"🌟 Предназначение и миссия — {price} ⭐",    callback_data="buy_mission")],
-        [InlineKeyboardButton(text=f"✨ Скрытые таланты — {price} ⭐",            callback_data="buy_hidden_talents")],
-        [InlineKeyboardButton(text=f"⚖️ Сильная/слабая сторона — {price} ⭐",    callback_data="buy_strong_weak")],
-        [InlineKeyboardButton(text=f"😨 Главный страх — {price} ⭐",              callback_data="buy_main_fear")],
-        [InlineKeyboardButton(text=f"🔴 Кармический долг — {price} ⭐",           callback_data="buy_karma")],
-        [InlineKeyboardButton(text=f"🗓 Прогноз на 2026 год — {price} ⭐",        callback_data="buy_forecast_2026")],
+        [InlineKeyboardButton(text="🔮 Матрица судьбы — 49 ⭐",             callback_data="buy_matrix")],
+        [InlineKeyboardButton(text="🌟 Предназначение и миссия — 49 ⭐",    callback_data="buy_mission")],
+        [InlineKeyboardButton(text="✨ Скрытые таланты — 49 ⭐",            callback_data="buy_hidden_talents")],
+        [InlineKeyboardButton(text="⚖️ Сильная/слабая сторона — 49 ⭐",    callback_data="buy_strong_weak")],
+        [InlineKeyboardButton(text="😨 Главный страх — 49 ⭐",              callback_data="buy_main_fear")],
+        [InlineKeyboardButton(text="🔴 Кармический долг — 49 ⭐",           callback_data="buy_karma")],
+        [InlineKeyboardButton(text="🗓 Прогноз на 2026 год — 49 ⭐",        callback_data="buy_forecast_2026")],
     ]
-
     buttons.append([InlineKeyboardButton(text="── Деньги и карьера ──", callback_data="noop")])
     buttons += [
-        [InlineKeyboardButton(text=f"💹 Финансовый прогноз — {price} ⭐",         callback_data="buy_finance")],
-        [InlineKeyboardButton(text=f"🚧 Блоки богатства — {price} ⭐",            callback_data="buy_wealth_blocks")],
-        [InlineKeyboardButton(text=f"🗺 Путь к финансовой свободе — {price} ⭐",  callback_data="buy_freedom_path")],
-        [InlineKeyboardButton(text=f"🌠 Призвание — {price} ⭐",                  callback_data="buy_calling")],
-        [InlineKeyboardButton(text=f"📈 Повышение — {price} ⭐",                  callback_data="buy_promotion")],
-        [InlineKeyboardButton(text=f"🏢 Свой бизнес — {price} ⭐",               callback_data="buy_own_business")],
-        [InlineKeyboardButton(text=f"💼 Карьерный путь — {price} ⭐",             callback_data="buy_career")],
-        [InlineKeyboardButton(text=f"💰 Денежный код — {price} ⭐",               callback_data="buy_money")],
-        [InlineKeyboardButton(text=f"🌙 Сильные и слабые дни — {price} ⭐",      callback_data="buy_days")],
+        [InlineKeyboardButton(text="💹 Финансовый прогноз — 49 ⭐",         callback_data="buy_finance")],
+        [InlineKeyboardButton(text="🚧 Блоки богатства — 49 ⭐",            callback_data="buy_wealth_blocks")],
+        [InlineKeyboardButton(text="🗺 Путь к финансовой свободе — 49 ⭐",  callback_data="buy_freedom_path")],
+        [InlineKeyboardButton(text="🌠 Призвание — 49 ⭐",                  callback_data="buy_calling")],
+        [InlineKeyboardButton(text="📈 Повышение — 49 ⭐",                  callback_data="buy_promotion")],
+        [InlineKeyboardButton(text="🏢 Свой бизнес — 49 ⭐",               callback_data="buy_own_business")],
+        [InlineKeyboardButton(text="💼 Карьерный путь — 49 ⭐",             callback_data="buy_career")],
+        [InlineKeyboardButton(text="💰 Денежный код — 49 ⭐",               callback_data="buy_money")],
+        [InlineKeyboardButton(text="🌙 Сильные и слабые дни — 49 ⭐",      callback_data="buy_days")],
     ]
-
     buttons.append([InlineKeyboardButton(text="── Любовь и отношения ──", callback_data="noop")])
     buttons += [
-        [InlineKeyboardButton(text=f"💑 Совместимость двух людей — {price} ⭐",   callback_data="buy_compat")],
-        [InlineKeyboardButton(text=f"💘 Когда встретишь того самого — {price} ⭐",callback_data="buy_when")],
-        [InlineKeyboardButton(text=f"💍 Портрет идеального партнёра — {price} ⭐",callback_data="buy_portrait")],
-        [InlineKeyboardButton(text=f"💔 Почему не везёт в любви — {price} ⭐",    callback_data="buy_unlucky")],
-        [InlineKeyboardButton(text=f"💔 Вернётся ли бывший — {price} ⭐",         callback_data="buy_ex")],
-        [InlineKeyboardButton(text=f"❄️ Почему он охладел — {price} ⭐",          callback_data="buy_cold")],
-        [InlineKeyboardButton(text=f"☠️ Токсичная связь — {price} ⭐",            callback_data="buy_toxic")],
-        [InlineKeyboardButton(text=f"😔 Почему ты одинока — {price} ⭐",          callback_data="buy_lonely")],
-        [InlineKeyboardButton(text=f"💔 Разбор после расставания — {price} ⭐",   callback_data="buy_breakup")],
+        [InlineKeyboardButton(text="💑 Совместимость двух людей — 49 ⭐",   callback_data="buy_compat")],
+        [InlineKeyboardButton(text="💘 Когда встретишь того самого — 49 ⭐",callback_data="buy_when")],
+        [InlineKeyboardButton(text="💍 Портрет идеального партнёра — 49 ⭐",callback_data="buy_portrait")],
+        [InlineKeyboardButton(text="💔 Почему не везёт в любви — 49 ⭐",    callback_data="buy_unlucky")],
+        [InlineKeyboardButton(text="💔 Вернётся ли бывший — 49 ⭐",         callback_data="buy_ex")],
+        [InlineKeyboardButton(text="❄️ Почему он охладел — 49 ⭐",          callback_data="buy_cold")],
+        [InlineKeyboardButton(text="☠️ Токсичная связь — 49 ⭐",            callback_data="buy_toxic")],
+        [InlineKeyboardButton(text="😔 Почему ты одинока — 49 ⭐",          callback_data="buy_lonely")],
+        [InlineKeyboardButton(text="💔 Разбор после расставания — 49 ⭐",   callback_data="buy_breakup")],
     ]
-
     buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы (за рубли)",
         url=CONTACT_URL
@@ -486,35 +459,53 @@ def review_menu() -> InlineKeyboardMarkup:
     ])
 
 def coupon_razboy_menu() -> InlineKeyboardMarkup:
-    """Меню выбора бесплатного разбора по купону."""
-    buttons = [
-        [InlineKeyboardButton(text="🔮 Матрица судьбы",        callback_data="coupon_matrix")],
-        [InlineKeyboardButton(text="💹 Финансовый прогноз",    callback_data="coupon_finance")],
-        [InlineKeyboardButton(text="🌟 Предназначение",        callback_data="coupon_mission")],
-        [InlineKeyboardButton(text="✨ Скрытые таланты",       callback_data="coupon_hidden_talents")],
-        [InlineKeyboardButton(text="🗓 Прогноз на 2026",       callback_data="coupon_forecast_2026")],
-        [InlineKeyboardButton(text="💑 Совместимость",         callback_data="coupon_compat")],
-        [InlineKeyboardButton(text="💘 Когда встретишь его",   callback_data="coupon_when")],
-        [InlineKeyboardButton(text="💔 Вернётся ли бывший",    callback_data="coupon_ex")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Матрица судьбы",       callback_data="coupon_matrix")],
+        [InlineKeyboardButton(text="💹 Финансовый прогноз",   callback_data="coupon_finance")],
+        [InlineKeyboardButton(text="🌟 Предназначение",       callback_data="coupon_mission")],
+        [InlineKeyboardButton(text="✨ Скрытые таланты",      callback_data="coupon_hidden_talents")],
+        [InlineKeyboardButton(text="🗓 Прогноз на 2026",      callback_data="coupon_forecast_2026")],
+        [InlineKeyboardButton(text="💑 Совместимость",        callback_data="coupon_compat")],
+        [InlineKeyboardButton(text="💘 Когда встретишь его",  callback_data="coupon_when")],
+        [InlineKeyboardButton(text="💔 Вернётся ли бывший",   callback_data="coupon_ex")],
+    ])
 
-# ─── ОНБОРДИНГ ───────────────────────────────────────────────────────────────────
+async def create_coupon(code: str) -> bool:
+    expires = datetime.now() + timedelta(hours=48)
+    try:
+        await db_pool.execute(
+            'INSERT INTO coupons (code, expires_at) VALUES ($1, $2)',
+            code.upper(), expires
+        )
+        return True
+    except Exception:
+        return False
+
+async def use_coupon(code: str, user_id: int) -> str:
+    row = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code.upper())
+    if not row:
+        return 'not_found'
+    if row['used_by'] is not None:
+        return 'used'
+    if row['expires_at'] < datetime.now():
+        return 'expired'
+    await db_pool.execute(
+        'UPDATE coupons SET used_by = $1 WHERE code = $2', user_id, code.upper()
+    )
+    return 'ok'
+
 @dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
     await state.clear()
     user = await get_user(message.from_user.id)
-
     if not user.get("first_name") and message.from_user.first_name:
         user["first_name"] = message.from_user.first_name
         await save_user(message.from_user.id, user)
-
     if not user["subscribed_channel"]:
         is_sub = await check_subscription(message.from_user.id)
         if is_sub:
             user["subscribed_channel"] = True
             await save_user(message.from_user.id, user)
-
     if not user["subscribed_channel"]:
         await message.answer(
             "🔮 Привет! Я Ева — твой личный нумеролог.\n\n"
@@ -530,7 +521,6 @@ async def start(message: Message, state: FSMContext):
             reply_markup=check_menu()
         )
         return
-
     if not user["free_used"]:
         name = user.get("first_name") or ""
         greeting = f"✨ Привет, {name}! " if name else "✨ Привет! "
@@ -539,9 +529,7 @@ async def start(message: Message, state: FSMContext):
         )
         await state.set_state(Form.waiting_name)
         return
-
-    discount = len(user["purchased"]) >= 3
-    await message.answer("🔮 Выбери свой разбор 👇", reply_markup=main_menu(user, discount=discount))
+    await message.answer("🔮 Выбери свой разбор 👇", reply_markup=main_menu(user))
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, state: FSMContext):
@@ -553,12 +541,9 @@ async def check_sub(callback: CallbackQuery, state: FSMContext):
     user["subscribed_channel"] = True
     await save_user(callback.from_user.id, user)
     await callback.answer()
-
     if user["free_used"]:
-        discount = len(user["purchased"]) >= 3
-        await callback.message.answer("✅ Подписка подтверждена! Выбери разбор:", reply_markup=main_menu(user, discount=discount))
+        await callback.message.answer("✅ Подписка подтверждена!", reply_markup=main_menu(user))
         return
-
     await callback.message.answer("✅ Отлично! Как мне тебя называть? Введи своё имя 👇")
     await state.set_state(Form.waiting_name)
 
@@ -573,7 +558,7 @@ async def handle_name(message: Message, state: FSMContext):
     await save_user(message.from_user.id, user)
     await message.answer(
         f"Приятно познакомиться, {name}! 🌸\n\n"
-        "Теперь введи свою дату рождения в формате ДД.ММ.ГГГГ\n"
+        "Введи свою дату рождения в формате ДД.ММ.ГГГГ\n"
         "Например: 15.03.1995"
     )
     await state.set_state(Form.waiting_birth_date)
@@ -591,16 +576,15 @@ async def handle_birth_date(message: Message, state: FSMContext):
     user["free_used"]      = True
     user["waiting"]        = None
     await save_user(message.from_user.id, user)
-
     name = user.get("first_name") or "дорогая"
     await message.answer(f"⏳ Составляю твой разбор, {name}... Подожди немного ✨")
     try:
         prompt = build_prompt("free", name=name, number=number, date=text)
         answer = await ask_ai(prompt)
-        await message.answer(f"💫 Число судьбы {name}: {number}\n\n{answer}")
+        await send_long(message.chat.id, f"💫 Число судьбы {name}: {number}\n\n{answer}")
         await message.answer(
             "✨ Это было только начало!\n\n"
-            "Выбери платный разбор и узнай больше о своей судьбе, деньгах и любви 🔮",
+            "Выбери платный разбор и узнай больше о своей судьбе 🔮",
             reply_markup=main_menu(user)
         )
     except Exception as e:
@@ -608,13 +592,11 @@ async def handle_birth_date(message: Message, state: FSMContext):
         await message.answer("❌ Произошла ошибка, попробуй ещё раз /start")
     await state.clear()
 
-# ─── КОМАНДЫ ─────────────────────────────────────────────────────────────────────
 @dp.message(Command("menu"), StateFilter("*"))
 async def menu_cmd(message: Message, state: FSMContext):
     await state.clear()
-    user     = await get_user(message.from_user.id)
-    discount = len(user["purchased"]) >= 3
-    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user, discount=discount))
+    user = await get_user(message.from_user.id)
+    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
 
 @dp.message(Command("promo"), StateFilter("*"))
 async def promo_cmd(message: Message, state: FSMContext):
@@ -624,7 +606,6 @@ async def promo_cmd(message: Message, state: FSMContext):
         await message.answer("Введи промокод так: /promo КОД")
         return
     code   = parts[1].upper()
-    user   = await get_user(message.from_user.id)
     result = await use_coupon(code, message.from_user.id)
     if result == 'not_found':
         await message.answer("❌ Такого промокода не существует.")
@@ -653,59 +634,47 @@ async def coupon_cmd(message: Message, state: FSMContext):
         await message.answer(
             f"✅ Промокод создан!\n\n"
             f"Код: <code>{code}</code>\n"
-            f"Действует до: {expires} (МСК)\n\n"
-            f"Юзер активирует командой: /promo {code}",
+            f"Действует до: {expires}\n\n"
+            f"Юзер вводит: /promo {code}",
             parse_mode="HTML"
         )
     else:
-        await message.answer("❌ Такой промокод уже существует. Придумай другой.")
+        await message.answer("❌ Такой промокод уже существует.")
 
 @dp.message(Command("admin"), StateFilter("*"))
 async def admin_panel(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    total       = await db_pool.fetchval('SELECT COUNT(*) FROM users')
-    free_used   = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE free_used = TRUE')
-    reviews     = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE review_left = TRUE')
-    week_ago    = datetime.now() - timedelta(days=7)
-    # новые за 7 дней — считаем через purchased IS NOT NULL как прокси, но лучше по дате
-    # используем купоны
+    total         = await db_pool.fetchval('SELECT COUNT(*) FROM users')
+    free_used     = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE free_used = TRUE')
+    reviews       = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE review_left = TRUE')
     coupons_total = await db_pool.fetchval('SELECT COUNT(*) FROM coupons')
     coupons_used  = await db_pool.fetchval('SELECT COUNT(*) FROM coupons WHERE used_by IS NOT NULL')
-
-    rows        = await db_pool.fetch('SELECT purchased FROM users')
-    total_purch = 0
-    razbory_cnt = {}
-    bought      = 0
-    discount_cnt = 0
+    rows          = await db_pool.fetch('SELECT purchased FROM users')
+    total_purch   = 0
+    razbory_cnt   = {}
+    bought        = 0
     for row in rows:
         p = json.loads(row['purchased'])
         if p:
             bought      += 1
             total_purch += len(p)
-            if len(p) >= 3:
-                discount_cnt += 1
             for r in p:
                 razbory_cnt[r] = razbory_cnt.get(r, 0) + 1
-
     top      = sorted(razbory_cnt.items(), key=lambda x: x[1], reverse=True)
-    top_text = "\n".join([f"  {TITLES.get(k, k)}: {v}" for k, v in top[:5]]) if top else "  нет покупок"
-    stars_total = total_purch * 49
-
+    top_text = "\n".join([f"  {TITLES.get(k,k)}: {v}" for k, v in top[:5]]) if top else "  нет"
     await message.answer(
         f"📊 Статистика бота Ева\n\n"
         f"👥 Всего пользователей: {total}\n"
         f"💫 Прошли онбординг: {free_used}\n"
         f"💳 Купили хотя бы раз: {bought}\n"
         f"🛒 Всего покупок: {total_purch}\n"
-        f"⭐ Примерная выручка: ~{stars_total} Stars\n"
-        f"🎁 Со скидкой (3+ покупки): {discount_cnt} чел.\n"
-        f"🎟 Купонов создано: {coupons_total} / использовано: {coupons_used}\n"
-        f"📝 Оставили отзыв: {reviews}\n\n"
+        f"⭐ Примерная выручка: ~{total_purch * 49} Stars\n"
+        f"🎟 Купонов: создано {coupons_total} / использовано {coupons_used}\n"
+        f"📝 Отзывов: {reviews}\n\n"
         f"🏆 Топ разборов:\n{top_text}"
     )
 
-# ─── КУПОН — ВЫБОР РАЗБОРА ───────────────────────────────────────────────────────
 @dp.callback_query(F.data.startswith("coupon_"))
 async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("coupon_", "")
@@ -726,7 +695,6 @@ async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(Form.waiting_date)
 
-# ─── ПОКУПКИ ─────────────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "noop")
 async def noop_handler(callback: CallbackQuery):
     await callback.answer()
@@ -738,7 +706,7 @@ async def free_handler(callback: CallbackQuery, state: FSMContext):
         is_sub = await check_subscription(callback.from_user.id)
         if not is_sub:
             await callback.message.answer(
-                f"💫 Чтобы получить бесплатный разбор — подпишись на {CHANNEL} 👇",
+                f"💫 Подпишись на {CHANNEL} чтобы получить бесплатный разбор 👇",
                 reply_markup=check_menu()
             )
             await callback.answer()
@@ -746,10 +714,9 @@ async def free_handler(callback: CallbackQuery, state: FSMContext):
         user["subscribed_channel"] = True
         await save_user(callback.from_user.id, user)
     if user["free_used"]:
-        discount = len(user["purchased"]) >= 3
         await callback.message.answer(
             "💫 Бесплатный разбор ты уже получила.\n\nВыбери платный разбор 🔮",
-            reply_markup=main_menu(user, discount=discount)
+            reply_markup=main_menu(user)
         )
         await callback.answer()
         return
@@ -759,11 +726,8 @@ async def free_handler(callback: CallbackQuery, state: FSMContext):
 
 async def send_invoice(chat_id, title, description, payload, amount):
     await bot.send_invoice(
-        chat_id=chat_id,
-        title=title,
-        description=description,
-        payload=payload,
-        currency="XTR",
+        chat_id=chat_id, title=title, description=description,
+        payload=payload, currency="XTR",
         prices=[LabeledPrice(label=title, amount=amount)],
     )
 
@@ -771,28 +735,24 @@ async def send_invoice(chat_id, title, description, payload, amount):
 async def buy_handler(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("buy_", "")
     user = await get_user(callback.from_user.id)
-
     if key in user["purchased"]:
         user["waiting"] = key
         await save_user(callback.from_user.id, user)
         if key == "compat":
             await callback.message.answer(
-                "💑 Введи две даты рождения через запятую:\nНапример: 15.03.1995, 22.07.1998"
+                "💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
             )
             await state.set_state(Form.waiting_second_date)
         else:
             await callback.message.answer(
-                "📅 Введи свою дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995"
+                "📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995"
             )
             await state.set_state(Form.waiting_date)
         await callback.answer()
         return
-
     if key in PAID_RAZBORY:
-        title    = PAID_RAZBORY[key]
-        discount = len(user["purchased"]) >= 3
-        price    = 29 if discount else 49
-        await send_invoice(callback.message.chat.id, title, TITLES.get(key, title), key, price)
+        title = PAID_RAZBORY[key]
+        await send_invoice(callback.message.chat.id, title, TITLES.get(key, title), key, 49)
     await callback.answer()
 
 @dp.pre_checkout_query()
@@ -807,35 +767,24 @@ async def successful_payment(message: Message, state: FSMContext):
         user["purchased"].append(payload)
     user["waiting"] = payload
     await save_user(message.from_user.id, user)
-
-    # Уведомление о скидке после 3й покупки
-    if len(user["purchased"]) == 3:
-        await message.answer(
-            "🎁 Ты уже сделала 3 разбора — ты наша постоянная клиентка!\n\n"
-            "Теперь все следующие разборы для тебя по 29 ⭐ вместо 49 ⭐ 🌸"
-        )
-
     if payload == "compat":
         await message.answer(
-            "✅ Оплата прошла! Введи две даты рождения через запятую:\n"
-            "Например: 15.03.1995, 22.07.1998"
+            "✅ Оплата прошла! Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
         )
         await state.set_state(Form.waiting_second_date)
     else:
         await message.answer(
-            "✅ Оплата прошла! Введи свою дату рождения в формате ДД.ММ.ГГГГ\n"
-            "Например: 15.03.1995"
+            "✅ Оплата прошла! Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995"
         )
         await state.set_state(Form.waiting_date)
 
-# ─── ОБРАБОТКА ДАТ ───────────────────────────────────────────────────────────────
 @dp.message(StateFilter(Form.waiting_second_date))
 async def handle_two_dates(message: Message, state: FSMContext):
     if is_flood(message.from_user.id):
         await message.answer("⏳ Не так быстро! Подожди пару секунд.")
         return
-    user = await get_user(message.from_user.id)
-    text = message.text.strip()
+    user  = await get_user(message.from_user.id)
+    text  = message.text.strip()
     if "," not in text:
         await message.answer("❌ Введи две даты через запятую.\nНапример: 15.03.1995, 22.07.1998")
         return
@@ -850,7 +799,7 @@ async def handle_two_dates(message: Message, state: FSMContext):
         n2     = calculate_destiny(parts[1])
         prompt = build_prompt("compat", name=name, date1=parts[0], n1=n1, date2=parts[1], n2=n2)
         answer = await ask_ai(prompt)
-        await message.answer(f"💑 Совместимость\n\n{answer}")
+        await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
         await message.answer("✨ Понравился разбор?", reply_markup=review_menu())
     except Exception as e:
         logging.error(f"Compat error: {e}", exc_info=True)
@@ -870,30 +819,26 @@ async def handle_date(message: Message, state: FSMContext):
     number  = calculate_destiny(text)
     waiting = user.get("waiting")
     name    = user.get("first_name") or "дорогая"
-
     if not waiting:
         await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu(user))
         await state.clear()
         return
-
     if not user.get("birth_date"):
         user["birth_date"]     = text
         user["destiny_number"] = number
         await save_user(message.from_user.id, user)
-
     await message.answer(f"⏳ Ева составляет разбор для {name}... Подожди немного ✨")
     try:
         prompt = build_prompt(waiting, name=name, number=number, date=text)
         answer = await ask_ai(prompt)
         title  = TITLES.get(waiting, "🔮 Разбор")
-        await message.answer(f"{title}\n\n{answer}")
+        await send_long(message.chat.id, f"{title}\n\n{answer}")
         await message.answer("✨ Понравился разбор?", reply_markup=review_menu())
     except Exception as e:
         logging.error(f"Date handler error [{waiting}]: {e}", exc_info=True)
         await message.answer("❌ Произошла ошибка, попробуй ещё раз.")
     await state.clear()
 
-# ─── ОТЗЫВЫ ──────────────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "leave_review")
 async def leave_review(callback: CallbackQuery, state: FSMContext):
     user = await get_user(callback.from_user.id)
@@ -901,9 +846,9 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ты уже оставила отзыв, спасибо! 💫", show_alert=True)
         return
     if not user.get("purchased"):
-        await callback.answer("Отзыв можно оставить только после покупки разбора!", show_alert=True)
+        await callback.answer("Отзыв можно оставить только после покупки!", show_alert=True)
         return
-    await callback.message.answer("💬 Напиши свой отзыв — опубликую его в канале отзывов!")
+    await callback.message.answer("💬 Напиши свой отзыв — опубликую его в канале!")
     await state.set_state(Form.waiting_review)
     await callback.answer()
 
@@ -923,14 +868,11 @@ async def handle_review(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "show_menu")
 async def show_menu(callback: CallbackQuery):
-    user     = await get_user(callback.from_user.id)
-    discount = len(user["purchased"]) >= 3
-    await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user, discount=discount))
+    user = await get_user(callback.from_user.id)
+    await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
     await callback.answer()
 
-# ─── РАССЫЛКИ ────────────────────────────────────────────────────────────────────
 async def send_daily_horoscope():
-    """UTC 8:00 = Москва 11:00 — личный прогноз."""
     while True:
         now    = datetime.utcnow()
         target = now.replace(hour=8, minute=0, second=0, microsecond=0)
@@ -951,7 +893,7 @@ async def send_daily_horoscope():
                         f"Составь короткий личный прогноз на сегодня {today} для {name} "
                         f"с числом судьбы {number}. Обращайся к ней по имени {name}. "
                         "Что принесёт этот день в любви, делах и энергии. "
-                        "Пиши тепло, коротко 150-200 слов, с эмодзи. Заканчивай полным предложением."
+                        "Пиши тепло, коротко 150-200 слов, с эмодзи."
                     )
                     horoscope = await ask_ai(prompt)
                     await bot.send_message(
@@ -960,12 +902,11 @@ async def send_daily_horoscope():
                     )
                     await asyncio.sleep(0.05)
                 except Exception as e:
-                    logging.error(f"Horoscope error for {row['user_id']}: {e}")
+                    logging.error(f"Horoscope error {row['user_id']}: {e}")
         except Exception as e:
             logging.error(f"Horoscope batch error: {e}")
 
 async def send_daily_tip():
-    """UTC 11:00 = Москва 14:00 — совет дня."""
     while True:
         now    = datetime.utcnow()
         target = now.replace(hour=11, minute=0, second=0, microsecond=0)
@@ -985,7 +926,7 @@ async def send_daily_tip():
                         f"Числа говорят — сегодня твоя энергия числа {number} особенно сильна 🔮 Используй это, {name}!",
                         f"Маленький секрет числа {number}: ты притягиваешь то о чём думаешь чаще всего 💫 Думай о лучшем, {name}!",
                         f"Число судьбы {number} — это не случайность. Это твой уникальный код вселенной 🌟",
-                        f"Сегодняшний день идеален чтобы прислушаться к своей интуиции — число {number} усиливает её, {name} 🌙",
+                        f"Сегодня идеальный день чтобы прислушаться к своей интуиции — число {number} усиливает её, {name} 🌙",
                     ]
                     await bot.send_message(
                         row['user_id'],
@@ -993,12 +934,11 @@ async def send_daily_tip():
                     )
                     await asyncio.sleep(0.05)
                 except Exception as e:
-                    logging.error(f"Tip error for {row['user_id']}: {e}")
+                    logging.error(f"Tip error {row['user_id']}: {e}")
         except Exception as e:
             logging.error(f"Tip batch error: {e}")
 
 async def send_daily_channel_post():
-    """UTC 7:00 = Москва 10:00 — пост в канал."""
     while True:
         now    = datetime.utcnow()
         target = now.replace(hour=7, minute=0, second=0, microsecond=0)
@@ -1022,7 +962,6 @@ async def send_daily_channel_post():
         except Exception as e:
             logging.error(f"Channel post error: {e}")
 
-# ─── WEB ─────────────────────────────────────────────────────────────────────────
 async def healthcheck(request):
     return web.Response(text="OK")
 
@@ -1034,7 +973,6 @@ async def run_web():
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
 
-# ─── MAIN ────────────────────────────────────────────────────────────────────────
 async def main():
     await init_db()
     asyncio.create_task(run_web())
