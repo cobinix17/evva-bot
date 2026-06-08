@@ -505,7 +505,7 @@ async def start(message: Message, state: FSMContext):
 
     # Уже подписана — проверяем онбординг
     if not user["free_used"]:
-        await _start_onboarding(message, user)
+        await _start_onboarding(message,state,user)
         return
 
     await message.answer("🔮 Выбери свой разбор 👇", reply_markup=main_menu(user))
