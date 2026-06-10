@@ -144,6 +144,8 @@ def build_numerology_context(name: str, date_str: str) -> str:
     karmic_str   = ", ".join(map(str, karmic)) if karmic else "отсутствуют"
 
     return (
+       
+        f"Пол: женский. Всегда обращайся в женском роде.\n"
         f"Имя: {name}\n"
         f"Дата рождения: {date_str}\n"
         f"Число судьбы: {destiny}\n"
