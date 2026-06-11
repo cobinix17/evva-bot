@@ -93,10 +93,9 @@ def calculate_karmic_numbers(date_str: str) -> list:
     return missing
 
 def calculate_matrix(date_str: str) -> dict:
-    parts  = date_str.split(".")
-    day    = int(parts[0])
-    month  = int(parts[1])
-    year   = int(parts[2])
+    parts   = date_str.split(".")
+    day     = int(parts[0])
+    month   = int(parts[1])
     destiny = calculate_destiny(date_str)
 
     def reduce(n):
@@ -106,7 +105,7 @@ def calculate_matrix(date_str: str) -> dict:
 
     a = day
     b = month
-    c = sum(int(d) for d in str(year))
+    c = sum(int(d) for d in str(int(parts[2])))
     while c > 22:
         c = sum(int(d) for d in str(c))
     d = reduce(a + b + c)
@@ -121,11 +120,7 @@ def calculate_matrix(date_str: str) -> dict:
         "число_судьбы": destiny,
     }
 
-GЛАСНЫЕ = set("аеёиоуыэюяАЕЁИОУЫЭЮЯ")
-СОГЛАСНЫЕ = set("бвгджзйклмнпрстфхцчшщБВГДЖЗЙКЛМНПРСТФХЦЧШЩ")
-
 def calculate_name_number(name: str) -> int:
-    # Простое число имени — сумма порядковых номеров букв
     ru_alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
     total = 0
     for ch in name.lower():
@@ -136,15 +131,14 @@ def calculate_name_number(name: str) -> int:
     return total if total > 0 else 0
 
 def build_numerology_context(name: str, date_str: str) -> str:
-    destiny      = calculate_destiny(date_str)
-    personal_yr  = calculate_personal_year(date_str)
-    karmic       = calculate_karmic_numbers(date_str)
-    matrix       = calculate_matrix(date_str)
-    name_number  = calculate_name_number(name)
-    karmic_str   = ", ".join(map(str, karmic)) if karmic else "отсутствуют"
+    destiny     = calculate_destiny(date_str)
+    personal_yr = calculate_personal_year(date_str)
+    karmic      = calculate_karmic_numbers(date_str)
+    matrix      = calculate_matrix(date_str)
+    name_number = calculate_name_number(name)
+    karmic_str  = ", ".join(map(str, karmic)) if karmic else "отсутствуют"
 
     return (
-       
         f"Пол: женский. Всегда обращайся в женском роде.\n"
         f"Имя: {name}\n"
         f"Дата рождения: {date_str}\n"
@@ -157,12 +151,44 @@ def build_numerology_context(name: str, date_str: str) -> str:
         f"второе число: {matrix['второе_число']}\n"
     )
 
+# ─── ЗАЩИТА ОТ ИНОСТРАННЫХ СИМВОЛОВ ─────────────────────────────────────────
+FOREIGN_RE = re.compile(
+    r'[a-zA-ZÀ-ÿ'
+    r'\u0080-\u024F'
+    r'\u1E00-\u1EFF'
+    r'\u3000-\u9FFF'
+    r'\u0250-\u02AF'
+    r'\u0E00-\u0E7F'
+    r'\uAC00-\uD7AF'
+    r'\u4E00-\u9FFF]'
+)
+
+def has_foreign(text: str) -> bool:
+    return bool(FOREIGN_RE.search(text))
+
+def clean_text(text: str) -> str:
+    result = []
+    for char in text:
+        cp = ord(char)
+        if (
+            0x0400 <= cp <= 0x04FF or   # кириллица
+            0x0020 <= cp <= 0x007E or   # базовые знаки, цифры, латиница — нет, только знаки
+            cp in (0x0020, 0x000A, 0x000D, 0x0009) or  # пробел, перенос
+            0x2000 <= cp <= 0x206F or   # знаки препинания
+            0x2600 <= cp <= 0x27FF or   # эмодзи
+            0x1F300 <= cp <= 0x1FFFF or # эмодзи
+            0x2700 <= cp <= 0x27BF or   # эмодзи
+            char in '0123456789.,!?:;-—()«»"\'\n\r\t ✨🔮💫🌟💕💔❤️🌸🌹💜💙💚💛🧡⭐'
+        ):
+            result.append(char)
+    return ''.join(result)
+
 # ─── ПРОМТЫ ──────────────────────────────────────────────────────────────────
 PROMPTS = {
     "matrix_full": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
         "Сделай полный глубокий разбор матрицы судьбы. "
-        "Обращайся к ней по имени {name}. "
+        "Обращайся к ней по имени {name} не чаще 3 раз. "
         "Опиши: характер и личность, таланты и способности, денежный код, "
         "любовь и отношения, кармические задачи, предназначение и миссия, "
         "что означает её личный год сейчас, кармические числа и что они говорят. "
@@ -171,62 +197,62 @@ PROMPTS = {
     "finance": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
         "Составь детальный финансовый прогноз на ближайший год. "
-        "Обращайся к ней по имени {name}. "
+        "Обращайся к ней по имени {name} не чаще 3 раз. "
         "Опиши денежные циклы, когда ожидать подъём доходов, "
         "какие сферы принесут деньги, чего избегать. "
         "Пиши конкретно и вдохновляюще, около 700 слов."
     ),
     "wealth_blocks": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой блоки богатства. Обращайся к ней по имени {name}. "
+        "Раскрой блоки богатства. Обращайся к ней по имени {name} не чаще 3 раз. "
         "Какие убеждения и нумерологические паттерны мешают финансовому росту. "
         "Как убрать каждый блок. Пиши честно и глубоко, около 1000 слов."
     ),
     "freedom_path": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Опиши путь к финансовой свободе. Обращайся к ней по имени {name}. "
+        "Опиши путь к финансовой свободе. Обращайся к ней по имени {name} не чаще 3 раз. "
         "Какой путь начертан в её числах. Какие шаги сделать уже сейчас. "
         "Пиши вдохновляюще и практично, около 1000 слов."
     ),
     "calling": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой истинное призвание. Обращайся к ней по имени {name}. "
+        "Раскрой истинное призвание. Обращайся к ней по имени {name} не чаще 3 раз. "
         "Какой вид деятельности приносит ей и радость, и деньги. "
         "Пиши глубоко и с теплом, около 700 слов."
     ),
     "promotion": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Дай нумерологический разбор карьерного роста. Обращайся к ней по имени {name}. "
+        "Дай нумерологический разбор карьерного роста. Обращайся по имени {name} не чаще 3 раз. "
         "Когда лучший период для повышения, как представить себя руководству. "
         "Пиши конкретно, около 700 слов."
     ),
     "own_business": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь разбор по открытию своего дела. Обращайся к ней по имени {name}. "
+        "Составь разбор по открытию своего дела. Обращайся по имени {name} не чаще 3 раз. "
         "Подходит ли ей предпринимательство, в каких нишах успех, когда стартовать. "
         "Пиши вдохновляюще, около 1000 слов."
     ),
     "hidden_talents": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой скрытые таланты. Обращайся к ней по имени {name}. "
+        "Раскрой скрытые таланты. Обращайся по имени {name} не чаще 3 раз. "
         "Что она умеет но недооценивает, какие способности приносят успех. "
         "Пиши восхищённо и тепло, около 700 слов."
     ),
     "main_fear": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой главный страх с точки зрения нумерологии. Обращайся к ней по имени {name}. "
+        "Раскрой главный страх с точки зрения нумерологии. Обращайся по имени {name} не чаще 3 раз. "
         "Откуда он берётся, как мешает жизни и как преодолеть. "
         "Пиши бережно и глубоко, около 400 слов."
     ),
     "forecast_2026": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь подробный нумерологический прогноз на 2026 год. Обращайся к ней по имени {name}. "
+        "Составь подробный нумерологический прогноз на 2026 год. Обращайся по имени {name} не чаще 3 раз. "
         "Опиши ключевые темы года, лучшие месяцы, любовь, финансы, карьеру, здоровье. "
         "Пиши структурированно и вдохновляюще, около 1200 слов."
     ),
     "strong_weak": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Опиши сильные и слабые стороны личности. Обращайся к ней по имени {name}. "
+        "Опиши сильные и слабые стороны личности. Обращайся по имени {name} не чаще 3 раз. "
         "Что помогает достигать целей, что тянет назад и как с этим работать. "
         "Пиши честно и с поддержкой, около 400 слов."
     ),
@@ -234,85 +260,85 @@ PROMPTS = {
         "Первый человек — имя {name}, дата рождения {date1}.\n"
         "Нумерологические данные первой:\n{context}\n\n"
         "Второй человек — дата рождения {date2}, число судьбы {n2}.\n\n"
-        "Сделай максимально подробный разбор совместимости. Обращайся к первой по имени {name}. "
+        "Сделай максимально подробный разбор совместимости. Обращайся по имени {name} не чаще 3 раз. "
         "Опиши характер каждого, совместимость в любви, конфликты, прогноз отношений. "
         "Пиши тепло и атмосферно, около 1000 слов."
     ),
     "when": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Сделай прогноз когда она встретит своего партнёра. Обращайся к ней по имени {name}. "
+        "Сделай прогноз когда она встретит своего партнёра. Обращайся по имени {name} не чаще 3 раз. "
         "Опиши в каком периоде жизни, при каких обстоятельствах, какие знаки укажут. "
         "Пиши романтично и атмосферно, около 700 слов."
     ),
     "portrait": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь портрет идеального партнёра. Обращайся к ней по имени {name}. "
+        "Составь портрет идеального партнёра. Обращайся по имени {name} не чаще 3 раз. "
         "Опиши его характер, внешность, профессию. "
         "Пиши романтично, около 700 слов."
     ),
     "unlucky": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Объясни почему ей не везёт в любви. Обращайся к ней по имени {name}. "
+        "Объясни почему ей не везёт в любви. Обращайся по имени {name} не чаще 3 раз. "
         "Какие кармические причины, какие паттерны мешают, как исправить. "
         "Пиши тепло и с поддержкой, около 400 слов."
     ),
     "mission": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой предназначение и жизненную миссию. Обращайся к ней по имени {name}. "
+        "Раскрой предназначение и жизненную миссию. Обращайся по имени {name} не чаще 3 раз. "
         "Что она пришла сделать в этот мир, какие таланты раскрыть. "
         "Пиши вдохновляюще и глубоко, около 1000 слов."
     ),
     "karma": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Опиши кармический долг. Обращайся к ней по имени {name}. "
+        "Опиши кармический долг. Обращайся по имени {name} не чаще 3 раз. "
         "Что мешает в жизни, какие уроки пройти, как освободиться от кармических блоков. "
         "Пиши глубоко, около 1000 слов."
     ),
     "career": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Опиши идеальный карьерный путь. Обращайся к ней по имени {name}. "
+        "Опиши идеальный карьерный путь. Обращайся по имени {name} не чаще 3 раз. "
         "Какие профессии подходят, сильные стороны на работе, как достичь успеха. "
         "Пиши конкретно, около 700 слов."
     ),
     "money": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой денежный код. Обращайся к ней по имени {name}. "
+        "Раскрой денежный код. Обращайся по имени {name} не чаще 3 раз. "
         "Какие отношения с деньгами заложены в числах, как активировать поток. "
         "Пиши практично, около 700 слов."
     ),
     "days": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь разбор сильных и слабых дней месяца. Обращайся к ней по имени {name}. "
+        "Составь разбор сильных и слабых дней месяца. Обращайся по имени {name} не чаще 3 раз. "
         "Какие числа месяца благоприятны для дел, любви, финансов. "
         "Пиши структурированно, около 700 слов."
     ),
     "ex": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Проанализируй — вернётся ли бывший. Обращайся к ней по имени {name}. "
+        "Проанализируй — вернётся ли бывший. Обращайся по имени {name} не чаще 3 раз. "
         "Энергетика их связи, шанс на воссоединение, что нужно сделать или отпустить. "
         "Пиши тепло, около 400 слов."
     ),
     "cold": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Объясни почему партнёр охладел. Обращайся к ней по имени {name}. "
+        "Объясни почему партнёр охладел. Обращайся по имени {name} не чаще 3 раз. "
         "Числовые несовместимости, что происходит на энергетическом уровне, как изменить. "
         "Пиши тепло и честно, около 400 слов."
     ),
     "toxic": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Проанализируй является ли связь токсичной или кармической. Обращайся по имени {name}. "
+        "Проанализируй является ли связь токсичной или кармической. Обращайся по имени {name} не чаще 3 раз. "
         "Признаки токсичности в числах, кармические уроки, как освободиться. "
         "Пиши глубоко, около 700 слов."
     ),
     "lonely": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Объясни почему она чувствует себя одинокой. Обращайся по имени {name}. "
+        "Объясни почему она чувствует себя одинокой. Обращайся по имени {name} не чаще 3 раз. "
         "Какие числовые паттерны создают одиночество, как изменить энергетику. "
         "Пиши тепло, около 400 слов."
     ),
     "breakup": (
         "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Сделай разбор после расставания. Обращайся к ней по имени {name}. "
+        "Сделай разбор после расставания. Обращайся по имени {name} не чаще 3 раз. "
         "Почему это произошло по числам, уроки расставания, что ждёт впереди. "
         "Пиши с теплом и надеждой, около 700 слов."
     ),
@@ -347,7 +373,6 @@ TITLES = {
     "breakup":       "💔 Разбор после расставания",
 }
 
-# цена каждого разбора
 PRICES = {
     "matrix_full":   149,
     "forecast_2026": 149,
@@ -374,6 +399,34 @@ PRICES = {
     "lonely":        49,
     "main_fear":     49,
     "strong_weak":   49,
+}
+
+UPSELLS = {
+    "matrix_full":   ("forecast_2026", "mission"),
+    "forecast_2026": ("matrix_full",   "karma"),
+    "finance":       ("wealth_blocks", "freedom_path"),
+    "wealth_blocks": ("finance",       "own_business"),
+    "freedom_path":  ("calling",       "own_business"),
+    "calling":       ("career",        "own_business"),
+    "career":        ("promotion",     "money"),
+    "money":         ("finance",       "wealth_blocks"),
+    "karma":         ("mission",       "matrix_full"),
+    "mission":       ("karma",         "hidden_talents"),
+    "hidden_talents":("calling",       "strong_weak"),
+    "promotion":     ("career",        "own_business"),
+    "own_business":  ("freedom_path",  "finance"),
+    "compat":        ("when",          "portrait"),
+    "when":          ("portrait",      "compat"),
+    "portrait":      ("when",          "unlucky"),
+    "unlucky":       ("ex",            "lonely"),
+    "ex":            ("toxic",         "compat"),
+    "cold":          ("toxic",         "ex"),
+    "toxic":         ("cold",          "breakup"),
+    "lonely":        ("unlucky",       "portrait"),
+    "breakup":       ("ex",            "toxic"),
+    "days":          ("finance",       "forecast_2026"),
+    "strong_weak":   ("hidden_talents","main_fear"),
+    "main_fear":     ("strong_weak",   "karma"),
 }
 
 PAID_RAZBORY = {k: v for k, v in TITLES.items() if k != "free"}
@@ -472,12 +525,7 @@ async def check_subscription(user_id: int) -> bool:
     except Exception:
         return False
 
-# ─── GROQ + RETRY ────────────────────────────────────────────────────────────
-FOREIGN_RE = re.compile(r'[a-zA-ZÀ-ÿ\u0080-\u024F\u1E00-\u1EFF\u3000-\u9FFF\u0250-\u02AF]')
-
-def has_foreign(text: str) -> bool:
-    return bool(FOREIGN_RE.search(text))
-
+# ─── GROQ + RETRY + ОЧИСТКА ──────────────────────────────────────────────────
 async def ask_ai(prompt: str) -> str:
     models = [
         "llama-3.3-70b-versatile",
@@ -488,17 +536,20 @@ async def ask_ai(prompt: str) -> str:
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     system_prompt = (
         "Ты — Ева, тёплый и мудрый нумеролог. Общаешься как близкая подруга. "
+        "Твоя аудитория — ТОЛЬКО женщины. "
+        "Всегда обращайся к пользователю в женском роде — она, её, ты красивая, ты умная. "
         "Обращайся только на ТЫ — никогда не пиши давайте, вы, ваш. "
-"Имя пользователя упоминай не чаще 2-3 раз за весь текст. "
+        "Имя пользователя упоминай не чаще 2-3 раз за весь текст. "
         "КРИТИЧЕСКИ ВАЖНО: пишешь ТОЛЬКО на русском языке. "
-        "Никаких иероглифов, никакого английского и других зарубежных языков, никакого другого алфавита — вообще. "
+        "Никаких иероглифов, никакого английского, никакого другого алфавита — вообще. "
         "Весь ответ от первого до последнего символа — только кириллица. "
-        "Пишешь красиво, с эмодзи, атмосферно. Обращаешься на ты. "
+        "Никогда не используй markdown — никаких звёздочек, решёток, подчёркиваний. "
+        "Пиши простым текстом с эмодзи. "
         "Используй абзацы. Заканчивай полным предложением."
     )
     last_error = None
     for model in models:
-        for attempt in range(2):  # 2 попытки на каждую модель
+        for attempt in range(2):
             try:
                 data = {
                     "model": model,
@@ -515,7 +566,7 @@ async def ask_ai(prompt: str) -> str:
                     if has_foreign(raw):
                         logging.warning(f"Model {model} attempt {attempt+1} returned foreign chars, retrying...")
                         continue
-                    return raw
+                    return clean_text(raw)
             except Exception as e:
                 last_error = e
                 logging.warning(f"Model {model} attempt {attempt+1} failed: {e}")
@@ -533,8 +584,8 @@ def check_menu() -> InlineKeyboardMarkup:
 
 def date_choice_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Для себя",      callback_data="use_my_date")],
-        [InlineKeyboardButton(text="📅 Другая дата",   callback_data="use_new_date")],
+        [InlineKeyboardButton(text="👤 Для себя",    callback_data="use_my_date")],
+        [InlineKeyboardButton(text="📅 Другая дата", callback_data="use_new_date")],
     ])
 
 def main_menu(user=None) -> InlineKeyboardMarkup:
@@ -555,7 +606,6 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔴 Кармический долг — 99 ⭐",          callback_data="buy_karma")],
         [InlineKeyboardButton(text="🗓 Прогноз на 2026 год — 149 ⭐",      callback_data="buy_forecast_2026")],
     ]
-
     buttons.append([InlineKeyboardButton(text="── Деньги и карьера ──", callback_data="noop")])
     buttons += [
         [InlineKeyboardButton(text="💹 Финансовый прогноз — 99 ⭐",        callback_data="buy_finance")],
@@ -568,7 +618,6 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💰 Денежный код — 79 ⭐",              callback_data="buy_money")],
         [InlineKeyboardButton(text="🌙 Сильные и слабые дни — 79 ⭐",     callback_data="buy_days")],
     ]
-
     buttons.append([InlineKeyboardButton(text="── Любовь и отношения ──", callback_data="noop")])
     buttons += [
         [InlineKeyboardButton(text="💑 Совместимость двух людей — 99 ⭐",  callback_data="buy_compat")],
@@ -581,18 +630,26 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="😔 Почему ты одинока — 49 ⭐",         callback_data="buy_lonely")],
         [InlineKeyboardButton(text="💔 Разбор после расставания — 79 ⭐",  callback_data="buy_breakup")],
     ]
-
     buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы (за рубли)",
         url=CONTACT_URL
     )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def review_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="😍 Оставить отзыв", callback_data="leave_review")],
-        [InlineKeyboardButton(text="🔮 Другие разборы",  callback_data="show_menu")],
-    ])
+def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
+    buttons = []
+    suggestions = UPSELLS.get(key, ())
+    for s in suggestions:
+        if s not in user.get("purchased", []):
+            title = TITLES.get(s, s)
+            price = PRICES.get(s, 49)
+            buttons.append([InlineKeyboardButton(
+                text=f"{title} — {price} ⭐",
+                callback_data=f"buy_{s}"
+            )])
+    buttons.append([InlineKeyboardButton(text="😍 Оставить отзыв", callback_data="leave_review")])
+    buttons.append([InlineKeyboardButton(text="🔮 Все разборы",    callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def coupon_razboy_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -789,10 +846,7 @@ async def admin_panel(message: Message, state: FSMContext):
     reviews       = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE review_left = TRUE')
     coupons_total = await db_pool.fetchval('SELECT COUNT(*) FROM coupons')
     coupons_used  = await db_pool.fetchval('SELECT COUNT(*) FROM coupons WHERE used_by IS NOT NULL')
-    # Исключаем админа из подсчёта
-    rows = await db_pool.fetch(
-        'SELECT purchased FROM users WHERE user_id != $1', ADMIN_ID
-    )
+    rows = await db_pool.fetch('SELECT purchased FROM users WHERE user_id != $1', ADMIN_ID)
     total_purch = 0
     razbory_cnt = {}
     bought      = 0
@@ -957,7 +1011,7 @@ async def _process_date(message: Message, user: dict, date_str: str, state: FSMC
     if not user.get("birth_date"):
         user["birth_date"]     = date_str
         user["destiny_number"] = number
-        await save_user(message.from_user.id if hasattr(message, 'from_user') else user.get('user_id'), user)
+        await save_user(message.chat.id, user)
     await message.answer(f"⏳ Ева составляет разбор для {name}... Подожди немного ✨")
     try:
         context = build_numerology_context(name, date_str)
@@ -965,7 +1019,10 @@ async def _process_date(message: Message, user: dict, date_str: str, state: FSMC
         answer  = await ask_ai(prompt)
         title   = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
-        await message.answer("✨ Понравился разбор?", reply_markup=review_menu())
+        await message.answer(
+            "✨ Тебе также может подойти 👇",
+            reply_markup=upsell_menu(waiting, user)
+        )
     except Exception as e:
         logging.error(f"Date handler error [{waiting}]: {e}", exc_info=True)
         await message.answer("❌ Произошла ошибка, попробуй ещё раз.")
@@ -994,7 +1051,10 @@ async def handle_two_dates(message: Message, state: FSMContext):
                                date1=parts[0], date2=parts[1], n2=n2)
         answer  = await ask_ai(prompt)
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
-        await message.answer("✨ Понравился разбор?", reply_markup=review_menu())
+        await message.answer(
+            "✨ Тебе также может подойти 👇",
+            reply_markup=upsell_menu("compat", user)
+        )
     except Exception as e:
         logging.error(f"Compat error: {e}", exc_info=True)
         await message.answer("❌ Произошла ошибка, попробуй ещё раз.")
@@ -1066,7 +1126,8 @@ async def send_daily_horoscope():
                     name   = row['first_name'] or "дорогая"
                     prompt = (
                         f"Составь короткий личный прогноз на сегодня {today} для {name} "
-                        f"с числом судьбы {number}. Обращайся к ней по имени {name}. "
+                        f"с числом судьбы {number}. Пол: женский. "
+                        f"Обращайся к ней по имени {name} на ТЫ в женском роде. "
                         "Что принесёт этот день в любви, делах и энергии. "
                         "Пиши тепло, 150-200 слов, с эмодзи. Только кириллица."
                     )
@@ -1160,4 +1221,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
- 
