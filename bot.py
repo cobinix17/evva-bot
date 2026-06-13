@@ -20,6 +20,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 from readings import MATRIX_LITE
+from broadcasts import MORNING
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -89,8 +90,7 @@ def calculate_personal_year(date_str: str) -> int:
 def calculate_karmic_numbers(date_str: str) -> list:
     digits_present = set(int(d) for d in date_str if d.isdigit() and d != '0')
     all_digits = set(range(1, 10))
-    missing = sorted(all_digits - digits_present)
-    return missing
+    return sorted(all_digits - digits_present)
 
 def calculate_matrix(date_str: str) -> dict:
     parts   = date_str.split(".")
@@ -110,15 +110,7 @@ def calculate_matrix(date_str: str) -> dict:
         c = sum(int(d) for d in str(c))
     d = reduce(a + b + c)
     e = reduce(a + b + c + d)
-
-    return {
-        "день": a,
-        "месяц": b,
-        "год": c,
-        "первое_число": d,
-        "второе_число": e,
-        "число_судьбы": destiny,
-    }
+    return {"день": a, "месяц": b, "год": c, "первое_число": d, "второе_число": e, "число_судьбы": destiny}
 
 def calculate_name_number(name: str) -> int:
     ru_alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
@@ -137,7 +129,6 @@ def build_numerology_context(name: str, date_str: str) -> str:
     matrix      = calculate_matrix(date_str)
     name_number = calculate_name_number(name)
     karmic_str  = ", ".join(map(str, karmic)) if karmic else "отсутствуют"
-
     return (
         f"Пол: женский. Всегда обращайся в женском роде.\n"
         f"Имя: {name}\n"
@@ -153,14 +144,8 @@ def build_numerology_context(name: str, date_str: str) -> str:
 
 # ─── ЗАЩИТА ОТ ИНОСТРАННЫХ СИМВОЛОВ ─────────────────────────────────────────
 FOREIGN_RE = re.compile(
-    r'[a-zA-ZÀ-ÿ'
-    r'\u0080-\u024F'
-    r'\u1E00-\u1EFF'
-    r'\u3000-\u9FFF'
-    r'\u0250-\u02AF'
-    r'\u0E00-\u0E7F'
-    r'\uAC00-\uD7AF'
-    r'\u4E00-\u9FFF]'
+    r'[a-zA-ZÀ-ÿ\u0080-\u024F\u1E00-\u1EFF\u3000-\u9FFF'
+    r'\u0250-\u02AF\u0E00-\u0E7F\uAC00-\uD7AF\u4E00-\u9FFF]'
 )
 
 def has_foreign(text: str) -> bool:
@@ -171,14 +156,12 @@ def clean_text(text: str) -> str:
     for char in text:
         cp = ord(char)
         if (
-            0x0400 <= cp <= 0x04FF or   # кириллица
-            0x0020 <= cp <= 0x007E or   # базовые знаки, цифры, латиница — нет, только знаки
-            cp in (0x0020, 0x000A, 0x000D, 0x0009) or  # пробел, перенос
-            0x2000 <= cp <= 0x206F or   # знаки препинания
-            0x2600 <= cp <= 0x27FF or   # эмодзи
-            0x1F300 <= cp <= 0x1FFFF or # эмодзи
-            0x2700 <= cp <= 0x27BF or   # эмодзи
-            char in '0123456789.,!?:;-—()«»"\'\n\r\t ✨🔮💫🌟💕💔❤️🌸🌹💜💙💚💛🧡⭐'
+            0x0400 <= cp <= 0x04FF or
+            0x2000 <= cp <= 0x206F or
+            0x2600 <= cp <= 0x27FF or
+            0x1F300 <= cp <= 0x1FFFF or
+            0x2700 <= cp <= 0x27BF or
+            char in '0123456789.,!?:;-—()«»"\'\n\r\t ⭐'
         ):
             result.append(char)
     return ''.join(result)
@@ -445,7 +428,8 @@ async def init_db():
             destiny_number     INTEGER,
             purchased          TEXT DEFAULT '[]',
             waiting            TEXT,
-            review_left        BOOLEAN DEFAULT FALSE
+            review_left        BOOLEAN DEFAULT FALSE,
+            notifications      BOOLEAN DEFAULT TRUE
         )
     ''')
     await db_pool.execute('''
@@ -458,6 +442,7 @@ async def init_db():
     ''')
     try:
         await db_pool.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
+        await db_pool.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications BOOLEAN DEFAULT TRUE")
     except Exception:
         pass
 
@@ -468,6 +453,8 @@ async def get_user(user_id: int) -> dict:
         row = await db_pool.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
     user = dict(row)
     user['purchased'] = json.loads(user['purchased'])
+    if user.get('notifications') is None:
+        user['notifications'] = True
     if user_id == ADMIN_ID:
         user['free_used'] = True
         user['subscribed_channel'] = True
@@ -486,8 +473,9 @@ async def save_user(user_id: int, user: dict):
             destiny_number     = $5,
             purchased          = $6,
             waiting            = $7,
-            review_left        = $8
-        WHERE user_id = $9
+            review_left        = $8,
+            notifications      = $9
+        WHERE user_id = $10
     ''',
         user.get('first_name'),
         user['free_used'],
@@ -497,6 +485,7 @@ async def save_user(user_id: int, user: dict):
         json.dumps(user['purchased']),
         user.get('waiting'),
         user['review_left'],
+        user.get('notifications', True),
         user_id
     )
 
@@ -588,6 +577,18 @@ def date_choice_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📅 Другая дата", callback_data="use_new_date")],
     ])
 
+def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
+    if notifications_on:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")],
+            [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
+        ])
+    else:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔔 Включить уведомления", callback_data="notif_on")],
+            [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
+        ])
+
 def main_menu(user=None) -> InlineKeyboardMarkup:
     buttons = []
     if user and not user.get("free_used"):
@@ -595,6 +596,13 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
             text="💫 Матрица судьбы (Лайт) — бесплатно",
             callback_data="free"
         )])
+
+    # Кнопка уведомлений
+    notif_on = user.get("notifications", True) if user else True
+    if notif_on:
+        buttons.append([InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")])
+    else:
+        buttons.append([InlineKeyboardButton(text="🔔 Включить уведомления", callback_data="notif_on")])
 
     buttons.append([InlineKeyboardButton(text="── Судьба и личность ──", callback_data="noop")])
     buttons += [
@@ -688,6 +696,29 @@ async def use_coupon(code: str, user_id: int) -> str:
     )
     return 'ok'
 
+# ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
+@dp.callback_query(F.data == "notif_off")
+async def notif_off(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    user["notifications"] = False
+    await save_user(callback.from_user.id, user)
+    await callback.answer("🔕 Уведомления отключены", show_alert=True)
+    await callback.message.answer(
+        "🔕 Утренние уведомления отключены.\n\nТы можешь включить их обратно в любое время 👇",
+        reply_markup=notifications_menu(False)
+    )
+
+@dp.callback_query(F.data == "notif_on")
+async def notif_on(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    user["notifications"] = True
+    await save_user(callback.from_user.id, user)
+    await callback.answer("🔔 Уведомления включены!", show_alert=True)
+    await callback.message.answer(
+        "🔔 Утренние уведомления включены!\n\nКаждое утро буду присылать тебе нумерологический прогноз 🌅",
+        reply_markup=notifications_menu(True)
+    )
+
 # ─── ОНБОРДИНГ ───────────────────────────────────────────────────────────────
 @dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
@@ -778,8 +809,7 @@ async def handle_birth_date(message: Message, state: FSMContext):
         answer   = template.format(name=name)
         await send_long(message.chat.id, f"💫 Матрица судьбы (Лайт)\nЧисло судьбы {name}: {number}\n\n{answer}")
         await message.answer(
-            "✨ Это была Лайт версия!\n\n"
-            "Выбери полный разбор и узнай всё о своей судьбе 🔮",
+            "✨ Это была Лайт версия!\n\nВыбери полный разбор и узнай всё о своей судьбе 🔮",
             reply_markup=main_menu(user)
         )
     except Exception as e:
@@ -844,6 +874,7 @@ async def admin_panel(message: Message, state: FSMContext):
     total         = await db_pool.fetchval('SELECT COUNT(*) FROM users')
     free_used     = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE free_used = TRUE')
     reviews       = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE review_left = TRUE')
+    notif_on      = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE notifications = TRUE')
     coupons_total = await db_pool.fetchval('SELECT COUNT(*) FROM coupons')
     coupons_used  = await db_pool.fetchval('SELECT COUNT(*) FROM coupons WHERE used_by IS NOT NULL')
     rows = await db_pool.fetch('SELECT purchased FROM users WHERE user_id != $1', ADMIN_ID)
@@ -868,6 +899,7 @@ async def admin_panel(message: Message, state: FSMContext):
         f"💳 Купили хотя бы раз: {bought}\n"
         f"🛒 Всего покупок: {total_purch}\n"
         f"⭐ Примерная выручка: ~{stars_total} Stars\n"
+        f"🔔 Уведомления включены: {notif_on}\n"
         f"🎟 Купонов: создано {coupons_total} / использовано {coupons_used}\n"
         f"📝 Отзывов: {reviews}\n\n"
         f"🏆 Топ разборов:\n{top_text}"
@@ -900,9 +932,7 @@ async def _ask_date(message: Message, user: dict):
             reply_markup=date_choice_menu()
         )
     else:
-        await message.answer(
-            "📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995"
-        )
+        await message.answer("📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
 
 @dp.callback_query(F.data == "use_my_date")
 async def use_my_date(callback: CallbackQuery, state: FSMContext):
@@ -913,9 +943,7 @@ async def use_my_date(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "use_new_date")
 async def use_new_date(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    await callback.message.answer(
-        "📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995"
-    )
+    await callback.message.answer("📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
     await state.set_state(Form.waiting_date)
 
 # ─── ПОКУПКИ ─────────────────────────────────────────────────────────────────
@@ -964,9 +992,7 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
         await save_user(callback.from_user.id, user)
         await callback.answer()
         if key == "compat":
-            await callback.message.answer(
-                "💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
-            )
+            await callback.message.answer("💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
             await state.set_state(Form.waiting_second_date)
         else:
             await _ask_date(callback.message, user)
@@ -991,9 +1017,7 @@ async def successful_payment(message: Message, state: FSMContext):
     user["waiting"] = payload
     await save_user(message.from_user.id, user)
     if payload == "compat":
-        await message.answer(
-            "✅ Оплата прошла! Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
-        )
+        await message.answer("✅ Оплата прошла! Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
         await state.set_state(Form.waiting_second_date)
     else:
         await _ask_date(message, user)
@@ -1019,10 +1043,7 @@ async def _process_date(message: Message, user: dict, date_str: str, state: FSMC
         answer  = await ask_ai(prompt)
         title   = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
-        await message.answer(
-            "✨ Тебе также может подойти 👇",
-            reply_markup=upsell_menu(waiting, user)
-        )
+        await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu(waiting, user))
     except Exception as e:
         logging.error(f"Date handler error [{waiting}]: {e}", exc_info=True)
         await message.answer("❌ Произошла ошибка, попробуй ещё раз.")
@@ -1047,14 +1068,10 @@ async def handle_two_dates(message: Message, state: FSMContext):
     try:
         n2      = calculate_destiny(parts[1])
         context = build_numerology_context(name, parts[0])
-        prompt  = build_prompt("compat", name=name, context=context,
-                               date1=parts[0], date2=parts[1], n2=n2)
+        prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
         answer  = await ask_ai(prompt)
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
-        await message.answer(
-            "✨ Тебе также может подойти 👇",
-            reply_markup=upsell_menu("compat", user)
-        )
+        await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("compat", user))
     except Exception as e:
         logging.error(f"Compat error: {e}", exc_info=True)
         await message.answer("❌ Произошла ошибка, попробуй ещё раз.")
@@ -1107,7 +1124,14 @@ async def show_menu(callback: CallbackQuery):
     await callback.answer()
 
 # ─── РАССЫЛКИ ────────────────────────────────────────────────────────────────
+def notif_off_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")],
+        [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
+    ])
+
 async def send_daily_horoscope():
+    """UTC 8:00 = Москва 11:00 — утренняя рассылка из статичных шаблонов."""
     while True:
         now    = datetime.utcnow()
         target = now.replace(hour=8, minute=0, second=0, microsecond=0)
@@ -1115,26 +1139,21 @@ async def send_daily_horoscope():
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
         try:
-            rows  = await db_pool.fetch(
+            rows = await db_pool.fetch(
                 'SELECT user_id, first_name, destiny_number FROM users '
-                'WHERE birth_date IS NOT NULL AND destiny_number IS NOT NULL'
+                'WHERE birth_date IS NOT NULL AND destiny_number IS NOT NULL '
+                'AND notifications = TRUE'
             )
-            today = date.today().strftime("%d.%m.%Y")
             for row in rows:
                 try:
-                    number = row['destiny_number']
-                    name   = row['first_name'] or "дорогая"
-                    prompt = (
-                        f"Составь короткий личный прогноз на сегодня {today} для {name} "
-                        f"с числом судьбы {number}. Пол: женский. "
-                        f"Обращайся к ней по имени {name} на ТЫ в женском роде. "
-                        "Что принесёт этот день в любви, делах и энергии. "
-                        "Пиши тепло, 150-200 слов, с эмодзи. Только кириллица."
-                    )
-                    horoscope = await ask_ai(prompt)
+                    number   = row['destiny_number']
+                    name     = row['first_name'] or "дорогая"
+                    variants = MORNING.get(number, MORNING.get(9, []))
+                    text     = random.choice(variants).format(name=name)
                     await bot.send_message(
                         row['user_id'],
-                        f"🌅 Доброе утро, {name}! Твой прогноз на сегодня:\n\n{horoscope}\n\n🔮 /menu"
+                        text,
+                        reply_markup=notif_off_menu()
                     )
                     await asyncio.sleep(0.05)
                 except Exception as e:
@@ -1143,6 +1162,7 @@ async def send_daily_horoscope():
             logging.error(f"Horoscope batch error: {e}")
 
 async def send_daily_tip():
+    """UTC 11:00 = Москва 14:00 — вечерний совет (статичный)."""
     while True:
         now    = datetime.utcnow()
         target = now.replace(hour=11, minute=0, second=0, microsecond=0)
@@ -1151,7 +1171,8 @@ async def send_daily_tip():
         await asyncio.sleep((target - now).total_seconds())
         try:
             rows = await db_pool.fetch(
-                'SELECT user_id, first_name, destiny_number FROM users WHERE destiny_number IS NOT NULL'
+                'SELECT user_id, first_name, destiny_number FROM users '
+                'WHERE destiny_number IS NOT NULL AND notifications = TRUE'
             )
             for row in rows:
                 try:
@@ -1166,7 +1187,8 @@ async def send_daily_tip():
                     ]
                     await bot.send_message(
                         row['user_id'],
-                        f"💜 Ева напоминает:\n\n{random.choice(tips)}\n\n🔮 /menu"
+                        f"💜 Ева напоминает:\n\n{random.choice(tips)}\n\n🔮 /menu",
+                        reply_markup=notif_off_menu()
                     )
                     await asyncio.sleep(0.05)
                 except Exception as e:
@@ -1175,6 +1197,7 @@ async def send_daily_tip():
             logging.error(f"Tip batch error: {e}")
 
 async def send_daily_channel_post():
+    """UTC 7:00 = Москва 10:00 — пост в канал через Groq."""
     while True:
         now    = datetime.utcnow()
         target = now.replace(hour=7, minute=0, second=0, microsecond=0)
