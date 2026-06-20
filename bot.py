@@ -8,13 +8,14 @@ import httpx
 import asyncpg
 import random
 from collections import defaultdict
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     Message, CallbackQuery, LabeledPrice, PreCheckoutQuery,
     InlineKeyboardMarkup, InlineKeyboardButton, TelegramObject
 )
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -43,20 +44,30 @@ db_pool = None
 # ─── АНТИФЛУД MIDDLEWARE ─────────────────────────────────────────────────────
 class AntiFloodMiddleware(BaseMiddleware):
     def __init__(self, timeout: float = 3.0):
-        self.timeout = timeout
-        self.last_request = defaultdict(float)
+        self.timeout      = timeout
+        self.last_request = {}
+        self._call_count  = 0
 
     async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
         if user:
-            now = time.time()
-            if now - self.last_request[user.id] < self.timeout:
+            now  = time.time()
+            last = self.last_request.get(user.id, 0)
+            if now - last < self.timeout:
                 if isinstance(event, Message):
                     await event.answer("⏳ Не так быстро! Подожди пару секунд.")
                 elif isinstance(event, CallbackQuery):
                     await event.answer("⏳ Подожди немного!", show_alert=False)
                 return
             self.last_request[user.id] = now
+            # Чистим записи старше 60 секунд раз в 500 вызовов
+            self._call_count += 1
+            if self._call_count >= 500:
+                self._call_count = 0
+                cutoff = now - 60
+                old    = [uid for uid, t in self.last_request.items() if t < cutoff]
+                for uid in old:
+                    del self.last_request[uid]
         return await handler(event, data)
 
 dp.message.middleware(AntiFloodMiddleware(3.0))
@@ -93,15 +104,16 @@ def calculate_personal_year(date_str: str) -> int:
     parts = date_str.split(".")
     day, month = int(parts[0]), int(parts[1])
     current_year = datetime.now().year
-    total = sum(int(d) for d in str(day)) + sum(int(d) for d in str(month)) + sum(int(d) for d in str(current_year))
+    total = (sum(int(d) for d in str(day)) +
+             sum(int(d) for d in str(month)) +
+             sum(int(d) for d in str(current_year)))
     while total > 9 and total not in (11, 22, 33):
         total = sum(int(d) for d in str(total))
     return total
 
 def calculate_karmic_numbers(date_str: str) -> list:
     digits_present = set(int(d) for d in date_str if d.isdigit() and d != '0')
-    all_digits = set(range(1, 10))
-    return sorted(all_digits - digits_present)
+    return sorted(set(range(1, 10)) - digits_present)
 
 def calculate_matrix(date_str: str) -> dict:
     parts   = date_str.split(".")
@@ -121,7 +133,8 @@ def calculate_matrix(date_str: str) -> dict:
         c = sum(int(d) for d in str(c))
     d = reduce(a + b + c)
     e = reduce(a + b + c + d)
-    return {"день": a, "месяц": b, "год": c, "первое_число": d, "второе_число": e, "число_судьбы": destiny}
+    return {"день": a, "месяц": b, "год": c,
+            "первое_число": d, "второе_число": e, "число_судьбы": destiny}
 
 def calculate_name_number(name: str) -> int:
     ru_alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
@@ -134,7 +147,6 @@ def calculate_name_number(name: str) -> int:
     return total if total > 0 else 0
 
 def calculate_day_number(today: date) -> int:
-    """Правильный расчёт числа дня: день + месяц + год сводим к однозначному."""
     total = sum(int(d) for d in str(today.day) + str(today.month) + str(today.year))
     while total > 9 and total not in (11, 22, 33):
         total = sum(int(d) for d in str(total))
@@ -430,6 +442,11 @@ UPSELLS = {
     "main_fear":     ("strong_weak",   "karma"),
 }
 
+# Разделы меню
+SECTION_DESTINY = ["matrix_full", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026"]
+SECTION_MONEY   = ["finance", "wealth_blocks", "freedom_path", "calling", "promotion", "own_business", "career", "money", "days"]
+SECTION_LOVE    = ["compat", "when", "portrait", "unlucky", "ex", "cold", "toxic", "lonely", "breakup"]
+
 PAID_RAZBORY = {k: v for k, v in TITLES.items() if k != "free"}
 
 # ─── DB ──────────────────────────────────────────────────────────────────────
@@ -459,7 +476,6 @@ async def init_db():
             used_by    BIGINT DEFAULT NULL
         )
     ''')
-    # Миграции для существующих баз
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -481,7 +497,7 @@ async def get_user(user_id: int) -> dict:
     if user.get('notifications') is None:
         user['notifications'] = True
     if user_id == ADMIN_ID:
-        user['free_used'] = True
+        user['free_used']          = True
         user['subscribed_channel'] = True
         for r in list(PAID_RAZBORY.keys()):
             if r not in user['purchased']:
@@ -540,6 +556,10 @@ async def check_subscription(user_id: int) -> bool:
         return member.status in ("member", "administrator", "creator")
     except Exception:
         return False
+
+def utc_now() -> datetime:
+    """Современная замена datetime.utcnow()"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # ─── GROQ + RETRY + ОЧИСТКА ──────────────────────────────────────────────────
 async def ask_ai(prompt: str) -> str:
@@ -624,54 +644,103 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
             callback_data="free"
         )])
 
+    # История разборов — если есть покупки
+    purchased = user.get("purchased", []) if user else []
+    if purchased:
+        count = len(purchased)
+        buttons.append([InlineKeyboardButton(
+            text=f"📚 Мои разборы ({count})",
+            callback_data="my_readings"
+        )])
+
     notif_on = user.get("notifications", True) if user else True
     if notif_on:
         buttons.append([InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")])
     else:
         buttons.append([InlineKeyboardButton(text="🔔 Включить уведомления", callback_data="notif_on")])
 
-    buttons.append([InlineKeyboardButton(text="── Судьба и личность ──", callback_data="noop")])
-    buttons += [
-        [InlineKeyboardButton(text="🔮 Матрица судьбы (Полная) — 149 ⭐",  callback_data="buy_matrix_full")],
-        [InlineKeyboardButton(text="🌟 Предназначение и миссия — 99 ⭐",   callback_data="buy_mission")],
-        [InlineKeyboardButton(text="✨ Скрытые таланты — 79 ⭐",           callback_data="buy_hidden_talents")],
-        [InlineKeyboardButton(text="⚖️ Сильная/слабая сторона — 49 ⭐",   callback_data="buy_strong_weak")],
-        [InlineKeyboardButton(text="😨 Главный страх — 49 ⭐",             callback_data="buy_main_fear")],
-        [InlineKeyboardButton(text="🔴 Кармический долг — 99 ⭐",          callback_data="buy_karma")],
-        [InlineKeyboardButton(text="🗓 Прогноз на 2026 год — 149 ⭐",      callback_data="buy_forecast_2026")],
-    ]
-    buttons.append([InlineKeyboardButton(text="── Деньги и карьера ──", callback_data="noop")])
-    buttons += [
-        [InlineKeyboardButton(text="💹 Финансовый прогноз — 99 ⭐",        callback_data="buy_finance")],
-        [InlineKeyboardButton(text="🚧 Блоки богатства — 149 ⭐",          callback_data="buy_wealth_blocks")],
-        [InlineKeyboardButton(text="🗺 Путь к финансовой свободе — 149 ⭐",callback_data="buy_freedom_path")],
-        [InlineKeyboardButton(text="🌠 Призвание — 79 ⭐",                 callback_data="buy_calling")],
-        [InlineKeyboardButton(text="📈 Повышение — 99 ⭐",                 callback_data="buy_promotion")],
-        [InlineKeyboardButton(text="🏢 Свой бизнес — 99 ⭐",              callback_data="buy_own_business")],
-        [InlineKeyboardButton(text="💼 Карьерный путь — 79 ⭐",            callback_data="buy_career")],
-        [InlineKeyboardButton(text="💰 Денежный код — 79 ⭐",              callback_data="buy_money")],
-        [InlineKeyboardButton(text="🌙 Сильные и слабые дни — 79 ⭐",     callback_data="buy_days")],
-    ]
-    buttons.append([InlineKeyboardButton(text="── Любовь и отношения ──", callback_data="noop")])
-    buttons += [
-        [InlineKeyboardButton(text="💑 Совместимость двух людей — 99 ⭐",  callback_data="buy_compat")],
-        [InlineKeyboardButton(text="💘 Когда встретишь того самого — 79 ⭐",callback_data="buy_when")],
-        [InlineKeyboardButton(text="💍 Портрет идеального партнёра — 79 ⭐",callback_data="buy_portrait")],
-        [InlineKeyboardButton(text="💔 Почему не везёт в любви — 49 ⭐",   callback_data="buy_unlucky")],
-        [InlineKeyboardButton(text="💔 Вернётся ли бывший — 49 ⭐",        callback_data="buy_ex")],
-        [InlineKeyboardButton(text="❄️ Почему он охладел — 49 ⭐",         callback_data="buy_cold")],
-        [InlineKeyboardButton(text="☠️ Токсичная связь — 79 ⭐",           callback_data="buy_toxic")],
-        [InlineKeyboardButton(text="😔 Почему ты одинока — 49 ⭐",         callback_data="buy_lonely")],
-        [InlineKeyboardButton(text="💔 Разбор после расставания — 79 ⭐",  callback_data="buy_breakup")],
-    ]
+    buttons.append([InlineKeyboardButton(text="── Выбери тему ──", callback_data="noop")])
+    buttons.append([InlineKeyboardButton(text="🔮 Судьба и личность", callback_data="section_destiny")])
+    buttons.append([InlineKeyboardButton(text="💰 Деньги и карьера",  callback_data="section_money")])
+    buttons.append([InlineKeyboardButton(text="💑 Любовь и отношения", callback_data="section_love")])
     buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы (за рубли)",
         url=CONTACT_URL
     )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
+def section_destiny_menu(user=None) -> InlineKeyboardMarkup:
+    purchased = user.get("purchased", []) if user else []
     buttons = []
+    items = [
+        ("matrix_full",   "🔮 Матрица судьбы (Полная) — 149 ⭐"),
+        ("mission",       "🌟 Предназначение и миссия — 99 ⭐"),
+        ("hidden_talents","✨ Скрытые таланты — 79 ⭐"),
+        ("strong_weak",   "⚖️ Сильная/слабая сторона — 49 ⭐"),
+        ("main_fear",     "😨 Главный страх — 49 ⭐"),
+        ("karma",         "🔴 Кармический долг — 99 ⭐"),
+        ("forecast_2026", "🗓 Прогноз на 2026 год — 149 ⭐"),
+    ]
+    for key, label in items:
+        prefix = "✅ " if key in purchased else ""
+        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def section_money_menu(user=None) -> InlineKeyboardMarkup:
+    purchased = user.get("purchased", []) if user else []
+    buttons = []
+    items = [
+        ("finance",       "💹 Финансовый прогноз — 99 ⭐"),
+        ("wealth_blocks", "🚧 Блоки богатства — 149 ⭐"),
+        ("freedom_path",  "🗺 Путь к финансовой свободе — 149 ⭐"),
+        ("calling",       "🌠 Призвание — 79 ⭐"),
+        ("promotion",     "📈 Повышение — 99 ⭐"),
+        ("own_business",  "🏢 Свой бизнес — 99 ⭐"),
+        ("career",        "💼 Карьерный путь — 79 ⭐"),
+        ("money",         "💰 Денежный код — 79 ⭐"),
+        ("days",          "🌙 Сильные и слабые дни — 79 ⭐"),
+    ]
+    for key, label in items:
+        prefix = "✅ " if key in purchased else ""
+        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def section_love_menu(user=None) -> InlineKeyboardMarkup:
+    purchased = user.get("purchased", []) if user else []
+    buttons = []
+    items = [
+        ("compat",   "💑 Совместимость двух людей — 99 ⭐"),
+        ("when",     "💘 Когда встретишь того самого — 79 ⭐"),
+        ("portrait", "💍 Портрет идеального партнёра — 79 ⭐"),
+        ("unlucky",  "💔 Почему не везёт в любви — 49 ⭐"),
+        ("ex",       "💔 Вернётся ли бывший — 49 ⭐"),
+        ("cold",     "❄️ Почему он охладел — 49 ⭐"),
+        ("toxic",    "☠️ Токсичная связь — 79 ⭐"),
+        ("lonely",   "😔 Почему ты одинока — 49 ⭐"),
+        ("breakup",  "💔 Разбор после расставания — 79 ⭐"),
+    ]
+    for key, label in items:
+        prefix = "✅ " if key in purchased else ""
+        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def my_readings_menu(user: dict) -> InlineKeyboardMarkup:
+    purchased = user.get("purchased", [])
+    buttons   = []
+    for key in purchased:
+        title = TITLES.get(key, key)
+        buttons.append([InlineKeyboardButton(
+            text=f"✅ {title}",
+            callback_data=f"buy_{key}"
+        )])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
+    buttons     = []
     suggestions = UPSELLS.get(key, ())
     for s in suggestions:
         if s not in user.get("purchased", []):
@@ -681,7 +750,6 @@ def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
                 text=f"{title} — {price} ⭐",
                 callback_data=f"buy_{s}"
             )])
-    # Кнопка отзыва — только если по этому разбору отзыв ещё не оставлен
     reviews_left = user.get("reviews_left", [])
     if key not in reviews_left:
         buttons.append([InlineKeyboardButton(
@@ -691,16 +759,27 @@ def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="🔮 Все разборы", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def retry_menu(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Попробовать ещё раз", callback_data=f"buy_{key}")],
+        [InlineKeyboardButton(text="🔮 Меню", callback_data="show_menu")],
+    ])
+
 def coupon_razboy_menu() -> InlineKeyboardMarkup:
-    """Все 25 платных разборов доступны по купону."""
     buttons = []
     for key, title in PAID_RAZBORY.items():
         buttons.append([InlineKeyboardButton(text=title, callback_data=f"coupon_{key}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def notif_off_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")],
+        [InlineKeyboardButton(text="🔮 Меню разборов",          callback_data="show_menu")],
+    ])
+
 # ─── КУПОНЫ ──────────────────────────────────────────────────────────────────
 async def create_coupon(code: str) -> bool:
-    expires = datetime.now() + timedelta(hours=48)
+    expires = utc_now() + timedelta(hours=48)
     try:
         await db_pool.execute(
             'INSERT INTO coupons (code, expires_at) VALUES ($1, $2)',
@@ -716,7 +795,7 @@ async def use_coupon(code: str, user_id: int) -> str:
         return 'not_found'
     if row['used_by'] is not None:
         return 'used'
-    if row['expires_at'] < datetime.now():
+    if row['expires_at'] < utc_now():
         return 'expired'
     await db_pool.execute(
         'UPDATE coupons SET used_by = $1 WHERE code = $2', user_id, code.upper()
@@ -745,6 +824,39 @@ async def notif_on(callback: CallbackQuery):
         "🔔 Утренние уведомления включены!\n\nКаждое утро буду присылать тебе нумерологический прогноз 🌅",
         reply_markup=notifications_menu(True)
     )
+
+# ─── РАЗДЕЛЫ МЕНЮ ────────────────────────────────────────────────────────────
+@dp.callback_query(F.data == "section_destiny")
+async def section_destiny(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    await callback.message.answer("🔮 Судьба и личность — выбери разбор:", reply_markup=section_destiny_menu(user))
+    await callback.answer()
+
+@dp.callback_query(F.data == "section_money")
+async def section_money(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    await callback.message.answer("💰 Деньги и карьера — выбери разбор:", reply_markup=section_money_menu(user))
+    await callback.answer()
+
+@dp.callback_query(F.data == "section_love")
+async def section_love(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    await callback.message.answer("💑 Любовь и отношения — выбери разбор:", reply_markup=section_love_menu(user))
+    await callback.answer()
+
+# ─── МОИ РАЗБОРЫ ─────────────────────────────────────────────────────────────
+@dp.callback_query(F.data == "my_readings")
+async def my_readings(callback: CallbackQuery):
+    user      = await get_user(callback.from_user.id)
+    purchased = user.get("purchased", [])
+    if not purchased:
+        await callback.answer("У тебя пока нет купленных разборов 🔮", show_alert=True)
+        return
+    await callback.message.answer(
+        f"📚 Твои разборы ({len(purchased)}) — нажми на любой чтобы получить снова 👇",
+        reply_markup=my_readings_menu(user)
+    )
+    await callback.answer()
 
 # ─── ОНБОРДИНГ ───────────────────────────────────────────────────────────────
 @dp.message(Command("start"), StateFilter("*"))
@@ -775,7 +887,7 @@ async def start(message: Message, state: FSMContext):
         )
         return
     if not user["free_used"]:
-        name = user.get("first_name") or ""
+        name     = user.get("first_name") or ""
         greeting = f"✨ Привет, {name}! " if name else "✨ Привет! "
         await message.answer(
             greeting + "Давай познакомимся.\n\nКак мне тебя называть? Введи своё имя 👇"
@@ -883,7 +995,7 @@ async def coupon_cmd(message: Message, state: FSMContext):
     code    = parts[1].upper()
     success = await create_coupon(code)
     if success:
-        expires = (datetime.now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
+        expires = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
         await message.answer(
             f"✅ Промокод создан!\n\n"
             f"Код: <code>{code}</code>\n"
@@ -1071,10 +1183,14 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         title   = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
         await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu(waiting, user))
+        await state.clear()
     except Exception as e:
         logging.error(f"Date handler error [{waiting}]: {e}", exc_info=True)
-        await message.answer("❌ Произошла ошибка, попробуй ещё раз.")
-    await state.clear()
+        await message.answer(
+            "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
+            reply_markup=retry_menu(waiting)
+        )
+        # НЕ сбрасываем state — пользователь может повторить
 
 @dp.message(StateFilter(Form.waiting_second_date))
 async def handle_two_dates(message: Message, state: FSMContext):
@@ -1096,10 +1212,13 @@ async def handle_two_dates(message: Message, state: FSMContext):
         answer  = await ask_ai(prompt)
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
         await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("compat", user))
+        await state.clear()
     except Exception as e:
         logging.error(f"Compat error: {e}", exc_info=True)
-        await message.answer("❌ Произошла ошибка, попробуй ещё раз.")
-    await state.clear()
+        await message.answer(
+            "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
+            reply_markup=retry_menu("compat")
+        )
 
 @dp.message(StateFilter(Form.waiting_date))
 async def handle_date(message: Message, state: FSMContext):
@@ -1115,18 +1234,12 @@ async def handle_date(message: Message, state: FSMContext):
 async def leave_review(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("leave_review_", "")
     user = await get_user(callback.from_user.id)
-
-    # Проверяем куплен ли этот разбор
     if key not in user.get("purchased", []):
         await callback.answer("Отзыв можно оставить только после покупки!", show_alert=True)
         return
-
-    # Проверяем не оставлен ли уже отзыв по этому разбору
     if key in user.get("reviews_left", []):
         await callback.answer("Ты уже оставила отзыв по этому разбору 💫", show_alert=True)
         return
-
-    # Сохраняем ключ разбора в FSM чтобы знать за какой разбор отзыв
     await state.update_data(review_key=key)
     await callback.message.answer("💬 Напиши свой отзыв — опубликую его в канале!")
     await state.set_state(Form.waiting_review)
@@ -1134,22 +1247,24 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(Form.waiting_review))
 async def handle_review(message: Message, state: FSMContext):
-    user        = await get_user(message.from_user.id)
-    name        = user.get("first_name") or "Аноним"
-    data        = await state.get_data()
-    review_key  = data.get("review_key", "")
-    title       = TITLES.get(review_key, "разбор")
+    user       = await get_user(message.from_user.id)
+    name       = user.get("first_name") or "Аноним"
+    data       = await state.get_data()
+    review_key = data.get("review_key", "")
+    title      = TITLES.get(review_key, "разбор")
     review_text = f"⭐ Отзыв о боте @nnumerology_bot\n👤 {name}\n💫 Разбор: {title}\n\n{message.text}"
+    # Сохраняем отзыв в БД в любом случае
+    reviews_left = user.get("reviews_left", [])
+    if review_key and review_key not in reviews_left:
+        reviews_left.append(review_key)
+    user["reviews_left"] = reviews_left
+    user["review_left"]  = True
+    await save_user(message.from_user.id, user)
     try:
         await bot.send_message(REVIEWS_CHANNEL, review_text)
-        reviews_left = user.get("reviews_left", [])
-        if review_key and review_key not in reviews_left:
-            reviews_left.append(review_key)
-        user["reviews_left"]  = reviews_left
-        user["review_left"]   = True  # оставляем для совместимости
-        await save_user(message.from_user.id, user)
         await message.answer("✅ Спасибо! Твой отзыв опубликован 💫")
-    except Exception:
+    except Exception as e:
+        logging.error(f"Review channel error: {e}")
         await message.answer("✅ Спасибо за отзыв!")
     await state.clear()
 
@@ -1160,16 +1275,10 @@ async def show_menu(callback: CallbackQuery):
     await callback.answer()
 
 # ─── РАССЫЛКИ ────────────────────────────────────────────────────────────────
-def notif_off_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")],
-        [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
-    ])
-
 async def send_daily_horoscope():
     """UTC 8:00 = Москва 11:00 — утренняя рассылка из статичных шаблонов."""
     while True:
-        now    = datetime.utcnow()
+        now    = utc_now()
         target = now.replace(hour=8, minute=0, second=0, microsecond=0)
         if now >= target:
             target += timedelta(days=1)
@@ -1186,12 +1295,17 @@ async def send_daily_horoscope():
                     name     = row['first_name'] or "дорогая"
                     variants = MORNING.get(number, MORNING.get(9, []))
                     text     = random.choice(variants).format(name=name)
-                    await bot.send_message(
-                        row['user_id'],
-                        text,
-                        reply_markup=notif_off_menu()
-                    )
+                    await bot.send_message(row['user_id'], text, reply_markup=notif_off_menu())
                     await asyncio.sleep(0.05)
+                except TelegramForbiddenError:
+                    # Пользователь заблокировал бота — отключаем уведомления
+                    await db_pool.execute(
+                        'UPDATE users SET notifications = FALSE WHERE user_id = $1',
+                        row['user_id']
+                    )
+                    logging.info(f"User {row['user_id']} blocked bot, notifications disabled")
+                except TelegramBadRequest:
+                    pass
                 except Exception as e:
                     logging.error(f"Horoscope error {row['user_id']}: {e}")
         except Exception as e:
@@ -1200,7 +1314,7 @@ async def send_daily_horoscope():
 async def send_daily_channel_post():
     """UTC 7:00 = Москва 10:00 — пост в канал через Groq."""
     while True:
-        now    = datetime.utcnow()
+        now    = utc_now()
         target = now.replace(hour=7, minute=0, second=0, microsecond=0)
         if now >= target:
             target += timedelta(days=1)
