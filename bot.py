@@ -737,33 +737,46 @@ async def _try_groq(prompt: str) -> str | None:
     return None
 
 async def _try_deepseek(prompt: str) -> str | None:
-    """Фолбек на DeepSeek. Возвращает текст или None."""
+    """Фолбек через OpenModel (gateway), а не напрямую к DeepSeek.
+    Ключ DEEPSEEK_API_KEY выдан OpenModel (console.openmodel.ai), а не
+    platform.deepseek.com — поэтому нужен другой URL, другой заголовок
+    авторизации (x-api-key, не Authorization: Bearer) и формат Anthropic
+    Messages API, а не OpenAI chat/completions."""
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         return None
-    url     = "https://api.deepseek.com/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    url     = "https://api.openmodel.ai/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
     try:
         data = {
             "model": "deepseek-chat",
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": prompt},
-            ],
             "max_tokens": 4000,
+            "system": SYSTEM_PROMPT,
+            "messages": [
+                {"role": "user", "content": prompt},
+            ],
         }
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=data, timeout=60)
             response.raise_for_status()
-            raw = response.json()["choices"][0]["message"]["content"]
+            body = response.json()
+            # Anthropic Messages формат ответа: content — список блоков {type, text}
+            raw = "".join(
+                block.get("text", "") for block in body.get("content", [])
+                if block.get("type") == "text"
+            )
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             if has_foreign(raw):
-                logging.warning("DeepSeek returned foreign chars")
+                logging.warning("OpenModel/DeepSeek returned foreign chars")
                 return None
-            logging.info("DeepSeek ответил успешно")
+            logging.info("OpenModel (DeepSeek) ответил успешно")
             return clean_text(raw)
     except Exception as e:
-        logging.warning(f"DeepSeek failed: {e}")
+        logging.warning(f"OpenModel/DeepSeek failed: {e}")
         return None
 
 async def ask_ai(prompt: str) -> str:
