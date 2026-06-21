@@ -26,11 +26,16 @@ from readings import MATRIX_LITE, PROMPTS
 from broadcasts import MORNING
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")  # теперь последний бесплатный резерв, не обязателен
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not BOT_TOKEN or not GROQ_API_KEY:
-    raise EnvironmentError("BOT_TOKEN и GROQ_API_KEY должны быть установлены!")
+if not BOT_TOKEN or not DATABASE_URL:
+    raise EnvironmentError("BOT_TOKEN и DATABASE_URL должны быть установлены!")
+if not GROQ_API_KEY and not os.getenv("YANDEX_API_KEY") and not os.getenv("GIGACHAT_AUTH_KEY"):
+    raise EnvironmentError(
+        "Нужен хотя бы один ИИ-провайдер: YANDEX_API_KEY (+YANDEX_FOLDER_ID), "
+        "GIGACHAT_AUTH_KEY или GROQ_API_KEY."
+    )
 
 CHANNEL         = "@eva_numerologg"
 REVIEWS_CHANNEL = "@eva_numerolog_otz"
@@ -39,6 +44,7 @@ CONTACT_URL     = "https://t.me/eva_numer"
 
 # Шрифт для PDF — должен лежать в репо как DejaVuSans.ttf
 FONT_PATH = os.path.join(os.path.dirname(__file__), "DejaVuSans.ttf")
+BOLD_FONT_PATH = os.path.join(os.path.dirname(__file__), "DejaVuSans-Bold.ttf")
 
 logging.basicConfig(level=logging.INFO)
 bot     = Bot(token=BOT_TOKEN)
@@ -100,17 +106,14 @@ async def send_long(chat_id, text: str):
 def _ensure_font() -> str:
     """Проверяет шрифт, при необходимости скачивает. Возвращает путь или None."""
     if os.path.exists(FONT_PATH):
-        # Проверяем что файл реально TTF (первые 4 байта)
         try:
             with open(FONT_PATH, "rb") as f:
                 magic = f.read(4)
-            # TTF начинается с 00 01 00 00 или OTF с 4F 54 54 4F
             if magic[:2] in (b"\x00\x01", b"OT", b"tr", b"\x00\x00"):
                 return FONT_PATH
             logging.warning(f"Файл {FONT_PATH} не является TTF, пробую скачать")
         except Exception:
             pass
-    # Скачиваем DejaVuSans из официального релиза
     try:
         import urllib.request, zipfile, io
         zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip"
@@ -127,116 +130,179 @@ def _ensure_font() -> str:
         logging.warning(f"Не удалось скачать шрифт: {e}")
         return None
 
-def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
-    """Красивый PDF для женской аудитории."""
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=20)
-    pdf.add_page()
+def _ensure_bold_font() -> str:
+    """Жирное начертание DejaVuSans-Bold — для настоящих жирных заголовков в PDF.
+    Необязательно: при неудаче просто используется обычное начертание."""
+    if os.path.exists(BOLD_FONT_PATH):
+        try:
+            with open(BOLD_FONT_PATH, "rb") as f:
+                magic = f.read(4)
+            if magic[:2] in (b"\x00\x01", b"OT", b"tr", b"\x00\x00"):
+                return BOLD_FONT_PATH
+        except Exception:
+            pass
+    try:
+        import urllib.request, zipfile, io
+        zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip"
+        resp = urllib.request.urlopen(zip_url, timeout=30)
+        zdata = resp.read()
+        with zipfile.ZipFile(io.BytesIO(zdata)) as z:
+            ttf_name = next(n for n in z.namelist() if "DejaVuSans-Bold.ttf" in n and "Oblique" not in n and "Mono" not in n and "Condensed" not in n)
+            with z.open(ttf_name) as src, open(BOLD_FONT_PATH, "wb") as dst:
+                dst.write(src.read())
+        return BOLD_FONT_PATH
+    except Exception as e:
+        logging.warning(f"Не удалось скачать жирный шрифт: {e}")
+        return None
 
+# Эмодзи-маркеры подзаголовков внутри текста разбора
+HEADER_EMOJI = (
+    "🔮","✨","💎","💰","💕","🔴","🌟","📅","🎯","💡","🚧",
+    "💪","⚠️","🌱","🎭","💼","🤝","📈","⏰","🗺","🌍","🏆",
+    "💚","⚡","🫀","😤","📜","🔄","🌳","❄️","☠️","😔","💔",
+    "💑","💘","💍","🌠","🏢","😨","🗓","⚖️","🔗","🪤","🗝",
+)
+
+# Цветовая палитра — нумерологическая тема (лаванда / аметист / золото)
+C_BG          = (250, 247, 255)   # фон страницы
+C_BAR         = (157, 117, 196)   # верх/низ полосы
+C_BORDER      = (197, 165, 224)   # тонкая рамка
+C_TITLE       = (104, 52, 158)    # заголовок разбора
+C_HEADER      = (122, 64, 172)    # подзаголовки внутри текста
+C_BODY        = (51, 36, 71)      # основной текст
+C_BADGE_FILL  = (234, 224, 248)   # фон бейджа с именем/датой
+C_BADGE_TEXT  = (104, 64, 148)
+C_ACCENT      = (172, 130, 212)   # звёздочки, тонкие линии
+
+class NumerologyPDF(FPDF):
+    """PDF с фирменным оформлением Евы — фон, рамка и полосы рисуются
+    на КАЖДОЙ странице через header()/footer(), а не только на первой.
+    Раньше декор рисовался один раз вручную после add_page(), поэтому
+    у длинных разборов 2-я и последующие страницы оставались пустыми
+    и белыми — это и была причина «несовпадающего» вида PDF."""
+
+    def __init__(self, font_name: str = "Helvetica"):
+        super().__init__()
+        self.font_name = font_name
+        self.set_auto_page_break(auto=True, margin=18)
+
+    def header(self):
+        W, H = self.w, self.h
+        # фон
+        self.set_fill_color(*C_BG)
+        self.rect(0, 0, W, H, style="F")
+        # верхняя и нижняя полосы
+        self.set_fill_color(*C_BAR)
+        self.rect(0, 0, W, 9, style="F")
+        self.rect(0, H - 9, W, 9, style="F")
+        # тонкая рамка
+        self.set_draw_color(*C_BORDER)
+        self.set_line_width(0.5)
+        self.rect(12, 13, W - 24, H - 13 - 12)
+        # подпись бренда в верхней полосе
+        self.set_font(self.font_name, style="B", size=9)
+        self.set_text_color(255, 255, 255)
+        self.set_xy(0, 2)
+        self.cell(W, 5.5, "✦  EVA NUMEROLOG  ✦", align="C")
+        # курсор для контента — единая точка отсчёта на КАЖДОЙ странице
+        self.set_xy(self.l_margin, 21)
+
+    def footer(self):
+        self.set_y(-8.3)
+        self.set_font(self.font_name, size=8)
+        self.set_text_color(255, 255, 255)
+        self.cell(0, 5.5, f"Telegram: @nnumerology_bot   •   стр. {self.page_no()}", align="C")
+
+
+def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
+    """Красивый PDF для женской аудитории — оформлен в едином стиле на
+    всех страницах, ровные поля, заголовок/имя/дата собраны в аккуратный
+    блок вместо разрозненных строк, которые раньше наезжали друг на друга."""
     font_path = _ensure_font()
+    font_name = "DejaVu" if font_path else "Helvetica"
+
+    pdf = NumerologyPDF(font_name=font_name)
+
     if font_path:
         try:
-            pdf.add_font("DejaVu", style="",  fname=font_path)
-            pdf.add_font("DejaVu", style="B", fname=font_path)
-            font_name = "DejaVu"
+            bold_path = _ensure_bold_font()
+            pdf.add_font("DejaVu", style="", fname=font_path)
+            pdf.add_font("DejaVu", style="B", fname=bold_path or font_path)
         except Exception as e:
             logging.warning(f"Не удалось загрузить шрифт: {e}")
-            font_name = "Helvetica"
-    else:
-        font_name = "Helvetica"
+            font_name   = "Helvetica"
+            pdf.font_name = "Helvetica"
 
-    W = pdf.w  # ширина страницы
+    pdf.set_margins(20, 21, 20)
+    pdf.add_page()  # header() отработает автоматически и на этой, и на всех след. страницах
 
-    # ── Нежный лавандовый фон ──
-    pdf.set_fill_color(248, 245, 255)  # светло-лавандовый
-    pdf.rect(0, 0, W, pdf.h, style="F")
+    W = pdf.w
 
-    # ── Верхняя декоративная полоса ──
-    pdf.set_fill_color(180, 140, 210)  # фиолетовый
-    pdf.rect(0, 0, W, 8, style="F")
-
-    # ── Декоративная рамка ──
-    pdf.set_draw_color(180, 140, 210)
-    pdf.set_line_width(0.8)
-    pdf.rect(10, 12, W - 20, pdf.h - 22)
-
-    # ── Логотип / подпись сверху ──
-    pdf.set_y(16)
-    pdf.set_font(font_name, style="B", size=9)
-    pdf.set_text_color(150, 100, 190)
-    pdf.cell(0, 6, "Eva Numerolog  *  @nnumerology_bot", align="C")
-    pdf.ln(4)
-
-    # ── Разделитель ──
-    pdf.set_draw_color(210, 180, 240)
-    pdf.set_line_width(0.3)
-    pdf.line(20, pdf.get_y(), W - 20, pdf.get_y())
-    pdf.ln(6)
-
-    # ── Заголовок разбора ──
-    # Убираем эмодзи из заголовка (fpdf2 не рендерит)
+    # ── Заголовок разбора (рисуется один раз, на первой странице) ──
     clean_title = re.sub(r"[^\w\s\(\)\-—.,]", "", title, flags=re.UNICODE).strip()
     pdf.set_font(font_name, style="B", size=18)
-    pdf.set_text_color(120, 60, 170)
-    pdf.multi_cell(0, 10, clean_title, align="C")
+    pdf.set_text_color(*C_TITLE)
+    pdf.multi_cell(0, 9, clean_title.upper(), align="C")
     pdf.ln(2)
 
-    # ── Имя пользователя если есть ──
+    # ── декоративный разделитель со звездой по центру ──
+    y   = pdf.get_y()
+    mid = W / 2
+    pdf.set_draw_color(*C_ACCENT)
+    pdf.set_line_width(0.4)
+    pdf.line(pdf.l_margin + 6, y + 3, mid - 7, y + 3)
+    pdf.line(mid + 7, y + 3, W - pdf.r_margin - 6, y + 3)
+    pdf.set_font(font_name, size=11)
+    pdf.set_text_color(*C_ACCENT)
+    pdf.set_xy(mid - 5, y)
+    pdf.cell(10, 7, "✦", align="C")
+    pdf.set_y(y + 8)
+
+    # ── Бейдж: имя + дата создания в одной аккуратной строке ──
+    info_parts = []
     if user_name:
-        pdf.set_font(font_name, size=11)
-        pdf.set_text_color(150, 100, 190)
-        pdf.cell(0, 7, f"Персональный разбор для: {user_name}", align="C")
-        pdf.ln(2)
+        info_parts.append(f"Для {user_name}")
+    info_parts.append(datetime.now().strftime("%d.%m.%Y"))
+    info_text = "   •   ".join(info_parts)
 
-    # ── Дата создания ──
-    pdf.set_font(font_name, size=9)
-    pdf.set_text_color(180, 150, 210)
-    pdf.cell(0, 6, datetime.now().strftime("Создано: %d.%m.%Y"), align="C")
-    pdf.ln(6)
-
-    # ── Разделитель перед текстом ──
-    pdf.set_draw_color(210, 180, 240)
+    pdf.set_font(font_name, size=10.5)
+    badge_w = pdf.get_string_width(info_text) + 16
+    badge_h = 8.5
+    badge_x = (W - badge_w) / 2
+    badge_y = pdf.get_y()
+    pdf.set_fill_color(*C_BADGE_FILL)
+    pdf.set_draw_color(*C_BORDER)
     pdf.set_line_width(0.3)
-    pdf.line(20, pdf.get_y(), W - 20, pdf.get_y())
-    pdf.ln(8)
+    pdf.rect(badge_x, badge_y, badge_w, badge_h, style="DF")
+    pdf.set_xy(badge_x, badge_y + 1.4)
+    pdf.set_text_color(*C_BADGE_TEXT)
+    pdf.cell(badge_w, 6, info_text, align="C")
+    pdf.set_xy(pdf.l_margin, badge_y + badge_h + 8)
 
     # ── Основной текст ──
-    pdf.set_margins(20, 10, 20)
-    pdf.set_font(font_name, size=11)
-    pdf.set_text_color(50, 30, 70)
+    pdf.set_font(font_name, size=11.5)
+    pdf.set_text_color(*C_BODY)
 
     for paragraph in text.split("\n"):
         line = paragraph.strip()
         if not line:
             pdf.ln(4)
             continue
-        # Строки-заголовки с эмодзи в начале — выделяем жирным
         clean_line = re.sub(r"[^\w\s\(\)\-—.,!?:;]", "", line, flags=re.UNICODE).strip()
-        is_header = any(paragraph.startswith(e) for e in [
-            "🔮","✨","💎","💰","💕","🔴","🌟","📅","🎯","💡","🚧",
-            "💪","⚠️","🌱","🎭","💼","🤝","📈","⏰","🗺","🌍","🏆",
-            "💚","⚡","🫀","😤","📜","🔄","🌳","❄️","☠️","😔","💔",
-            "💑","💘","💍","🌠","🏢","😨","🗓","⚖️","🔗","🪤","🗝",
-        ])
+        is_header  = any(paragraph.startswith(e) for e in HEADER_EMOJI)
         if is_header and clean_line:
-            pdf.set_font(font_name, style="B", size=12)
-            pdf.set_text_color(120, 60, 170)
+            pdf.ln(1)
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font(font_name, style="B", size=12.5)
+            pdf.set_text_color(*C_HEADER)
             pdf.multi_cell(0, 8, clean_line)
-            pdf.set_font(font_name, size=11)
-            pdf.set_text_color(50, 30, 70)
+            pdf.set_font(font_name, size=11.5)
+            pdf.set_text_color(*C_BODY)
             pdf.ln(1)
         elif clean_line:
+            pdf.set_x(pdf.l_margin)
             pdf.multi_cell(0, 7, clean_line)
             pdf.ln(1)
-
-    # ── Нижняя полоса ──
-    pdf.set_y(-15)
-    pdf.set_fill_color(180, 140, 210)
-    pdf.rect(0, pdf.h - 8, W, 8, style="F")
-    pdf.set_y(-13)
-    pdf.set_font(font_name, size=8)
-    pdf.set_text_color(255, 255, 255)
-    pdf.cell(0, 6, "Eva Numerolog  *  Telegram: @nnumerology_bot", align="C")
 
     return bytes(pdf.output())
 
@@ -563,13 +629,13 @@ async def save_user(user_id: int, user: dict):
             first_name         = $1,
             free_used          = $2,
             subscribed_channel = $3,
-            birth_date         = $4,
-            destiny_number     = $5,
-            purchased          = $6,
-            waiting            = $7,
-            review_left        = $8,
-            notifications      = $9,
-            reviews_left       = $10
+            birth_date          = $4,
+            destiny_number      = $5,
+            purchased           = $6,
+            waiting             = $7,
+            review_left         = $8,
+            notifications       = $9,
+            reviews_left        = $10
         WHERE user_id = $11
     ''',
         user.get('first_name'),
@@ -615,8 +681,33 @@ async def check_subscription(user_id: int) -> bool:
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-# ─── GROQ + RETRY + ОЧИСТКА ──────────────────────────────────────────────────
-# Корректировка 8: убран llama-3.1-8b-instant
+# ─── ИИ-ПРОВАЙДЕРЫ: YANDEXGPT → GIGACHAT → GROQ ─────────────────────────────
+# Раньше был Groq на всех трёх точках (генерация разбора, совместимость,
+# ежедневный пост в канал) — у бесплатного тарифа Groq лимит всего 30 запросов
+# в минуту и ~1000 в день НА ВСЮ организацию, общий на все три точки сразу.
+# При реальном трафике это упирается в 429 почти сразу.
+# "Опенмодель" (api.openmodel.ai) — сторонний неофициальный роутер, поэтому
+# нестабилен. Теперь основные — YandexGPT и GigaChat: официальные API,
+# рублёвый биллинг без загранкарты, и не "соскальзывают" на латиницу/иероглифы,
+# в отличие от Qwen/gpt-oss — то есть сама причина существования
+# has_foreign()-ретраев в большинстве случаев просто не будет возникать.
+# Groq остаётся последним бесплатным резервом на случай, если оба недоступны.
+
+YANDEX_API_KEY    = os.getenv("YANDEX_API_KEY")
+YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID")
+YANDEX_MODEL      = os.getenv("YANDEX_MODEL", "yandexgpt/latest")  # yandexgpt-lite/latest — дешевле
+
+GIGACHAT_AUTH_KEY  = os.getenv("GIGACHAT_AUTH_KEY")
+GIGACHAT_SCOPE     = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")  # PERS — физлицо/самозанятый
+GIGACHAT_MODEL     = os.getenv("GIGACHAT_MODEL", "GigaChat-2")  # Pro/Max нужны B2B/CORP scope
+GIGACHAT_VERIFY_SSL = os.getenv("GIGACHAT_VERIFY_SSL", "false").lower() == "true"
+# По умолчанию SSL-проверка выключена: GigaChat подписан сертификатом НУЦ Минцифры,
+# которого нет в стандартном доверенном хранилище. Если поставишь сертификат
+# на сервер — выстави GIGACHAT_VERIFY_SSL=true в Railway для большей безопасности.
+
+_gigachat_token_cache = {"token": None, "expires_at": 0}
+_gigachat_token_lock  = asyncio.Lock()
+
 GROQ_MODELS = [
     "qwen/qwen3.6-27b",
     "openai/gpt-oss-120b",
@@ -640,8 +731,110 @@ SYSTEM_PROMPT = (
     "Используй абзацы. Заканчивай полным предложением."
 )
 
+async def _try_yandex(prompt: str) -> str | None:
+    """YandexGPT — основной провайдер. Нативный API Yandex Foundation Models."""
+    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
+        return None
+    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+    headers = {
+        "Authorization": f"Api-Key {YANDEX_API_KEY}",
+        "Content-Type":  "application/json",
+        "x-folder-id":   YANDEX_FOLDER_ID,
+    }
+    data = {
+        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/{YANDEX_MODEL}",
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.6,
+            "maxTokens": "4000",
+        },
+        "messages": [
+            {"role": "system", "text": SYSTEM_PROMPT},
+            {"role": "user",   "text": prompt},
+        ],
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=data, timeout=45)
+            response.raise_for_status()
+            raw = response.json()["result"]["alternatives"][0]["message"]["text"]
+            raw = raw.strip()
+            if has_foreign(raw):
+                logging.warning("YandexGPT вернул иностранные символы")
+                return clean_text(raw) if clean_text(raw).strip() else None
+            return clean_text(raw)
+    except Exception as e:
+        logging.warning(f"YandexGPT failed: {e}")
+        return None
+
+async def _get_gigachat_token() -> str | None:
+    """OAuth-токен GigaChat живёт 30 минут — кэшируем с запасом в 60 секунд."""
+    async with _gigachat_token_lock:
+        now = time.time()
+        if _gigachat_token_cache["token"] and _gigachat_token_cache["expires_at"] - 60 > now:
+            return _gigachat_token_cache["token"]
+        if not GIGACHAT_AUTH_KEY:
+            return None
+        import uuid as _uuid
+        url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        headers = {
+            "Content-Type":  "application/x-www-form-urlencoded",
+            "Accept":        "application/json",
+            "RqUID":         str(_uuid.uuid4()),
+            "Authorization": f"Basic {GIGACHAT_AUTH_KEY}",
+        }
+        try:
+            async with httpx.AsyncClient(verify=GIGACHAT_VERIFY_SSL) as client:
+                response = await client.post(
+                    url, headers=headers,
+                    data={"scope": GIGACHAT_SCOPE}, timeout=20
+                )
+                response.raise_for_status()
+                payload = response.json()
+                _gigachat_token_cache["token"]      = payload["access_token"]
+                _gigachat_token_cache["expires_at"] = payload["expires_at"] / 1000  # мс → сек
+                return _gigachat_token_cache["token"]
+        except Exception as e:
+            logging.warning(f"GigaChat token error: {e}")
+            return None
+
+async def _try_gigachat(prompt: str) -> str | None:
+    """GigaChat — первый резерв. Лимит PERS — 1 запрос/сек, ловим 429 мягко."""
+    token = await _get_gigachat_token()
+    if not token:
+        return None
+    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    data = {
+        "model": GIGACHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
+        "max_tokens": 4000,
+    }
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(verify=GIGACHAT_VERIFY_SSL) as client:
+                response = await client.post(url, headers=headers, json=data, timeout=45)
+                if response.status_code == 429:
+                    logging.warning("GigaChat 429 — превышен 1 RPS, пробую ещё раз через секунду")
+                    await asyncio.sleep(1.2)
+                    continue
+                response.raise_for_status()
+                raw = response.json()["choices"][0]["message"]["content"].strip()
+                if has_foreign(raw):
+                    logging.warning("GigaChat вернул иностранные символы")
+                    return clean_text(raw) if clean_text(raw).strip() else None
+                return clean_text(raw)
+        except Exception as e:
+            logging.warning(f"GigaChat attempt {attempt+1} failed: {e}")
+    return None
+
 async def _try_groq(prompt: str) -> str | None:
-    """Пробует Groq модели по цепочке. Возвращает текст или None."""
+    """Groq — последний бесплатный резерв, если Yandex и GigaChat недоступны."""
+    if not GROQ_API_KEY:
+        return None
     url     = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
 
@@ -659,7 +852,6 @@ async def _try_groq(prompt: str) -> str | None:
                 async with httpx.AsyncClient() as client:
                     response = await client.post(url, headers=headers, json=data, timeout=45)
                     if response.status_code == 429:
-                        # Rate limit — ждём и пробуем следующую модель
                         retry_after = int(response.headers.get("retry-after", 5))
                         logging.warning(f"Groq {model} 429 rate limit, retry-after={retry_after}s")
                         await asyncio.sleep(min(retry_after, 10))
@@ -680,45 +872,17 @@ async def _try_groq(prompt: str) -> str | None:
                 break
     return None
 
-async def _try_openmodel(prompt: str) -> str | None:
-    """Фолбек на OpenModel (deepseek-v4-flash). Возвращает текст или None."""
-    api_key = os.getenv("DEEPSEEK_API_KEY")  # ключ формата om_****
-    if not api_key:
-        return None
-    url     = "https://api.openmodel.ai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    try:
-        data = {
-            "model": "deepseek-v4-flash",
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": prompt},
-            ],
-            "max_tokens": 4000,
-        }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=data, timeout=60)
-            response.raise_for_status()
-            raw = response.json()["choices"][0]["message"]["content"]
-            raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-            if has_foreign(raw):
-                logging.warning("OpenModel вернул иностранные символы")
-                return None
-            logging.info("OpenModel ответил успешно")
-            return clean_text(raw)
-    except Exception as e:
-        logging.warning(f"OpenModel failed: {e}")
-        return None
-
 async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
-    """Groq → DeepSeek фолбек."""
-    # 1. Пробуем Groq
-    result = await _try_groq(prompt)
+    """YandexGPT → GigaChat → Groq. Первый, кто ответил без иностранных символов, побеждает."""
+    result = await _try_yandex(prompt)
     if result:
         return result
-    # 2. Фолбек на DeepSeek
-    logging.warning("Groq не дал результат — пробую OpenModel (deepseek-v4-flash)")
-    result = await _try_openmodel(prompt)
+    logging.warning("YandexGPT не дал результат — пробую GigaChat")
+    result = await _try_gigachat(prompt)
+    if result:
+        return result
+    logging.warning("GigaChat не дал результат — пробую Groq")
+    result = await _try_groq(prompt)
     if result:
         return result
     raise Exception("Все провайдеры недоступны или вернули иностранные символы")
@@ -923,10 +1087,21 @@ def retry_menu(key: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔮 Меню", callback_data="show_menu")],
     ])
 
-def coupon_razboy_menu() -> InlineKeyboardMarkup:
-    buttons = []
+def coupon_razboy_menu(code: str, user: dict = None) -> InlineKeyboardMarkup:
+    """ИСПРАВЛЕНО: код промокода теперь зашит прямо в callback_data каждой
+    кнопки (coupon::КОД::ключ). Раньше код нигде не передавался дальше — и
+    обработчик нажатия просто дарил разбор бесплатно без проверки лимита
+    использований. Теперь каждое нажатие реально списывает одно использование
+    с конкретного промокода — лимит из /coupon КОД 20 наконец работает как
+    задумано: друг может выбрать ровно 20 разных разборов, не больше."""
+    purchased = user.get("purchased", []) if user else []
+    buttons   = []
     for key, title in PAID_RAZBORY.items():
-        buttons.append([InlineKeyboardButton(text=title, callback_data=f"coupon_{key}")])
+        prefix = "✅ " if key in purchased else ""
+        buttons.append([InlineKeyboardButton(
+            text=prefix + title,
+            callback_data=f"coupon::{code}::{key}"
+        )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def notif_off_menu() -> InlineKeyboardMarkup:
@@ -973,6 +1148,12 @@ async def use_coupon(code: str, user_id: int) -> str:
         code.upper(), user_id
     )
     return 'ok'
+
+async def coupon_remaining(code: str) -> int:
+    row = await db_pool.fetchrow('SELECT max_uses, uses_count FROM coupons WHERE code = $1', code.upper())
+    if not row:
+        return 0
+    return max(0, row['max_uses'] - row['uses_count'])
 
 # ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
 # Корректировка 1: убраны из main_menu, теперь только /notifications
@@ -1252,24 +1433,37 @@ async def menu_cmd(message: Message, state: FSMContext):
 
 @dp.message(Command("promo"), StateFilter("*"))
 async def promo_cmd(message: Message, state: FSMContext):
+    """ИСПРАВЛЕНО: раньше использование купона списывалось здесь же, при вводе
+    /promo — то есть весь запас уходил за ОДИН ввод команды, а дальше меню
+    выбора разбора оставалось висеть в чате и позволяло забрать любое
+    количество разборов бесплатно без дальнейшего списания (по сути дыра).
+    Теперь здесь только проверка: код существует, не истёк, не исчерпан.
+    Списание происходит за реальный клик по конкретному разбору —
+    смотри coupon_razboy_handler."""
     await state.clear()
     parts = message.text.strip().split()
     if len(parts) < 2:
         await message.answer("Введи промокод так: /promo КОД")
         return
-    code   = parts[1].upper()
-    result = await use_coupon(code, message.from_user.id)
-    if result == 'not_found':
+    code = parts[1].upper()
+    row  = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
+    if not row:
         await message.answer("❌ Такого промокода не существует.")
-    elif result == 'expired':
+        return
+    if row['expires_at'] and row['expires_at'] < utc_now():
         await message.answer("❌ Этот промокод уже истёк.")
-    elif result == 'limit':
+        return
+    remaining = row['max_uses'] - row['uses_count']
+    if remaining <= 0:
         await message.answer("❌ Этот промокод исчерпан — все использования закончились.")
-    elif result == 'ok':
-        await message.answer(
-            "🎁 Промокод активирован! Выбери свой бесплатный разбор 👇",
-            reply_markup=coupon_razboy_menu()
-        )
+        return
+    user = await get_user(message.from_user.id)
+    await message.answer(
+        f"🎁 Промокод активирован! Доступно бесплатных разборов: {remaining}.\n\n"
+        "Выбирай из списка — после каждого выбора будет списываться одно "
+        "использование промокода 👇",
+        reply_markup=coupon_razboy_menu(code, user)
+    )
 
 @dp.message(Command("coupon"), StateFilter("*"))
 async def coupon_cmd(message: Message, state: FSMContext):
@@ -1280,8 +1474,11 @@ async def coupon_cmd(message: Message, state: FSMContext):
         await message.answer(
             "Использование:\n"
             "/coupon КОД — создать на 1 использование\n"
-            "/coupon КОД 10 — создать на 10 использований\n\n"
-            "Пример: /coupon INSTAGRAM2026 50"
+            "/coupon КОД 20 — создать на 20 использований\n\n"
+            "Один код можно вводить /promo несколько раз (хоть тем же другом) — "
+            "каждый выбранный разбор спишет одно использование, пока не "
+            "закончится лимит.\n\n"
+            "Пример: /coupon FRIEND20 20"
         )
         return
     code     = parts[1].upper()
@@ -1290,7 +1487,7 @@ async def coupon_cmd(message: Message, state: FSMContext):
         try:
             max_uses = max(1, int(parts[2]))
         except ValueError:
-            await message.answer("❌ Число использований должно быть целым числом.\nПример: /coupon INSTAGRAM2026 10")
+            await message.answer("❌ Число использований должно быть целым числом.\nПример: /coupon FRIEND20 20")
             return
     result = await create_coupon(code, max_uses)
     if result == 'ok':
@@ -1301,7 +1498,8 @@ async def coupon_cmd(message: Message, state: FSMContext):
             f"Код: <code>{code}</code>\n"
             f"Лимит использований: {uses_str}\n"
             f"Действует до: {expires}\n\n"
-            f"Юзер вводит: /promo {code}",
+            f"Юзер вводит: /promo {code} — и выбирает разборы из списка, "
+            f"пока не закончится лимит.",
             parse_mode="HTML"
         )
     elif result == 'exists':
@@ -1379,15 +1577,43 @@ async def admin_panel(message: Message, state: FSMContext):
     )
 
 # ─── КУПОН — ВЫБОР РАЗБОРА ───────────────────────────────────────────────────
-@dp.callback_query(F.data.startswith("coupon_"))
+@dp.callback_query(F.data.startswith("coupon::"))
 async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
-    key  = callback.data.replace("coupon_", "")
+    """ИСПРАВЛЕНО: код промокода теперь приходит прямо в callback_data
+    (coupon::КОД::ключ), и списание use_coupon() происходит ИМЕННО ЗДЕСЬ,
+    в момент выбора конкретного разбора — а не при вводе /promo. Поэтому
+    лимит из /coupon КОД 20 теперь действительно ограничивает 20 разборами,
+    а не одним кликом мимо системы."""
+    try:
+        _, code, key = callback.data.split("::", 2)
+    except ValueError:
+        await callback.answer("Ошибка промокода.", show_alert=True)
+        return
+
     user = await get_user(callback.from_user.id)
-    if key not in user["purchased"]:
+
+    if key in user["purchased"]:
+        # Уже куплен/получен раньше — повторная бесплатная выдача без списания лимита
+        user["waiting"] = key
+        await save_user(callback.from_user.id, user)
+        await callback.answer("Этот разбор уже у тебя — пришлю заново 🔮")
+    else:
+        result = await use_coupon(code, callback.from_user.id)
+        if result == 'not_found':
+            await callback.answer("❌ Промокод не найден.", show_alert=True)
+            return
+        if result == 'expired':
+            await callback.answer("❌ Промокод истёк.", show_alert=True)
+            return
+        if result == 'limit':
+            await callback.answer("❌ Лимит этого промокода исчерпан.", show_alert=True)
+            return
         user["purchased"].append(key)
-    user["waiting"] = key
-    await save_user(callback.from_user.id, user)
-    await callback.answer()
+        user["waiting"] = key
+        await save_user(callback.from_user.id, user)
+        remaining = await coupon_remaining(code)
+        await callback.answer(f"✅ Добавлено! Осталось использований промокода: {remaining}")
+
     if key == "compat":
         await callback.message.answer(
             "💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
@@ -1687,7 +1913,7 @@ async def send_daily_horoscope():
             logging.error(f"Horoscope batch error: {e}")
 
 async def send_daily_channel_post():
-    """UTC 7:00 = Москва 10:00 — пост в канал через Groq."""
+    """UTC 7:00 = Москва 10:00 — пост в канал."""
     while True:
         now    = utc_now()
         target = now.replace(hour=7, minute=0, second=0, microsecond=0)
