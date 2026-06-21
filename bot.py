@@ -105,22 +105,21 @@ def generate_pdf(title: str, text: str) -> bytes:
     pdf.set_margins(15, 15, 15)
 
     if os.path.exists(FONT_PATH):
-        pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
-        pdf.add_font("DejaVu", "B", FONT_PATH, uni=True)
+        # fpdf2 >= 2.5.1: uni=True устарел, передаём только путь
+        pdf.add_font("DejaVu", style="", fname=FONT_PATH)
+        pdf.add_font("DejaVu", style="B", fname=FONT_PATH)
         font_name = "DejaVu"
     else:
-        # Фолбек если шрифт не найден — только латиница, но хоть что-то
         font_name = "Helvetica"
         logging.warning(f"Шрифт {FONT_PATH} не найден, используется Helvetica")
 
     # Заголовок
-    pdf.set_font(font_name, "B", 16)
+    pdf.set_font(font_name, style="B", size=16)
     pdf.multi_cell(0, 10, title, align="C")
     pdf.ln(8)
 
     # Основной текст
-    pdf.set_font(font_name, "", 11)
-    # Разбиваем на абзацы чтобы корректно отображались переносы
+    pdf.set_font(font_name, size=11)
     for paragraph in text.split("\n"):
         if paragraph.strip():
             pdf.multi_cell(0, 7, paragraph.strip())
@@ -128,7 +127,8 @@ def generate_pdf(title: str, text: str) -> bytes:
         else:
             pdf.ln(4)
 
-    return pdf.output(dest="S").encode("latin-1")
+    # fpdf2 >= 2.5.1 возвращает bytearray напрямую
+    return bytes(pdf.output())
 
 # ─── НУМЕРОЛОГИЧЕСКИЕ РАСЧЁТЫ ────────────────────────────────────────────────
 def calculate_destiny(date_str: str) -> int:
@@ -536,14 +536,23 @@ async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -
                     "max_tokens": 2000,
                 }
                 async with httpx.AsyncClient() as client:
-                    # Корректировка 5: таймаут 45 сек
                     response = await client.post(url, headers=headers, json=data, timeout=45)
+                    if response.status_code == 400:
+                        # Промт слишком длинный или другая ошибка клиента — следующая модель
+                        err_body = response.text[:300]
+                        logging.warning(f"Model {model} 400 Bad Request: {err_body}")
+                        last_error = Exception(f"400 Bad Request: {err_body}")
+                        break
                     response.raise_for_status()
                     raw = response.json()["choices"][0]["message"]["content"]
                     if has_foreign(raw):
                         logging.warning(f"Model {model} attempt {attempt+1} returned foreign chars, retrying...")
                         continue
                     return clean_text(raw)
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                logging.warning(f"Model {model} attempt {attempt+1} HTTP error: {e}")
+                break
             except Exception as e:
                 last_error = e
                 logging.warning(f"Model {model} attempt {attempt+1} failed: {e}")
