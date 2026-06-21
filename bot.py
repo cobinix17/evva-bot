@@ -7,20 +7,23 @@ import json
 import httpx
 import asyncpg
 import random
+import io
 from collections import defaultdict
 from datetime import datetime, date, timedelta, timezone
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     Message, CallbackQuery, LabeledPrice, PreCheckoutQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton, TelegramObject
+    InlineKeyboardMarkup, InlineKeyboardButton, TelegramObject,
+    BufferedInputFile
 )
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
-from readings import MATRIX_LITE
+from fpdf import FPDF
+from readings import MATRIX_LITE, PROMPTS
 from broadcasts import MORNING
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
@@ -34,6 +37,9 @@ CHANNEL         = "@eva_numerologg"
 REVIEWS_CHANNEL = "@eva_numerolog_otz"
 ADMIN_ID        = 5854618444
 CONTACT_URL     = "https://t.me/eva_numer"
+
+# Шрифт для PDF — должен лежать в репо как DejaVuSans.ttf
+FONT_PATH = os.path.join(os.path.dirname(__file__), "DejaVuSans.ttf")
 
 logging.basicConfig(level=logging.INFO)
 bot     = Bot(token=BOT_TOKEN)
@@ -60,7 +66,6 @@ class AntiFloodMiddleware(BaseMiddleware):
                     await event.answer("⏳ Подожди немного!", show_alert=False)
                 return
             self.last_request[user.id] = now
-            # Чистим записи старше 60 секунд раз в 500 вызовов
             self._call_count += 1
             if self._call_count >= 500:
                 self._call_count = 0
@@ -91,6 +96,39 @@ async def send_long(chat_id, text: str):
     for part in parts:
         await bot.send_message(chat_id, part)
         await asyncio.sleep(0.3)
+
+# ─── PDF ГЕНЕРАЦИЯ ────────────────────────────────────────────────────────────
+def generate_pdf(title: str, text: str) -> bytes:
+    """Генерирует PDF с кириллическим TTF шрифтом, возвращает bytes."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_margins(15, 15, 15)
+
+    if os.path.exists(FONT_PATH):
+        pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
+        pdf.add_font("DejaVu", "B", FONT_PATH, uni=True)
+        font_name = "DejaVu"
+    else:
+        # Фолбек если шрифт не найден — только латиница, но хоть что-то
+        font_name = "Helvetica"
+        logging.warning(f"Шрифт {FONT_PATH} не найден, используется Helvetica")
+
+    # Заголовок
+    pdf.set_font(font_name, "B", 16)
+    pdf.multi_cell(0, 10, title, align="C")
+    pdf.ln(8)
+
+    # Основной текст
+    pdf.set_font(font_name, "", 11)
+    # Разбиваем на абзацы чтобы корректно отображались переносы
+    for paragraph in text.split("\n"):
+        if paragraph.strip():
+            pdf.multi_cell(0, 7, paragraph.strip())
+            pdf.ln(2)
+        else:
+            pdf.ln(4)
+
+    return pdf.output(dest="S").encode("latin-1")
 
 # ─── НУМЕРОЛОГИЧЕСКИЕ РАСЧЁТЫ ────────────────────────────────────────────────
 def calculate_destiny(date_str: str) -> int:
@@ -196,194 +234,45 @@ def clean_text(text: str) -> str:
             result.append(char)
     return ''.join(result)
 
-# ─── ПРОМТЫ ──────────────────────────────────────────────────────────────────
-PROMPTS = {
-    "matrix_full": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Сделай полный глубокий разбор матрицы судьбы. "
-        "Обращайся к ней по имени {name} не чаще 3 раз. "
-        "Опиши: характер и личность, таланты и способности, денежный код, "
-        "любовь и отношения, кармические задачи, предназначение и миссия, "
-        "что означает её личный год сейчас, кармические числа и что они говорят. "
-        "Пиши подробно, атмосферно, около 1200 слов."
-    ),
-    "finance": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь детальный финансовый прогноз на ближайший год. "
-        "Обращайся к ней по имени {name} не чаще 3 раз. "
-        "Опиши денежные циклы, когда ожидать подъём доходов, "
-        "какие сферы принесут деньги, чего избегать. "
-        "Пиши конкретно и вдохновляюще, около 700 слов."
-    ),
-    "wealth_blocks": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой блоки богатства. Обращайся к ней по имени {name} не чаще 3 раз. "
-        "Какие убеждения и нумерологические паттерны мешают финансовому росту. "
-        "Как убрать каждый блок. Пиши честно и глубоко, около 1000 слов."
-    ),
-    "freedom_path": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Опиши путь к финансовой свободе. Обращайся к ней по имени {name} не чаще 3 раз. "
-        "Какой путь начертан в её числах. Какие шаги сделать уже сейчас. "
-        "Пиши вдохновляюще и практично, около 1000 слов."
-    ),
-    "calling": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой истинное призвание. Обращайся к ней по имени {name} не чаще 3 раз. "
-        "Какой вид деятельности приносит ей и радость, и деньги. "
-        "Пиши глубоко и с теплом, около 700 слов."
-    ),
-    "promotion": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Дай нумерологический разбор карьерного роста. Обращайся по имени {name} не чаще 3 раз. "
-        "Когда лучший период для повышения, как представить себя руководству. "
-        "Пиши конкретно, около 700 слов."
-    ),
-    "own_business": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь разбор по открытию своего дела. Обращайся по имени {name} не чаще 3 раз. "
-        "Подходит ли ей предпринимательство, в каких нишах успех, когда стартовать. "
-        "Пиши вдохновляюще, около 1000 слов."
-    ),
-    "hidden_talents": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой скрытые таланты. Обращайся по имени {name} не чаще 3 раз. "
-        "Что она умеет но недооценивает, какие способности приносят успех. "
-        "Пиши восхищённо и тепло, около 700 слов."
-    ),
-    "main_fear": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой главный страх с точки зрения нумерологии. Обращайся по имени {name} не чаще 3 раз. "
-        "Откуда он берётся, как мешает жизни и как преодолеть. "
-        "Пиши бережно и глубоко, около 400 слов."
-    ),
-    "forecast_2026": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь подробный нумерологический прогноз на 2026 год. Обращайся по имени {name} не чаще 3 раз. "
-        "Опиши ключевые темы года, лучшие месяцы, любовь, финансы, карьеру, здоровье. "
-        "Пиши структурированно и вдохновляюще, около 1200 слов."
-    ),
-    "strong_weak": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Опиши сильные и слабые стороны личности. Обращайся по имени {name} не чаще 3 раз. "
-        "Что помогает достигать целей, что тянет назад и как с этим работать. "
-        "Пиши честно и с поддержкой, около 400 слов."
-    ),
-    "compat": (
-        "Первый человек — имя {name}, дата рождения {date1}.\n"
-        "Нумерологические данные первой:\n{context}\n\n"
-        "Второй человек — дата рождения {date2}, число судьбы {n2}.\n\n"
-        "Сделай максимально подробный разбор совместимости. Обращайся по имени {name} не чаще 3 раз. "
-        "Опиши характер каждого, совместимость в любви, конфликты, прогноз отношений. "
-        "Пиши тепло и атмосферно, около 1000 слов."
-    ),
-    "when": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Сделай прогноз когда она встретит своего партнёра. Обращайся по имени {name} не чаще 3 раз. "
-        "Опиши в каком периоде жизни, при каких обстоятельствах, какие знаки укажут. "
-        "Пиши романтично и атмосферно, около 700 слов."
-    ),
-    "portrait": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь портрет идеального партнёра. Обращайся по имени {name} не чаще 3 раз. "
-        "Опиши его характер, внешность, профессию. "
-        "Пиши романтично, около 700 слов."
-    ),
-    "unlucky": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Объясни почему ей не везёт в любви. Обращайся по имени {name} не чаще 3 раз. "
-        "Какие кармические причины, какие паттерны мешают, как исправить. "
-        "Пиши тепло и с поддержкой, около 400 слов."
-    ),
-    "mission": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой предназначение и жизненную миссию. Обращайся по имени {name} не чаще 3 раз. "
-        "Что она пришла сделать в этот мир, какие таланты раскрыть. "
-        "Пиши вдохновляюще и глубоко, около 1000 слов."
-    ),
-    "karma": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Опиши кармический долг. Обращайся по имени {name} не чаще 3 раз. "
-        "Что мешает в жизни, какие уроки пройти, как освободиться от кармических блоков. "
-        "Пиши глубоко, около 1000 слов."
-    ),
-    "career": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Опиши идеальный карьерный путь. Обращайся по имени {name} не чаще 3 раз. "
-        "Какие профессии подходят, сильные стороны на работе, как достичь успеха. "
-        "Пиши конкретно, около 700 слов."
-    ),
-    "money": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Раскрой денежный код. Обращайся по имени {name} не чаще 3 раз. "
-        "Какие отношения с деньгами заложены в числах, как активировать поток. "
-        "Пиши практично, около 700 слов."
-    ),
-    "days": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Составь разбор сильных и слабых дней месяца. Обращайся по имени {name} не чаще 3 раз. "
-        "Какие числа месяца благоприятны для дел, любви, финансов. "
-        "Пиши структурированно, около 700 слов."
-    ),
-    "ex": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Проанализируй — вернётся ли бывший. Обращайся по имени {name} не чаще 3 раз. "
-        "Энергетика их связи, шанс на воссоединение, что нужно сделать или отпустить. "
-        "Пиши тепло, около 400 слов."
-    ),
-    "cold": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Объясни почему партнёр охладел. Обращайся по имени {name} не чаще 3 раз. "
-        "Числовые несовместимости, что происходит на энергетическом уровне, как изменить. "
-        "Пиши тепло и честно, около 400 слов."
-    ),
-    "toxic": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Проанализируй является ли связь токсичной или кармической. Обращайся по имени {name} не чаще 3 раз. "
-        "Признаки токсичности в числах, кармические уроки, как освободиться. "
-        "Пиши глубоко, около 700 слов."
-    ),
-    "lonely": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Объясни почему она чувствует себя одинокой. Обращайся по имени {name} не чаще 3 раз. "
-        "Какие числовые паттерны создают одиночество, как изменить энергетику. "
-        "Пиши тепло, около 400 слов."
-    ),
-    "breakup": (
-        "Вот нумерологические данные для {name}:\n{context}\n\n"
-        "Сделай разбор после расставания. Обращайся по имени {name} не чаще 3 раз. "
-        "Почему это произошло по числам, уроки расставания, что ждёт впереди. "
-        "Пиши с теплом и надеждой, около 700 слов."
-    ),
-}
-
+# ─── ЦЕНЫ И МЕТАДАННЫЕ ───────────────────────────────────────────────────────
 TITLES = {
-    "free":          "💫 Матрица судьбы (Лайт)",
-    "matrix_full":   "🔮 Матрица судьбы (Полная)",
-    "finance":       "💹 Финансовый прогноз",
-    "wealth_blocks": "🚧 Блоки богатства",
-    "freedom_path":  "🗺 Путь к свободе",
-    "calling":       "🌠 Призвание",
-    "promotion":     "📈 Повышение",
-    "own_business":  "🏢 Свой бизнес",
-    "hidden_talents":"✨ Скрытые таланты",
-    "main_fear":     "😨 Главный страх",
-    "forecast_2026": "🗓 Прогноз на 2026 год",
-    "strong_weak":   "⚖️ Сильная и слабая сторона",
-    "compat":        "💑 Совместимость двух людей",
-    "when":          "💘 Когда встретишь того самого",
-    "portrait":      "💍 Портрет идеального партнёра",
-    "unlucky":       "💔 Почему не везёт в любви",
-    "mission":       "🌟 Предназначение и миссия",
-    "karma":         "🔴 Кармический долг",
-    "career":        "💼 Карьерный путь",
-    "money":         "💰 Денежный код",
-    "days":          "🌙 Сильные и слабые дни",
-    "ex":            "💔 Вернётся ли бывший",
-    "cold":          "❄️ Почему он охладел",
-    "toxic":         "☠️ Токсичная или кармическая связь",
-    "lonely":        "😔 Почему ты одинока",
-    "breakup":       "💔 Разбор после расставания",
+    "free":            "💫 Матрица судьбы",
+    "matrix_full":     "🔮 Матрица судьбы (Полная)",
+    "finance":         "💹 Финансовый прогноз",
+    "wealth_blocks":   "🚧 Блоки богатства",
+    "freedom_path":    "🗺 Путь к свободе",
+    "calling":         "🌠 Призвание",
+    "promotion":       "📈 Повышение",
+    "own_business":    "🏢 Свой бизнес",
+    "hidden_talents":  "✨ Скрытые таланты",
+    "main_fear":       "😨 Главный страх",
+    "forecast_2026":   "🗓 Прогноз на 2026 год",
+    "strong_weak":     "⚖️ Сильная и слабая сторона",
+    "compat":          "💑 Совместимость двух людей",
+    "when":            "💘 Когда встретишь того самого",
+    "portrait":        "💍 Портрет идеального партнёра",
+    "unlucky":         "💔 Почему не везёт в любви",
+    "mission":         "🌟 Предназначение и миссия",
+    "karma":           "🔴 Кармический долг",
+    "career":          "💼 Карьерный путь",
+    "money":           "💰 Денежный код",
+    "days":            "🌙 Сильные и слабые дни",
+    "ex":              "💔 Вернётся ли бывший",
+    "cold":            "❄️ Почему он охладел",
+    "toxic":           "☠️ Токсичная или кармическая связь",
+    "lonely":          "😔 Почему ты одинока",
+    "breakup":         "💔 Разбор после расставания",
+    # Раздел 4 — Здоровье и энергия
+    "health_code":     "💚 Код здоровья",
+    "energy_drain":    "⚡ Что крадёт энергию",
+    "body_message":    "🫀 Послания тела",
+    "stress_number":   "😤 Число стресса",
+    "intuition":       "🔮 Интуиция и внутренний голос",
+    # Раздел 5 — Прошлое и будущее
+    "past_life":       "📜 Прошлые жизни",
+    "future_portal":   "🌟 Прогноз на 3 года",
+    "turning_point":   "🔄 Поворотные точки судьбы",
+    "ancestor_code":   "🌳 Родовой код",
 }
 
 PRICES = {
@@ -412,7 +301,21 @@ PRICES = {
     "lonely":        49,
     "main_fear":     49,
     "strong_weak":   49,
+    # Раздел 4
+    "health_code":   79,
+    "energy_drain":  49,
+    "body_message":  49,
+    "stress_number": 49,
+    "intuition":     79,
+    # Раздел 5
+    "past_life":     99,
+    "future_portal": 149,
+    "turning_point": 79,
+    "ancestor_code": 99,
 }
+
+# Разборы для которых генерируется PDF (79⭐ и выше)
+PDF_KEYS = {k for k, v in PRICES.items() if v >= 79}
 
 UPSELLS = {
     "matrix_full":   ("forecast_2026", "mission"),
@@ -440,14 +343,30 @@ UPSELLS = {
     "days":          ("finance",       "forecast_2026"),
     "strong_weak":   ("hidden_talents","main_fear"),
     "main_fear":     ("strong_weak",   "karma"),
+    # Раздел 4
+    "health_code":   ("energy_drain",  "intuition"),
+    "energy_drain":  ("health_code",   "stress_number"),
+    "body_message":  ("energy_drain",  "health_code"),
+    "stress_number": ("energy_drain",  "body_message"),
+    "intuition":     ("health_code",   "past_life"),
+    # Раздел 5
+    "past_life":     ("ancestor_code", "karma"),
+    "future_portal": ("turning_point", "forecast_2026"),
+    "turning_point": ("future_portal", "past_life"),
+    "ancestor_code": ("past_life",     "karma"),
 }
 
 # Разделы меню
 SECTION_DESTINY = ["matrix_full", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026"]
 SECTION_MONEY   = ["finance", "wealth_blocks", "freedom_path", "calling", "promotion", "own_business", "career", "money", "days"]
 SECTION_LOVE    = ["compat", "when", "portrait", "unlucky", "ex", "cold", "toxic", "lonely", "breakup"]
+SECTION_HEALTH  = ["health_code", "energy_drain", "body_message", "stress_number", "intuition"]
+SECTION_PAST    = ["past_life", "future_portal", "turning_point", "ancestor_code"]
 
 PAID_RAZBORY = {k: v for k, v in TITLES.items() if k != "free"}
+
+# Разборы которые могут быть бесплатными (до 99⭐ включительно)
+FREE_ELIGIBLE = {k for k, v in PRICES.items() if v <= 99}
 
 # ─── DB ──────────────────────────────────────────────────────────────────────
 async def init_db():
@@ -473,7 +392,17 @@ async def init_db():
             code       TEXT PRIMARY KEY,
             created_at TIMESTAMP DEFAULT NOW(),
             expires_at TIMESTAMP,
-            used_by    BIGINT DEFAULT NULL
+            max_uses   INTEGER DEFAULT 1,
+            uses_count INTEGER DEFAULT 0
+        )
+    ''')
+    # Таблица отдельных применений — для истории и /coupon_stat
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS coupon_uses (
+            id         SERIAL PRIMARY KEY,
+            code       TEXT NOT NULL,
+            user_id    BIGINT NOT NULL,
+            used_at    TIMESTAMP DEFAULT NOW()
         )
     ''')
     for col, definition in [
@@ -539,6 +468,8 @@ class Form(StatesGroup):
     waiting_date        = State()
     waiting_second_date = State()
     waiting_review      = State()
+    # Для выбора бесплатного разбора
+    waiting_free_date   = State()
 
 # ─── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────────────────────────────────────
 def is_valid_date(date_str: str) -> bool:
@@ -558,45 +489,55 @@ async def check_subscription(user_id: int) -> bool:
         return False
 
 def utc_now() -> datetime:
-    """Современная замена datetime.utcnow()"""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # ─── GROQ + RETRY + ОЧИСТКА ──────────────────────────────────────────────────
-async def ask_ai(prompt: str) -> str:
-    models = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "llama3-8b-8192",
-    ]
+# Корректировка 8: убран llama-3.1-8b-instant
+GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama3-8b-8192",
+]
+
+SYSTEM_PROMPT = (
+    "Ты — Ева, нумеролог с 15-летним опытом практики. "
+    "Твои разборы точные, глубокие и конкретные. "
+    "Ты говоришь уверенно — без слов 'возможно', 'наверное', 'может быть', 'вероятно'. "
+    "Ты знаешь ответ и говоришь его прямо. "
+    "Твоя аудитория — только женщины. "
+    "Всегда обращайся к пользователю в женском роде — она, её, умная, сильная. "
+    "Обращайся только на ТЫ — никогда не пиши 'давайте', 'вы', 'ваш'. "
+    "Имя пользователя упоминай не чаще 2-3 раз за весь текст. "
+    "КРИТИЧЕСКИ ВАЖНО: пишешь ТОЛЬКО на русском языке. "
+    "Никаких иероглифов, никакого английского, никакого другого алфавита — вообще. "
+    "Весь ответ от первого до последнего символа — только кириллица. "
+    "Никогда не используй markdown — никаких звёздочек, решёток, подчёркиваний. "
+    "Пиши простым текстом с эмодзи. "
+    "Используй абзацы. Заканчивай полным предложением."
+)
+
+async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
+    """
+    Корректировка 5: таймаут 45 сек на модель.
+    Промежуточное сообщение отправляется снаружи — через asyncio.create_task.
+    """
     url     = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    system_prompt = (
-        "Ты — Ева, тёплый и мудрый нумеролог. Общаешься как близкая подруга. "
-        "Твоя аудитория — только женщины. "
-        "Всегда обращайся к пользователю в женском роде — она, её, умная, сильная. "
-        "Обращайся только на ТЫ — никогда не пиши давайте, вы, ваш. "
-        "Имя пользователя упоминай не чаще 2-3 раз за весь текст. "
-        "КРИТИЧЕСКИ ВАЖНО: пишешь ТОЛЬКО на русском языке. "
-        "Никаких иероглифов, никакого английского, никакого другого алфавита — вообще. "
-        "Весь ответ от первого до последнего символа — только кириллица. "
-        "Никогда не используй markdown — никаких звёздочек, решёток, подчёркиваний. "
-        "Пиши простым текстом с эмодзи. "
-        "Используй абзацы. Заканчивай полным предложением."
-    )
     last_error = None
-    for model in models:
+
+    for model in GROQ_MODELS:
         for attempt in range(2):
             try:
                 data = {
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": system_prompt},
+                        {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
                     ],
                     "max_tokens": 2000,
                 }
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(url, headers=headers, json=data, timeout=90)
+                    # Корректировка 5: таймаут 45 сек
+                    response = await client.post(url, headers=headers, json=data, timeout=45)
                     response.raise_for_status()
                     raw = response.json()["choices"][0]["message"]["content"]
                     if has_foreign(raw):
@@ -607,9 +548,12 @@ async def ask_ai(prompt: str) -> str:
                 last_error = e
                 logging.warning(f"Model {model} attempt {attempt+1} failed: {e}")
                 break
+
     raise last_error or Exception("Все модели вернули иностранные символы")
 
 def build_prompt(key: str, **kwargs) -> str:
+    # Добавляем текущий год в контекст для разборов которые на него ссылаются
+    kwargs.setdefault("year", datetime.now().year)
     return PROMPTS.get(key, "").format(**kwargs)
 
 # ─── КЛАВИАТУРЫ ──────────────────────────────────────────────────────────────
@@ -638,13 +582,14 @@ def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
 
 def main_menu(user=None) -> InlineKeyboardMarkup:
     buttons = []
+
+    # Корректировка 2: бесплатный разбор на выбор (любой до 99⭐)
     if user and not user.get("free_used"):
         buttons.append([InlineKeyboardButton(
-            text="💫 Матрица судьбы (Лайт) — бесплатно",
-            callback_data="free"
+            text="🎁 Бесплатный разбор на выбор",
+            callback_data="free_choose"
         )])
 
-    # История разборов — если есть покупки
     purchased = user.get("purchased", []) if user else []
     if purchased:
         count = len(purchased)
@@ -653,27 +598,36 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
             callback_data="my_readings"
         )])
 
-    notif_on = user.get("notifications", True) if user else True
-    if notif_on:
-        buttons.append([InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")])
-    else:
-        buttons.append([InlineKeyboardButton(text="🔔 Включить уведомления", callback_data="notif_on")])
-
     buttons.append([InlineKeyboardButton(text="── Выбери тему ──", callback_data="noop")])
-    buttons.append([InlineKeyboardButton(text="🔮 Судьба и личность", callback_data="section_destiny")])
-    buttons.append([InlineKeyboardButton(text="💰 Деньги и карьера",  callback_data="section_money")])
-    buttons.append([InlineKeyboardButton(text="💑 Любовь и отношения", callback_data="section_love")])
+    buttons.append([InlineKeyboardButton(text="🔮 Судьба и личность",    callback_data="section_destiny")])
+    buttons.append([InlineKeyboardButton(text="💰 Деньги и карьера",     callback_data="section_money")])
+    buttons.append([InlineKeyboardButton(text="💑 Любовь и отношения",   callback_data="section_love")])
+    buttons.append([InlineKeyboardButton(text="🌙 Здоровье и энергия",   callback_data="section_health")])
+    buttons.append([InlineKeyboardButton(text="✨ Прошлое и будущее",    callback_data="section_past")])
     buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы (за рубли)",
         url=CONTACT_URL
     )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# Корректировка 2: меню выбора бесплатного разбора (все разборы до 99⭐)
+def free_choose_menu() -> InlineKeyboardMarkup:
+    buttons = []
+    for key in sorted(FREE_ELIGIBLE):
+        title = TITLES.get(key, key)
+        price = PRICES.get(key, 0)
+        buttons.append([InlineKeyboardButton(
+            text=f"{title} ({price} ⭐ — бесплатно)",
+            callback_data=f"free_pick_{key}"
+        )])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 def section_destiny_menu(user=None) -> InlineKeyboardMarkup:
     purchased = user.get("purchased", []) if user else []
     buttons = []
     items = [
-        ("matrix_full",   "🔮 Матрица судьбы (Полная) — 149 ⭐"),
+        ("matrix_full",   "🔮 Матрица судьбы — 149 ⭐"),
         ("mission",       "🌟 Предназначение и миссия — 99 ⭐"),
         ("hidden_talents","✨ Скрытые таланты — 79 ⭐"),
         ("strong_weak",   "⚖️ Сильная/слабая сторона — 49 ⭐"),
@@ -720,6 +674,38 @@ def section_love_menu(user=None) -> InlineKeyboardMarkup:
         ("toxic",    "☠️ Токсичная связь — 79 ⭐"),
         ("lonely",   "😔 Почему ты одинока — 49 ⭐"),
         ("breakup",  "💔 Разбор после расставания — 79 ⭐"),
+    ]
+    for key, label in items:
+        prefix = "✅ " if key in purchased else ""
+        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# Корректировка 3: новые разделы
+def section_health_menu(user=None) -> InlineKeyboardMarkup:
+    purchased = user.get("purchased", []) if user else []
+    buttons = []
+    items = [
+        ("health_code",   "💚 Код здоровья — 79 ⭐"),
+        ("energy_drain",  "⚡ Что крадёт энергию — 49 ⭐"),
+        ("body_message",  "🫀 Послания тела — 49 ⭐"),
+        ("stress_number", "😤 Число стресса — 49 ⭐"),
+        ("intuition",     "🔮 Интуиция и внутренний голос — 79 ⭐"),
+    ]
+    for key, label in items:
+        prefix = "✅ " if key in purchased else ""
+        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def section_past_menu(user=None) -> InlineKeyboardMarkup:
+    purchased = user.get("purchased", []) if user else []
+    buttons = []
+    items = [
+        ("past_life",     "📜 Прошлые жизни — 99 ⭐"),
+        ("future_portal", "🌟 Прогноз на 3 года — 149 ⭐"),
+        ("turning_point", "🔄 Поворотные точки судьбы — 79 ⭐"),
+        ("ancestor_code", "🌳 Родовой код — 99 ⭐"),
     ]
     for key, label in items:
         prefix = "✅ " if key in purchased else ""
@@ -778,12 +764,12 @@ def notif_off_menu() -> InlineKeyboardMarkup:
     ])
 
 # ─── КУПОНЫ ──────────────────────────────────────────────────────────────────
-async def create_coupon(code: str) -> bool:
+async def create_coupon(code: str, max_uses: int = 1) -> bool:
     expires = utc_now() + timedelta(hours=48)
     try:
         await db_pool.execute(
-            'INSERT INTO coupons (code, expires_at) VALUES ($1, $2)',
-            code.upper(), expires
+            'INSERT INTO coupons (code, expires_at, max_uses) VALUES ($1, $2, $3)',
+            code.upper(), expires, max_uses
         )
         return True
     except Exception:
@@ -793,16 +779,39 @@ async def use_coupon(code: str, user_id: int) -> str:
     row = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code.upper())
     if not row:
         return 'not_found'
-    if row['used_by'] is not None:
-        return 'used'
-    if row['expires_at'] < utc_now():
+    if row['expires_at'] and row['expires_at'] < utc_now():
         return 'expired'
+    if row['uses_count'] >= row['max_uses']:
+        return 'limit'
+    # Фиксируем использование атомарно
+    updated = await db_pool.fetchval(
+        '''UPDATE coupons SET uses_count = uses_count + 1
+           WHERE code = $1 AND uses_count < max_uses
+           RETURNING uses_count''',
+        code.upper()
+    )
+    if updated is None:
+        return 'limit'  # гонка — кто-то успел раньше
     await db_pool.execute(
-        'UPDATE coupons SET used_by = $1 WHERE code = $2', user_id, code.upper()
+        'INSERT INTO coupon_uses (code, user_id) VALUES ($1, $2)',
+        code.upper(), user_id
     )
     return 'ok'
 
 # ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
+# Корректировка 1: убраны из main_menu, теперь только /notifications
+
+@dp.message(Command("notifications"), StateFilter("*"))
+async def notifications_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user = await get_user(message.from_user.id)
+    notif_on = user.get("notifications", True)
+    status = "включены 🔔" if notif_on else "отключены 🔕"
+    await message.answer(
+        f"Утренние уведомления сейчас {status}.\n\nУправляй настройкой 👇",
+        reply_markup=notifications_menu(notif_on)
+    )
+
 @dp.callback_query(F.data == "notif_off")
 async def notif_off(callback: CallbackQuery):
     user = await get_user(callback.from_user.id)
@@ -810,8 +819,10 @@ async def notif_off(callback: CallbackQuery):
     await save_user(callback.from_user.id, user)
     await callback.answer("🔕 Уведомления отключены", show_alert=True)
     await callback.message.answer(
-        "🔕 Утренние уведомления отключены.\n\nТы можешь включить их обратно в любое время 👇",
-        reply_markup=notifications_menu(False)
+        "🔕 Утренние уведомления отключены.\n\nВключить обратно: /notifications",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")]
+        ])
     )
 
 @dp.callback_query(F.data == "notif_on")
@@ -821,8 +832,10 @@ async def notif_on(callback: CallbackQuery):
     await save_user(callback.from_user.id, user)
     await callback.answer("🔔 Уведомления включены!", show_alert=True)
     await callback.message.answer(
-        "🔔 Утренние уведомления включены!\n\nКаждое утро буду присылать тебе нумерологический прогноз 🌅",
-        reply_markup=notifications_menu(True)
+        "🔔 Утренние уведомления включены!\n\nКаждое утро буду присылать нумерологический прогноз 🌅",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")]
+        ])
     )
 
 # ─── РАЗДЕЛЫ МЕНЮ ────────────────────────────────────────────────────────────
@@ -844,6 +857,18 @@ async def section_love(callback: CallbackQuery):
     await callback.message.answer("💑 Любовь и отношения — выбери разбор:", reply_markup=section_love_menu(user))
     await callback.answer()
 
+@dp.callback_query(F.data == "section_health")
+async def section_health(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    await callback.message.answer("🌙 Здоровье и энергия — выбери разбор:", reply_markup=section_health_menu(user))
+    await callback.answer()
+
+@dp.callback_query(F.data == "section_past")
+async def section_past(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    await callback.message.answer("✨ Прошлое и будущее — выбери разбор:", reply_markup=section_past_menu(user))
+    await callback.answer()
+
 # ─── МОИ РАЗБОРЫ ─────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "my_readings")
 async def my_readings(callback: CallbackQuery):
@@ -857,6 +882,80 @@ async def my_readings(callback: CallbackQuery):
         reply_markup=my_readings_menu(user)
     )
     await callback.answer()
+
+# ─── БЕСПЛАТНЫЙ РАЗБОР НА ВЫБОР ─────────────────────────────────────────────
+# Корректировка 2
+
+@dp.callback_query(F.data == "free_choose")
+async def free_choose_handler(callback: CallbackQuery, state: FSMContext):
+    user = await get_user(callback.from_user.id)
+    if not user["subscribed_channel"]:
+        is_sub = await check_subscription(callback.from_user.id)
+        if not is_sub:
+            await callback.message.answer(
+                f"💫 Подпишись на {CHANNEL} чтобы получить бесплатный разбор 👇",
+                reply_markup=check_menu()
+            )
+            await callback.answer()
+            return
+        user["subscribed_channel"] = True
+        await save_user(callback.from_user.id, user)
+
+    if user["free_used"]:
+        await callback.answer("Бесплатный разбор уже использован 🔮", show_alert=True)
+        return
+
+    # Если имени нет — спросить
+    if not user.get("first_name"):
+        await callback.message.answer("✨ Как мне тебя называть? Введи своё имя 👇")
+        await state.set_state(Form.waiting_name)
+        await callback.answer()
+        return
+
+    await callback.message.answer(
+        "🎁 Выбери любой разбор — он будет бесплатным!\n\n"
+        "Это твой подарок за подписку на канал 💫",
+        reply_markup=free_choose_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("free_pick_"))
+async def free_pick_handler(callback: CallbackQuery, state: FSMContext):
+    key  = callback.data.replace("free_pick_", "")
+    user = await get_user(callback.from_user.id)
+
+    if user["free_used"]:
+        await callback.answer("Бесплатный разбор уже использован!", show_alert=True)
+        return
+
+    if key not in FREE_ELIGIBLE:
+        await callback.answer("Этот разбор не входит в бесплатные!", show_alert=True)
+        return
+
+    user["waiting"] = key
+    await save_user(callback.from_user.id, user)
+    await callback.answer()
+
+    if key == "compat":
+        await callback.message.answer(
+            "💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
+        )
+        await state.set_state(Form.waiting_second_date)
+    else:
+        await _ask_date(callback.message, user)
+        await state.set_state(Form.waiting_free_date)
+
+@dp.message(StateFilter(Form.waiting_free_date))
+async def handle_free_date(message: Message, state: FSMContext):
+    user = await get_user(message.from_user.id)
+    text = message.text.strip()
+    if not is_valid_date(text):
+        await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
+        return
+    # Помечаем бесплатный как использованный
+    user["free_used"] = True
+    await save_user(message.from_user.id, user)
+    await _process_date(message, message.from_user.id, user, text, state, is_free=True)
 
 # ─── ОНБОРДИНГ ───────────────────────────────────────────────────────────────
 @dp.message(Command("start"), StateFilter("*"))
@@ -875,14 +974,15 @@ async def start(message: Message, state: FSMContext):
         await message.answer(
             "🔮 Привет! Я Ева — твой личный нумеролог.\n\n"
             "✨ Что я умею:\n\n"
-            "• Бесплатный разбор матрицы судьбы (Лайт)\n"
+            "• Бесплатный разбор на выбор (любой до 99 ⭐)\n"
             "• Полная матрица судьбы и кармический долг\n"
             "• Финансовый прогноз и блоки богатства\n"
             "• Путь к своему делу и призванию\n"
             "• Совместимость, любовь, отношения\n"
-            "• Прогноз на 2026 год\n\n"
+            "• Здоровье, энергия и интуиция\n"
+            "• Прошлые жизни, родовой код, прогноз на 3 года\n\n"
             "Всё это по твоей дате рождения — точно и личностно 🌸\n\n"
-            f"Подпишись на {CHANNEL} и получи бесплатный разбор 👇",
+            f"Подпишись на {CHANNEL} и получи бесплатный разбор на выбор 👇",
             reply_markup=check_menu()
         )
         return
@@ -921,6 +1021,17 @@ async def handle_name(message: Message, state: FSMContext):
     user = await get_user(message.from_user.id)
     user["first_name"] = name
     await save_user(message.from_user.id, user)
+
+    # Если пришли сюда через free_choose — показываем выбор разборов
+    if not user.get("free_used"):
+        await message.answer(
+            f"Приятно познакомиться, {name}! 🌸\n\n"
+            "🎁 Выбери любой разбор — он будет бесплатным!\n\n"
+            "Это твой подарок за подписку на канал 💫",
+            reply_markup=free_choose_menu()
+        )
+        return
+
     await message.answer(
         f"Приятно познакомиться, {name}! 🌸\n\n"
         "Введи свою дату рождения в формате ДД.ММ.ГГГГ\n"
@@ -946,9 +1057,9 @@ async def handle_birth_date(message: Message, state: FSMContext):
     try:
         template = MATRIX_LITE.get(number, MATRIX_LITE.get(9, ""))
         answer   = template.format(name=name)
-        await send_long(message.chat.id, f"💫 Матрица судьбы (Лайт)\nЧисло судьбы {name}: {number}\n\n{answer}")
+        await send_long(message.chat.id, f"💫 Матрица судьбы\nЧисло судьбы: {number}\n\n{answer}")
         await message.answer(
-            "✨ Это была Лайт версия!\n\nВыбери полный разбор и узнай всё о своей судьбе 🔮",
+            "✨ Это был бесплатный разбор!\n\nВыбери полный разбор и узнай всё о своей судьбе 🔮",
             reply_markup=main_menu(user)
         )
     except Exception as e:
@@ -976,8 +1087,8 @@ async def promo_cmd(message: Message, state: FSMContext):
         await message.answer("❌ Такого промокода не существует.")
     elif result == 'expired':
         await message.answer("❌ Этот промокод уже истёк.")
-    elif result == 'used':
-        await message.answer("❌ Этот промокод уже был использован.")
+    elif result == 'limit':
+        await message.answer("❌ Этот промокод исчерпан — все использования закончились.")
     elif result == 'ok':
         await message.answer(
             "🎁 Промокод активирован! Выбери свой бесплатный разбор 👇",
@@ -990,21 +1101,66 @@ async def coupon_cmd(message: Message, state: FSMContext):
         return
     parts = message.text.strip().split()
     if len(parts) < 2:
-        await message.answer("Использование: /coupon КОД\nНапример: /coupon INSTAGRAM2026")
+        await message.answer(
+            "Использование:\n"
+            "/coupon КОД — создать на 1 использование\n"
+            "/coupon КОД 10 — создать на 10 использований\n\n"
+            "Пример: /coupon INSTAGRAM2026 50"
+        )
         return
-    code    = parts[1].upper()
-    success = await create_coupon(code)
+    code     = parts[1].upper()
+    max_uses = 1
+    if len(parts) >= 3:
+        try:
+            max_uses = max(1, int(parts[2]))
+        except ValueError:
+            await message.answer("❌ Число использований должно быть целым числом.\nПример: /coupon INSTAGRAM2026 10")
+            return
+    success = await create_coupon(code, max_uses)
     if success:
-        expires = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
+        expires  = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
+        uses_str = f"{max_uses} раз" if max_uses > 1 else "1 раз (один юзер — много раз)"
         await message.answer(
             f"✅ Промокод создан!\n\n"
             f"Код: <code>{code}</code>\n"
+            f"Лимит использований: {uses_str}\n"
             f"Действует до: {expires}\n\n"
             f"Юзер вводит: /promo {code}",
             parse_mode="HTML"
         )
     else:
         await message.answer("❌ Такой промокод уже существует.")
+
+@dp.message(Command("coupon_stat"), StateFilter("*"))
+async def coupon_stat_cmd(message: Message, state: FSMContext):
+    """Статистика по купону: /coupon_stat КОД"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        await message.answer("Использование: /coupon_stat КОД")
+        return
+    code = parts[1].upper()
+    row  = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
+    if not row:
+        await message.answer(f"❌ Промокод {code} не найден.")
+        return
+    uses = await db_pool.fetch(
+        'SELECT user_id, used_at FROM coupon_uses WHERE code = $1 ORDER BY used_at DESC LIMIT 20',
+        code
+    )
+    expires_str = row['expires_at'].strftime("%d.%m.%Y %H:%M") if row['expires_at'] else "бессрочно"
+    lines = [
+        f"📊 Промокод: <code>{code}</code>",
+        f"Использований: {row['uses_count']} / {row['max_uses']}",
+        f"Действует до: {expires_str}",
+    ]
+    if uses:
+        lines.append("\nПоследние активации:")
+        for u in uses:
+            dt = u['used_at'].strftime("%d.%m %H:%M")
+            lines.append(f"  • user_id {u['user_id']} — {dt}")
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("admin"), StateFilter("*"))
 async def admin_panel(message: Message, state: FSMContext):
@@ -1015,7 +1171,7 @@ async def admin_panel(message: Message, state: FSMContext):
     reviews       = await db_pool.fetchval("SELECT COUNT(*) FROM users WHERE reviews_left != '[]'")
     notif_on      = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE notifications = TRUE')
     coupons_total = await db_pool.fetchval('SELECT COUNT(*) FROM coupons')
-    coupons_used  = await db_pool.fetchval('SELECT COUNT(*) FROM coupons WHERE used_by IS NOT NULL')
+    coupons_used  = await db_pool.fetchval('SELECT COUNT(*) FROM coupon_uses')
     rows = await db_pool.fetch('SELECT purchased FROM users WHERE user_id != $1', ADMIN_ID)
     total_purch = 0
     razbory_cnt = {}
@@ -1039,7 +1195,7 @@ async def admin_panel(message: Message, state: FSMContext):
         f"🛒 Всего покупок: {total_purch}\n"
         f"⭐ Примерная выручка: ~{stars_total} Stars\n"
         f"🔔 Уведомления включены: {notif_on}\n"
-        f"🎟 Купонов: создано {coupons_total} / использовано {coupons_used}\n"
+        f"🎟 Купонов: создано {coupons_total} / активаций {coupons_used}\n"
         f"📝 Оставили отзывы: {reviews}\n\n"
         f"🏆 Топ разборов:\n{top_text}"
     )
@@ -1092,28 +1248,8 @@ async def noop_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "free")
 async def free_handler(callback: CallbackQuery, state: FSMContext):
-    user = await get_user(callback.from_user.id)
-    if not user["subscribed_channel"]:
-        is_sub = await check_subscription(callback.from_user.id)
-        if not is_sub:
-            await callback.message.answer(
-                f"💫 Подпишись на {CHANNEL} чтобы получить бесплатный разбор 👇",
-                reply_markup=check_menu()
-            )
-            await callback.answer()
-            return
-        user["subscribed_channel"] = True
-        await save_user(callback.from_user.id, user)
-    if user["free_used"]:
-        await callback.message.answer(
-            "💫 Бесплатный разбор ты уже получила.\n\nВыбери платный разбор 🔮",
-            reply_markup=main_menu(user)
-        )
-        await callback.answer()
-        return
-    await callback.message.answer("✨ Как мне тебя называть? Введи своё имя 👇")
-    await state.set_state(Form.waiting_name)
-    await callback.answer()
+    # Оставляем для обратной совместимости — перенаправляем на новый флоу
+    await free_choose_handler(callback, state)
 
 async def send_invoice(chat_id, title, description, payload, amount):
     await bot.send_invoice(
@@ -1163,7 +1299,8 @@ async def successful_payment(message: Message, state: FSMContext):
         await state.set_state(Form.waiting_date)
 
 # ─── ОБРАБОТКА ДАТ ───────────────────────────────────────────────────────────
-async def _process_date(message: Message, user_id: int, user: dict, date_str: str, state: FSMContext):
+async def _process_date(message: Message, user_id: int, user: dict, date_str: str,
+                        state: FSMContext, is_free: bool = False):
     number  = calculate_destiny(date_str)
     waiting = user.get("waiting")
     name    = user.get("first_name") or "дорогая"
@@ -1175,22 +1312,54 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         user["birth_date"]     = date_str
         user["destiny_number"] = number
         await save_user(user_id, user)
-    await message.answer(f"⏳ Ева составляет разбор для {name}... Подожди немного ✨")
+
+    # Корректировка 5: промежуточное сообщение через 20 сек
+    wait_msg = await message.answer(f"⏳ Ева составляет разбор для {name}... Подожди немного ✨")
+
+    async def send_intermediate():
+        await asyncio.sleep(20)
+        try:
+            await bot.edit_message_text(
+                "⏳ Ева углубляется в твои числа... Ещё немного, разбор почти готов 🔮",
+                chat_id=message.chat.id,
+                message_id=wait_msg.message_id
+            )
+        except Exception:
+            pass
+
+    intermediate_task = asyncio.create_task(send_intermediate())
+
     try:
         context = build_numerology_context(name, date_str)
         prompt  = build_prompt(waiting, name=name, context=context, date=date_str)
         answer  = await ask_ai(prompt)
-        title   = TITLES.get(waiting, "🔮 Разбор")
+        intermediate_task.cancel()
+
+        title = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
+
+        # Корректировка 4: PDF для разборов 79⭐ и выше
+        if waiting in PDF_KEYS:
+            try:
+                pdf_bytes = generate_pdf(title, answer)
+                pdf_file  = BufferedInputFile(pdf_bytes, filename=f"{title}.pdf")
+                await bot.send_document(
+                    message.chat.id,
+                    pdf_file,
+                    caption="📄 Твой разбор в PDF — сохрани себе!"
+                )
+            except Exception as pdf_err:
+                logging.warning(f"PDF generation failed for {waiting}: {pdf_err}")
+
         await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu(waiting, user))
         await state.clear()
     except Exception as e:
+        intermediate_task.cancel()
         logging.error(f"Date handler error [{waiting}]: {e}", exc_info=True)
         await message.answer(
             "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
             reply_markup=retry_menu(waiting)
         )
-        # НЕ сбрасываем state — пользователь может повторить
 
 @dp.message(StateFilter(Form.waiting_second_date))
 async def handle_two_dates(message: Message, state: FSMContext):
@@ -1204,16 +1373,44 @@ async def handle_two_dates(message: Message, state: FSMContext):
         await message.answer("❌ Неверный формат. Используй ДД.ММ.ГГГГ, ДД.ММ.ГГГГ")
         return
     name = user.get("first_name") or "дорогая"
-    await message.answer("⏳ Ева составляет разбор совместимости...")
+
+    wait_msg = await message.answer("⏳ Ева составляет разбор совместимости...")
+
+    async def send_intermediate():
+        await asyncio.sleep(20)
+        try:
+            await bot.edit_message_text(
+                "⏳ Разбираю энергетику двух людей... Ещё немного 🔮",
+                chat_id=message.chat.id,
+                message_id=wait_msg.message_id
+            )
+        except Exception:
+            pass
+
+    intermediate_task = asyncio.create_task(send_intermediate())
+
     try:
         n2      = calculate_destiny(parts[1])
         context = build_numerology_context(name, parts[0])
         prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
         answer  = await ask_ai(prompt)
+        intermediate_task.cancel()
+
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
+
+        # PDF для compat (99⭐ — не входит в PDF_KEYS, но compat = 99, а PDF от 79)
+        if "compat" in PDF_KEYS:
+            try:
+                pdf_bytes = generate_pdf("💑 Совместимость", answer)
+                pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
+                await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
+            except Exception as pdf_err:
+                logging.warning(f"PDF compat error: {pdf_err}")
+
         await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("compat", user))
         await state.clear()
     except Exception as e:
+        intermediate_task.cancel()
         logging.error(f"Compat error: {e}", exc_info=True)
         await message.answer(
             "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
@@ -1247,13 +1444,12 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(Form.waiting_review))
 async def handle_review(message: Message, state: FSMContext):
-    user       = await get_user(message.from_user.id)
-    name       = user.get("first_name") or "Аноним"
-    data       = await state.get_data()
-    review_key = data.get("review_key", "")
-    title      = TITLES.get(review_key, "разбор")
+    user        = await get_user(message.from_user.id)
+    name        = user.get("first_name") or "Аноним"
+    data        = await state.get_data()
+    review_key  = data.get("review_key", "")
+    title       = TITLES.get(review_key, "разбор")
     review_text = f"⭐ Отзыв о боте @nnumerology_bot\n👤 {name}\n💫 Разбор: {title}\n\n{message.text}"
-    # Сохраняем отзыв в БД в любом случае
     reviews_left = user.get("reviews_left", [])
     if review_key and review_key not in reviews_left:
         reviews_left.append(review_key)
@@ -1298,7 +1494,6 @@ async def send_daily_horoscope():
                     await bot.send_message(row['user_id'], text, reply_markup=notif_off_menu())
                     await asyncio.sleep(0.05)
                 except TelegramForbiddenError:
-                    # Пользователь заблокировал бота — отключаем уведомления
                     await db_pool.execute(
                         'UPDATE users SET notifications = FALSE WHERE user_id = $1',
                         row['user_id']
