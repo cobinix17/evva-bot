@@ -658,6 +658,12 @@ async def _try_groq(prompt: str) -> str | None:
                 }
                 async with httpx.AsyncClient() as client:
                     response = await client.post(url, headers=headers, json=data, timeout=45)
+                    if response.status_code == 429:
+                        # Rate limit — ждём и пробуем следующую модель
+                        retry_after = int(response.headers.get("retry-after", 5))
+                        logging.warning(f"Groq {model} 429 rate limit, retry-after={retry_after}s")
+                        await asyncio.sleep(min(retry_after, 10))
+                        break
                     if response.status_code == 400:
                         err_body = response.text[:300]
                         logging.warning(f"Groq {model} 400: {err_body}")
@@ -679,7 +685,7 @@ async def _try_openmodel(prompt: str) -> str | None:
     api_key = os.getenv("DEEPSEEK_API_KEY")  # ключ формата om_****
     if not api_key:
         return None
-    url     = "https://api.openmodel.app/v1/chat/completions"
+    url     = "https://api.openmodel.ai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
         data = {
