@@ -128,16 +128,16 @@ def _ensure_font() -> str:
         logging.warning(f"Не удалось скачать шрифт: {e}")
         return None
 
-def generate_pdf(title: str, text: str) -> bytes:
-    """Генерирует PDF с кириллическим TTF шрифтом, возвращает bytes."""
+def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
+    """Красивый PDF для женской аудитории."""
     pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
-    pdf.set_margins(15, 15, 15)
 
     font_path = _ensure_font()
     if font_path:
         try:
-            pdf.add_font("DejaVu", style="", fname=font_path)
+            pdf.add_font("DejaVu", style="",  fname=font_path)
             pdf.add_font("DejaVu", style="B", fname=font_path)
             font_name = "DejaVu"
         except Exception as e:
@@ -146,19 +146,98 @@ def generate_pdf(title: str, text: str) -> bytes:
     else:
         font_name = "Helvetica"
 
-    # Заголовок
-    pdf.set_font(font_name, style="B", size=16)
-    pdf.multi_cell(0, 10, title, align="C")
+    W = pdf.w  # ширина страницы
+
+    # ── Нежный лавандовый фон ──
+    pdf.set_fill_color(248, 245, 255)  # светло-лавандовый
+    pdf.rect(0, 0, W, pdf.h, style="F")
+
+    # ── Верхняя декоративная полоса ──
+    pdf.set_fill_color(180, 140, 210)  # фиолетовый
+    pdf.rect(0, 0, W, 8, style="F")
+
+    # ── Декоративная рамка ──
+    pdf.set_draw_color(180, 140, 210)
+    pdf.set_line_width(0.8)
+    pdf.rect(10, 12, W - 20, pdf.h - 22)
+
+    # ── Логотип / подпись сверху ──
+    pdf.set_y(16)
+    pdf.set_font(font_name, style="B", size=9)
+    pdf.set_text_color(150, 100, 190)
+    pdf.cell(0, 6, "Eva Numerolog  *  @nnumerology_bot", align="C")
+    pdf.ln(4)
+
+    # ── Разделитель ──
+    pdf.set_draw_color(210, 180, 240)
+    pdf.set_line_width(0.3)
+    pdf.line(20, pdf.get_y(), W - 20, pdf.get_y())
+    pdf.ln(6)
+
+    # ── Заголовок разбора ──
+    # Убираем эмодзи из заголовка (fpdf2 не рендерит)
+    clean_title = re.sub(r"[^\w\s\(\)\-—.,]", "", title, flags=re.UNICODE).strip()
+    pdf.set_font(font_name, style="B", size=18)
+    pdf.set_text_color(120, 60, 170)
+    pdf.multi_cell(0, 10, clean_title, align="C")
+    pdf.ln(2)
+
+    # ── Имя пользователя если есть ──
+    if user_name:
+        pdf.set_font(font_name, size=11)
+        pdf.set_text_color(150, 100, 190)
+        pdf.cell(0, 7, f"Персональный разбор для: {user_name}", align="C")
+        pdf.ln(2)
+
+    # ── Дата создания ──
+    pdf.set_font(font_name, size=9)
+    pdf.set_text_color(180, 150, 210)
+    pdf.cell(0, 6, datetime.now().strftime("Создано: %d.%m.%Y"), align="C")
+    pdf.ln(6)
+
+    # ── Разделитель перед текстом ──
+    pdf.set_draw_color(210, 180, 240)
+    pdf.set_line_width(0.3)
+    pdf.line(20, pdf.get_y(), W - 20, pdf.get_y())
     pdf.ln(8)
 
-    # Основной текст
+    # ── Основной текст ──
+    pdf.set_margins(20, 10, 20)
     pdf.set_font(font_name, size=11)
+    pdf.set_text_color(50, 30, 70)
+
     for paragraph in text.split("\n"):
-        if paragraph.strip():
-            pdf.multi_cell(0, 7, paragraph.strip())
-            pdf.ln(2)
-        else:
+        line = paragraph.strip()
+        if not line:
             pdf.ln(4)
+            continue
+        # Строки-заголовки с эмодзи в начале — выделяем жирным
+        clean_line = re.sub(r"[^\w\s\(\)\-—.,!?:;]", "", line, flags=re.UNICODE).strip()
+        is_header = any(paragraph.startswith(e) for e in [
+            "🔮","✨","💎","💰","💕","🔴","🌟","📅","🎯","💡","🚧",
+            "💪","⚠️","🌱","🎭","💼","🤝","📈","⏰","🗺","🌍","🏆",
+            "💚","⚡","🫀","😤","📜","🔄","🌳","❄️","☠️","😔","💔",
+            "💑","💘","💍","🌠","🏢","😨","🗓","⚖️","🔗","🪤","🗝",
+        ])
+        if is_header and clean_line:
+            pdf.set_font(font_name, style="B", size=12)
+            pdf.set_text_color(120, 60, 170)
+            pdf.multi_cell(0, 8, clean_line)
+            pdf.set_font(font_name, size=11)
+            pdf.set_text_color(50, 30, 70)
+            pdf.ln(1)
+        elif clean_line:
+            pdf.multi_cell(0, 7, clean_line)
+            pdf.ln(1)
+
+    # ── Нижняя полоса ──
+    pdf.set_y(-15)
+    pdf.set_fill_color(180, 140, 210)
+    pdf.rect(0, pdf.h - 8, W, 8, style="F")
+    pdf.set_y(-13)
+    pdf.set_font(font_name, size=8)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 6, "Eva Numerolog  *  Telegram: @nnumerology_bot", align="C")
 
     return bytes(pdf.output())
 
@@ -548,14 +627,10 @@ SYSTEM_PROMPT = (
     "Используй абзацы. Заканчивай полным предложением."
 )
 
-async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
-    """
-    Корректировка 5: таймаут 45 сек на модель.
-    Промежуточное сообщение отправляется снаружи — через asyncio.create_task.
-    """
+async def _try_groq(prompt: str) -> str | None:
+    """Пробует Groq модели по цепочке. Возвращает текст или None."""
     url     = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    last_error = None
 
     for model in GROQ_MODELS:
         for attempt in range(2):
@@ -566,34 +641,68 @@ async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
                     ],
-                    "max_tokens": 2000,
+                    "max_tokens": 4000,
                 }
                 async with httpx.AsyncClient() as client:
                     response = await client.post(url, headers=headers, json=data, timeout=45)
                     if response.status_code == 400:
-                        # Промт слишком длинный или другая ошибка клиента — следующая модель
                         err_body = response.text[:300]
-                        logging.warning(f"Model {model} 400 Bad Request: {err_body}")
-                        last_error = Exception(f"400 Bad Request: {err_body}")
+                        logging.warning(f"Groq {model} 400: {err_body}")
                         break
                     response.raise_for_status()
                     raw = response.json()["choices"][0]["message"]["content"]
-                    # Вырезаем thinking-блоки (<think>...</think>) у reasoning моделей
                     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
                     if has_foreign(raw):
-                        logging.warning(f"Model {model} attempt {attempt+1} returned foreign chars, retrying...")
+                        logging.warning(f"Groq {model} attempt {attempt+1} foreign chars, retrying...")
                         continue
                     return clean_text(raw)
-            except httpx.HTTPStatusError as e:
-                last_error = e
-                logging.warning(f"Model {model} attempt {attempt+1} HTTP error: {e}")
-                break
             except Exception as e:
-                last_error = e
-                logging.warning(f"Model {model} attempt {attempt+1} failed: {e}")
+                logging.warning(f"Groq {model} attempt {attempt+1} failed: {e}")
                 break
+    return None
 
-    raise last_error or Exception("Все модели вернули иностранные символы")
+async def _try_deepseek(prompt: str) -> str | None:
+    """Фолбек на DeepSeek. Возвращает текст или None."""
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        return None
+    url     = "https://api.deepseek.com/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    try:
+        data = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt},
+            ],
+            "max_tokens": 4000,
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=data, timeout=60)
+            response.raise_for_status()
+            raw = response.json()["choices"][0]["message"]["content"]
+            raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+            if has_foreign(raw):
+                logging.warning("DeepSeek returned foreign chars")
+                return None
+            logging.info("DeepSeek ответил успешно")
+            return clean_text(raw)
+    except Exception as e:
+        logging.warning(f"DeepSeek failed: {e}")
+        return None
+
+async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
+    """Groq → DeepSeek фолбек."""
+    # 1. Пробуем Groq
+    result = await _try_groq(prompt)
+    if result:
+        return result
+    # 2. Фолбек на DeepSeek
+    logging.warning("Groq не дал результат — пробую DeepSeek")
+    result = await _try_deepseek(prompt)
+    if result:
+        return result
+    raise Exception("Все провайдеры недоступны или вернули иностранные символы")
 
 def build_prompt(key: str, **kwargs) -> str:
     # Добавляем текущий год в контекст для разборов которые на него ссылаются
@@ -808,16 +917,20 @@ def notif_off_menu() -> InlineKeyboardMarkup:
     ])
 
 # ─── КУПОНЫ ──────────────────────────────────────────────────────────────────
-async def create_coupon(code: str, max_uses: int = 1) -> bool:
+async def create_coupon(code: str, max_uses: int = 1) -> str:
+    """Возвращает: 'ok', 'exists', 'error'"""
     expires = utc_now() + timedelta(hours=48)
     try:
         await db_pool.execute(
             'INSERT INTO coupons (code, expires_at, max_uses) VALUES ($1, $2, $3)',
             code.upper(), expires, max_uses
         )
-        return True
-    except Exception:
-        return False
+        return 'ok'
+    except asyncpg.UniqueViolationError:
+        return 'exists'
+    except Exception as e:
+        logging.error(f"create_coupon error: {e}")
+        return 'error' 
 
 async def use_coupon(code: str, user_id: int) -> str:
     row = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code.upper())
@@ -1160,10 +1273,10 @@ async def coupon_cmd(message: Message, state: FSMContext):
         except ValueError:
             await message.answer("❌ Число использований должно быть целым числом.\nПример: /coupon INSTAGRAM2026 10")
             return
-    success = await create_coupon(code, max_uses)
-    if success:
+    result = await create_coupon(code, max_uses)
+    if result == 'ok':
         expires  = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
-        uses_str = f"{max_uses} раз" if max_uses > 1 else "1 раз (один юзер — много раз)"
+        uses_str = f"{max_uses} раз" if max_uses > 1 else "1 раз"
         await message.answer(
             f"✅ Промокод создан!\n\n"
             f"Код: <code>{code}</code>\n"
@@ -1172,8 +1285,10 @@ async def coupon_cmd(message: Message, state: FSMContext):
             f"Юзер вводит: /promo {code}",
             parse_mode="HTML"
         )
-    else:
+    elif result == 'exists':
         await message.answer("❌ Такой промокод уже существует.")
+    else:
+        await message.answer("❌ Ошибка создания промокода — проверь логи Railway.")
 
 @dp.message(Command("coupon_stat"), StateFilter("*"))
 async def coupon_stat_cmd(message: Message, state: FSMContext):
@@ -1385,7 +1500,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         # Корректировка 4: PDF для разборов 79⭐ и выше
         if waiting in PDF_KEYS:
             try:
-                pdf_bytes = generate_pdf(title, answer)
+                pdf_bytes = generate_pdf(title, answer, user_name=name)
                 pdf_file  = BufferedInputFile(pdf_bytes, filename=f"{title}.pdf")
                 await bot.send_document(
                     message.chat.id,
@@ -1445,7 +1560,7 @@ async def handle_two_dates(message: Message, state: FSMContext):
         # PDF для compat (99⭐ — не входит в PDF_KEYS, но compat = 99, а PDF от 79)
         if "compat" in PDF_KEYS:
             try:
-                pdf_bytes = generate_pdf("💑 Совместимость", answer)
+                pdf_bytes = generate_pdf("💑 Совместимость", answer, user_name=name)
                 pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
                 await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
             except Exception as pdf_err:
