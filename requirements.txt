@@ -2,3 +2,4 @@ aiogram
 httpx
 aiohttp
 asyncpg
+fpdf2
