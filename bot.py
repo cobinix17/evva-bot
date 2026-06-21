@@ -98,20 +98,49 @@ async def send_long(chat_id, text: str):
         await asyncio.sleep(0.3)
 
 # ─── PDF ГЕНЕРАЦИЯ ────────────────────────────────────────────────────────────
+def _ensure_font() -> str:
+    """Проверяет шрифт, при необходимости скачивает. Возвращает путь или None."""
+    if os.path.exists(FONT_PATH):
+        # Проверяем что файл реально TTF (первые 4 байта)
+        try:
+            with open(FONT_PATH, "rb") as f:
+                magic = f.read(4)
+            # TTF начинается с 00 01 00 00 или OTF с 4F 54 54 4F
+            if magic[:2] in (b"\x00\x01", b"OT", b"tr", b"\x00\x00"):
+                return FONT_PATH
+            logging.warning(f"Файл {FONT_PATH} не является TTF, пробую скачать")
+        except Exception:
+            pass
+    # Скачиваем DejaVuSans из jsDelivr (CDN, доступен без VPN)
+    try:
+        import urllib.request
+        url = "https://cdn.jsdelivr.net/npm/@fontsource/dejavu-sans@5.0.17/files/dejavu-sans-all-400-normal.woff2"
+        # woff2 не подходит для fpdf2 — качаем ttf напрямую
+        url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
+        urllib.request.urlretrieve(url, FONT_PATH)
+        logging.info(f"Шрифт скачан в {FONT_PATH}")
+        return FONT_PATH
+    except Exception as e:
+        logging.warning(f"Не удалось скачать шрифт: {e}")
+        return None
+
 def generate_pdf(title: str, text: str) -> bytes:
     """Генерирует PDF с кириллическим TTF шрифтом, возвращает bytes."""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_margins(15, 15, 15)
 
-    if os.path.exists(FONT_PATH):
-        # fpdf2 >= 2.5.1: uni=True устарел, передаём только путь
-        pdf.add_font("DejaVu", style="", fname=FONT_PATH)
-        pdf.add_font("DejaVu", style="B", fname=FONT_PATH)
-        font_name = "DejaVu"
+    font_path = _ensure_font()
+    if font_path:
+        try:
+            pdf.add_font("DejaVu", style="", fname=font_path)
+            pdf.add_font("DejaVu", style="B", fname=font_path)
+            font_name = "DejaVu"
+        except Exception as e:
+            logging.warning(f"Не удалось загрузить шрифт: {e}")
+            font_name = "Helvetica"
     else:
         font_name = "Helvetica"
-        logging.warning(f"Шрифт {FONT_PATH} не найден, используется Helvetica")
 
     # Заголовок
     pdf.set_font(font_name, style="B", size=16)
@@ -127,7 +156,6 @@ def generate_pdf(title: str, text: str) -> bytes:
         else:
             pdf.ln(4)
 
-    # fpdf2 >= 2.5.1 возвращает bytearray напрямую
     return bytes(pdf.output())
 
 # ─── НУМЕРОЛОГИЧЕСКИЕ РАСЧЁТЫ ────────────────────────────────────────────────
@@ -495,7 +523,7 @@ def utc_now() -> datetime:
 # Корректировка 8: убран llama-3.1-8b-instant
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
+    "mixtral-8x7b-32768",
 ]
 
 SYSTEM_PROMPT = (
