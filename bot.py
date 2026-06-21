@@ -97,80 +97,40 @@ async def send_long(chat_id, text: str):
         await asyncio.sleep(0.3)
 
 # ─── PDF ГЕНЕРАЦИЯ ────────────────────────────────────────────────────────────
-_FONT_READY = None  # кэш результата проверки/загрузки шрифта на время жизни процесса
-
-def _ensure_font() -> str | None:
-    """Проверяет шрифт. Скачивает не более одного раза за жизнь процесса."""
-    global _FONT_READY
-    if _FONT_READY is not None:
-        return _FONT_READY
-
+def _ensure_font() -> str:
+    """Проверяет шрифт, при необходимости скачивает. Возвращает путь или None."""
     if os.path.exists(FONT_PATH):
+        # Проверяем что файл реально TTF (первые 4 байта)
         try:
             with open(FONT_PATH, "rb") as f:
                 magic = f.read(4)
+            # TTF начинается с 00 01 00 00 или OTF с 4F 54 54 4F
             if magic[:2] in (b"\x00\x01", b"OT", b"tr", b"\x00\x00"):
-                _FONT_READY = FONT_PATH
-                return _FONT_READY
+                return FONT_PATH
             logging.warning(f"Файл {FONT_PATH} не является TTF, пробую скачать")
         except Exception:
             pass
-
+    # Скачиваем DejaVuSans из официального релиза
     try:
-        import urllib.request, zipfile
+        import urllib.request, zipfile, io
         zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip"
         logging.info("Скачиваю шрифт DejaVuSans...")
         resp = urllib.request.urlopen(zip_url, timeout=30)
         zdata = resp.read()
         with zipfile.ZipFile(io.BytesIO(zdata)) as z:
-            ttf_name = next(
-                n for n in z.namelist()
-                if "DejaVuSans.ttf" in n and "Bold" not in n and "Oblique" not in n
-                and "Mono" not in n and "Condensed" not in n
-            )
+            ttf_name = next(n for n in z.namelist() if "DejaVuSans.ttf" in n and "Bold" not in n and "Oblique" not in n and "Mono" not in n and "Condensed" not in n)
             with z.open(ttf_name) as src, open(FONT_PATH, "wb") as dst:
                 dst.write(src.read())
         logging.info(f"Шрифт установлен: {FONT_PATH}")
-        _FONT_READY = FONT_PATH
+        return FONT_PATH
     except Exception as e:
         logging.warning(f"Не удалось скачать шрифт: {e}")
-        _FONT_READY = None
-    return _FONT_READY
-
-# Эмодзи-заголовки секций — единый источник правды (используется и при очистке, и при детекции заголовка)
-_HEADER_EMOJI = tuple(
-    "🔮✨💎💰💕🔴🌟📅🎯💡🚧💪⚠️🌱🎭💼🤝📈⏰🗺🌍🏆"
-    "💚⚡🫀😤📜🔄🌳❄️☠️😔💔💑💘💍🌠🏢😨🗓⚖️🔗🪤🗝🌙"
-)
-
-_STRIP_RE = re.compile(r"[^\w\s\(\)\-—.,!?:;«»\"']", re.UNICODE)
-
-def _strip_decorative(s: str) -> str:
-    """Убирает эмодзи и прочие непечатаемые-в-fpdf символы, оставляя текст читаемым."""
-    return _STRIP_RE.sub("", s).strip()
-
-def _draw_star(pdf: FPDF, x: float, y: float, size: float, color=(120, 95, 40)):
-    """Маленькая декоративная 4-лучевая звёздочка — рисуется линиями, без внешних иконок/шрифтов."""
-    pdf.set_draw_color(*color)
-    pdf.set_line_width(0.35)
-    pdf.line(x - size, y, x + size, y)
-    pdf.line(x, y - size, x, y + size)
-    pdf.line(x - size * 0.55, y - size * 0.55, x + size * 0.55, y + size * 0.55)
-    pdf.line(x - size * 0.55, y + size * 0.55, x + size * 0.55, y - size * 0.55)
-
-def _scatter_stars(pdf: FPDF, w: float, h: float, count: int, seed: int):
-    """Случайный, но воспроизводимый звёздный фон (одинаковый seed = одинаковый узор)."""
-    rnd = random.Random(seed)
-    for _ in range(count):
-        x = rnd.uniform(14, w - 14)
-        y = rnd.uniform(14, h - 14)
-        size = rnd.uniform(0.6, 1.6)
-        _draw_star(pdf, x, y, size)
+        return None
 
 def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
-    """Тёмный мистический PDF: глубокий тёмно-фиолетовый фон, золото, звёзды. Дата — в подвале."""
+    """Красивый PDF для женской аудитории."""
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=24)
+    pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
     font_path = _ensure_font()
@@ -185,103 +145,98 @@ def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
     else:
         font_name = "Helvetica"
 
-    W, H = pdf.w, pdf.h
+    W = pdf.w  # ширина страницы
 
-    # Палитра: тёмно-фиолетовый космос + золото
-    BG        = (24, 16, 38)
-    GOLD      = (212, 175, 55)
-    GOLD_SOFT = (170, 140, 90)
-    TEXT_MAIN = (230, 222, 245)
-    TEXT_DIM  = (165, 150, 190)
+    # ── Нежный лавандовый фон ──
+    pdf.set_fill_color(248, 245, 255)  # светло-лавандовый
+    pdf.rect(0, 0, W, pdf.h, style="F")
 
-    def paint_page_background(seed_offset: int):
-        pdf.set_fill_color(*BG)
-        pdf.rect(0, 0, W, H, style="F")
-        _scatter_stars(pdf, W, H, count=55, seed=42 + seed_offset)
-        pdf.set_draw_color(*GOLD_SOFT)
-        pdf.set_line_width(0.6)
-        pdf.rect(10, 12, W - 20, H - 24)
-        pdf.set_fill_color(*GOLD)
-        pdf.rect(0, 0, W, 6, style="F")
-        pdf.rect(0, H - 6, W, 6, style="F")
+    # ── Верхняя декоративная полоса ──
+    pdf.set_fill_color(180, 140, 210)  # фиолетовый
+    pdf.rect(0, 0, W, 8, style="F")
 
-    paint_page_background(seed_offset=0)
+    # ── Декоративная рамка ──
+    pdf.set_draw_color(180, 140, 210)
+    pdf.set_line_width(0.8)
+    pdf.rect(10, 12, W - 20, pdf.h - 22)
 
-    # ── Шапка ──
+    # ── Логотип / подпись сверху ──
     pdf.set_y(16)
     pdf.set_font(font_name, style="B", size=9)
-    pdf.set_text_color(*GOLD_SOFT)
-    pdf.cell(0, 6, "EVA NUMEROLOG", align="C")
-    pdf.ln(5)
+    pdf.set_text_color(150, 100, 190)
+    pdf.cell(0, 6, "Eva Numerolog  *  @nnumerology_bot", align="C")
+    pdf.ln(4)
 
-    pdf.set_draw_color(*GOLD_SOFT)
-    pdf.set_line_width(0.25)
-    pdf.line(30, pdf.get_y(), W - 30, pdf.get_y())
-    pdf.ln(8)
+    # ── Разделитель ──
+    pdf.set_draw_color(210, 180, 240)
+    pdf.set_line_width(0.3)
+    pdf.line(20, pdf.get_y(), W - 20, pdf.get_y())
+    pdf.ln(6)
 
     # ── Заголовок разбора ──
-    clean_title = _strip_decorative(title)
-    pdf.set_font(font_name, style="B", size=19)
-    pdf.set_text_color(*GOLD)
+    # Убираем эмодзи из заголовка (fpdf2 не рендерит)
+    clean_title = re.sub(r"[^\w\s\(\)\-—.,]", "", title, flags=re.UNICODE).strip()
+    pdf.set_font(font_name, style="B", size=18)
+    pdf.set_text_color(120, 60, 170)
     pdf.multi_cell(0, 10, clean_title, align="C")
     pdf.ln(2)
 
+    # ── Имя пользователя если есть ──
     if user_name:
         pdf.set_font(font_name, size=11)
-        pdf.set_text_color(*TEXT_DIM)
+        pdf.set_text_color(150, 100, 190)
         pdf.cell(0, 7, f"Персональный разбор для: {user_name}", align="C")
-        pdf.ln(4)
+        pdf.ln(2)
 
-    pdf.set_draw_color(*GOLD_SOFT)
-    pdf.set_line_width(0.25)
-    pdf.line(30, pdf.get_y(), W - 30, pdf.get_y())
+    # ── Дата создания ──
+    pdf.set_font(font_name, size=9)
+    pdf.set_text_color(180, 150, 210)
+    pdf.cell(0, 6, datetime.now().strftime("Создано: %d.%m.%Y"), align="C")
+    pdf.ln(6)
+
+    # ── Разделитель перед текстом ──
+    pdf.set_draw_color(210, 180, 240)
+    pdf.set_line_width(0.3)
+    pdf.line(20, pdf.get_y(), W - 20, pdf.get_y())
     pdf.ln(8)
 
     # ── Основной текст ──
-    pdf.set_left_margin(20)
-    pdf.set_right_margin(20)
+    pdf.set_margins(20, 10, 20)
     pdf.set_font(font_name, size=11)
-    pdf.set_text_color(*TEXT_MAIN)
-
-    page_before = pdf.page_no()
+    pdf.set_text_color(50, 30, 70)
 
     for paragraph in text.split("\n"):
         line = paragraph.strip()
         if not line:
             pdf.ln(4)
             continue
-
-        clean_line = _strip_decorative(line)
-        if not clean_line:
-            continue
-
-        is_header = line.startswith(_HEADER_EMOJI)
-
-        # Авто-переход страницы в fpdf2 не перекрашивает фон новой страницы — делаем это сами.
-        if pdf.page_no() != page_before:
-            paint_page_background(seed_offset=pdf.page_no())
-            pdf.set_left_margin(20)
-            pdf.set_right_margin(20)
-            pdf.set_y(20)
-            page_before = pdf.page_no()
-
-        if is_header:
-            pdf.set_font(font_name, style="B", size=12.5)
-            pdf.set_text_color(*GOLD)
+        # Строки-заголовки с эмодзи в начале — выделяем жирным
+        clean_line = re.sub(r"[^\w\s\(\)\-—.,!?:;]", "", line, flags=re.UNICODE).strip()
+        is_header = any(paragraph.startswith(e) for e in [
+            "🔮","✨","💎","💰","💕","🔴","🌟","📅","🎯","💡","🚧",
+            "💪","⚠️","🌱","🎭","💼","🤝","📈","⏰","🗺","🌍","🏆",
+            "💚","⚡","🫀","😤","📜","🔄","🌳","❄️","☠️","😔","💔",
+            "💑","💘","💍","🌠","🏢","😨","🗓","⚖️","🔗","🪤","🗝",
+        ])
+        if is_header and clean_line:
+            pdf.set_font(font_name, style="B", size=12)
+            pdf.set_text_color(120, 60, 170)
             pdf.multi_cell(0, 8, clean_line)
             pdf.set_font(font_name, size=11)
-            pdf.set_text_color(*TEXT_MAIN)
+            pdf.set_text_color(50, 30, 70)
             pdf.ln(1)
-        else:
+        elif clean_line:
             pdf.multi_cell(0, 7, clean_line)
             pdf.ln(1)
 
-    # ── Подвал с датой — в самом низу страницы, рядом с подписью бота ──
-    pdf.set_y(H - 16)
-    pdf.set_font(font_name, size=7.5)
-    pdf.set_text_color(40, 30, 20)
-    date_str = datetime.now().strftime("Разбор создан: %d.%m.%Y")
-    pdf.cell(0, 5, f"Eva Numerolog  •  @nnumerology_bot  •  {date_str}", align="C")
+    # ── Нижняя полоса ──
+    pdf.set_y(-15)
+    pdf.set_fill_color(180, 140, 210)
+    pdf.rect(0, pdf.h - 8, W, 8, style="F")
+    pdf.set_y(-13)
+    pdf.set_font(font_name, size=8)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 6, "Eva Numerolog  *  Telegram: @nnumerology_bot", align="C")
 
     return bytes(pdf.output())
 
@@ -345,17 +300,14 @@ def calculate_day_number(today: date) -> int:
         total = sum(int(d) for d in str(total))
     return total
 
-def build_numerology_context(name: str, date_str: str, label: str = "") -> str:
-    """label позволяет различать первого/второго человека в разборах совместимости."""
+def build_numerology_context(name: str, date_str: str) -> str:
     destiny     = calculate_destiny(date_str)
     personal_yr = calculate_personal_year(date_str)
     karmic      = calculate_karmic_numbers(date_str)
     matrix      = calculate_matrix(date_str)
     name_number = calculate_name_number(name)
     karmic_str  = ", ".join(map(str, karmic)) if karmic else "отсутствуют"
-    prefix      = f"[{label}]\n" if label else ""
     return (
-        f"{prefix}"
         f"Пол: женский. Всегда обращайся в женском роде.\n"
         f"Имя: {name}\n"
         f"Дата рождения: {date_str}\n"
@@ -395,7 +347,7 @@ def clean_text(text: str) -> str:
 # ─── ЦЕНЫ И МЕТАДАННЫЕ ───────────────────────────────────────────────────────
 TITLES = {
     "free":            "💫 Матрица судьбы",
-    "matrix_full":     "🔮 Матрица судьбы",
+    "matrix_full":     "🔮 Матрица судьбы (Полная)",
     "finance":         "💹 Финансовый прогноз",
     "wealth_blocks":   "🚧 Блоки богатства",
     "freedom_path":    "🗺 Путь к свободе",
@@ -420,11 +372,13 @@ TITLES = {
     "toxic":           "☠️ Токсичная или кармическая связь",
     "lonely":          "😔 Почему ты одинока",
     "breakup":         "💔 Разбор после расставания",
+    # Раздел 4 — Здоровье и энергия
     "health_code":     "💚 Код здоровья",
     "energy_drain":    "⚡ Что крадёт энергию",
     "body_message":    "🫀 Послания тела",
     "stress_number":   "😤 Число стресса",
     "intuition":       "🔮 Интуиция и внутренний голос",
+    # Раздел 5 — Прошлое и будущее
     "past_life":       "📜 Прошлые жизни",
     "future_portal":   "🌟 Прогноз на 3 года",
     "turning_point":   "🔄 Поворотные точки судьбы",
@@ -457,11 +411,13 @@ PRICES = {
     "lonely":        49,
     "main_fear":     49,
     "strong_weak":   49,
+    # Раздел 4
     "health_code":   79,
     "energy_drain":  49,
     "body_message":  49,
     "stress_number": 49,
     "intuition":     79,
+    # Раздел 5
     "past_life":     99,
     "future_portal": 149,
     "turning_point": 79,
@@ -497,11 +453,13 @@ UPSELLS = {
     "days":          ("finance",       "forecast_2026"),
     "strong_weak":   ("hidden_talents","main_fear"),
     "main_fear":     ("strong_weak",   "karma"),
+    # Раздел 4
     "health_code":   ("energy_drain",  "intuition"),
     "energy_drain":  ("health_code",   "stress_number"),
     "body_message":  ("energy_drain",  "health_code"),
     "stress_number": ("energy_drain",  "body_message"),
     "intuition":     ("health_code",   "past_life"),
+    # Раздел 5
     "past_life":     ("ancestor_code", "karma"),
     "future_portal": ("turning_point", "forecast_2026"),
     "turning_point": ("future_portal", "past_life"),
@@ -539,6 +497,24 @@ async def init_db():
             reviews_left       TEXT DEFAULT '[]'
         )
     ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS coupons (
+            code       TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT NOW(),
+            expires_at TIMESTAMP,
+            max_uses   INTEGER DEFAULT 1,
+            uses_count INTEGER DEFAULT 0
+        )
+    ''')
+    # Таблица отдельных применений — для истории и /coupon_stat
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS coupon_uses (
+            id         SERIAL PRIMARY KEY,
+            code       TEXT NOT NULL,
+            user_id    BIGINT NOT NULL,
+            used_at    TIMESTAMP DEFAULT NOW()
+        )
+    ''')
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -548,56 +524,16 @@ async def init_db():
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
         except Exception:
             pass
-
-    # ── Таблица coupons: проверяем схему, чиним если повреждена ──
-    # У бота ещё не было реальных активаций купонов, поэтому при битой
-    # схеме безопасно пересоздать таблицы целиком, а не накатывать ALTER.
-    try:
-        row = await db_pool.fetchrow('''
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'coupons' AND column_name = 'max_uses'
-        ''')
-        if not row:
-            await db_pool.execute("DROP TABLE IF EXISTS coupon_uses")
-            await db_pool.execute("DROP TABLE IF EXISTS coupons")
-            await db_pool.execute('''
-                CREATE TABLE coupons (
-                    code         TEXT PRIMARY KEY,
-                    created_at   TIMESTAMP DEFAULT NOW(),
-                    expires_at   TIMESTAMP,
-                    max_uses     INTEGER DEFAULT 1,
-                    uses_count   INTEGER DEFAULT 0,
-                    max_per_user INTEGER DEFAULT 0
-                )
-            ''')
-            await db_pool.execute('''
-                CREATE TABLE coupon_uses (
-                    id      SERIAL PRIMARY KEY,
-                    code    TEXT NOT NULL,
-                    user_id BIGINT NOT NULL,
-                    used_at TIMESTAMP DEFAULT NOW()
-                )
-            ''')
-            logging.info("Таблица coupons пересоздана с новой схемой")
-        else:
-            await db_pool.execute('''
-                CREATE TABLE IF NOT EXISTS coupon_uses (
-                    id      SERIAL PRIMARY KEY,
-                    code    TEXT NOT NULL,
-                    user_id BIGINT NOT NULL,
-                    used_at TIMESTAMP DEFAULT NOW()
-                )
-            ''')
-    except Exception as e:
-        logging.error(f"Ошибка проверки/миграции схемы coupons: {e}", exc_info=True)
-
-    # max_per_user: 0 = без лимита на одного юзера (только общий лимит max_uses)
-    try:
-        await db_pool.execute("ALTER TABLE coupons ADD COLUMN IF NOT EXISTS max_per_user INTEGER DEFAULT 0")
-    except Exception as e:
-        logging.warning(f"Не удалось добавить max_per_user: {e}")
-
-    # Удаляем старый столбец used_by если остался от самой первой схемы
+    # Миграция таблицы coupons — добавляем новые колонки если старая схема
+    for col, definition in [
+        ("max_uses",   "INTEGER DEFAULT 1"),
+        ("uses_count", "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            await db_pool.execute(f"ALTER TABLE coupons ADD COLUMN IF NOT EXISTS {col} {definition}")
+        except Exception:
+            pass
+    # Удаляем старый столбец used_by если есть
     try:
         await db_pool.execute("ALTER TABLE coupons DROP COLUMN IF EXISTS used_by")
     except Exception:
@@ -656,6 +592,7 @@ class Form(StatesGroup):
     waiting_date        = State()
     waiting_second_date = State()
     waiting_review      = State()
+    # Для выбора бесплатного разбора
     waiting_free_date   = State()
 
 # ─── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────────────────────────────────────
@@ -679,6 +616,7 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # ─── GROQ + RETRY + ОЧИСТКА ──────────────────────────────────────────────────
+# Корректировка 8: убран llama-3.1-8b-instant
 GROQ_MODELS = [
     "qwen/qwen3.6-27b",
     "openai/gpt-oss-120b",
@@ -737,53 +675,42 @@ async def _try_groq(prompt: str) -> str | None:
     return None
 
 async def _try_deepseek(prompt: str) -> str | None:
-    """Фолбек через OpenModel (gateway), а не напрямую к DeepSeek.
-    Ключ DEEPSEEK_API_KEY выдан OpenModel (console.openmodel.ai), а не
-    platform.deepseek.com — поэтому нужен другой URL, другой заголовок
-    авторизации (x-api-key, не Authorization: Bearer) и формат Anthropic
-    Messages API, а не OpenAI chat/completions."""
+    """Фолбек на DeepSeek. Возвращает текст или None."""
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         return None
-    url     = "https://api.openmodel.ai/v1/messages"
-    headers = {
-        "x-api-key": api_key,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
+    url     = "https://api.deepseek.com/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
         data = {
             "model": "deepseek-chat",
-            "max_tokens": 4000,
-            "system": SYSTEM_PROMPT,
             "messages": [
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt},
             ],
+            "max_tokens": 4000,
         }
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=data, timeout=60)
             response.raise_for_status()
-            body = response.json()
-            # Anthropic Messages формат ответа: content — список блоков {type, text}
-            raw = "".join(
-                block.get("text", "") for block in body.get("content", [])
-                if block.get("type") == "text"
-            )
+            raw = response.json()["choices"][0]["message"]["content"]
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             if has_foreign(raw):
-                logging.warning("OpenModel/DeepSeek returned foreign chars")
+                logging.warning("DeepSeek returned foreign chars")
                 return None
-            logging.info("OpenModel (DeepSeek) ответил успешно")
+            logging.info("DeepSeek ответил успешно")
             return clean_text(raw)
     except Exception as e:
-        logging.warning(f"OpenModel/DeepSeek failed: {e}")
+        logging.warning(f"DeepSeek failed: {e}")
         return None
 
-async def ask_ai(prompt: str) -> str:
+async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
     """Groq → DeepSeek фолбек."""
+    # 1. Пробуем Groq
     result = await _try_groq(prompt)
     if result:
         return result
+    # 2. Фолбек на DeepSeek
     logging.warning("Groq не дал результат — пробую DeepSeek")
     result = await _try_deepseek(prompt)
     if result:
@@ -791,14 +718,9 @@ async def ask_ai(prompt: str) -> str:
     raise Exception("Все провайдеры недоступны или вернули иностранные символы")
 
 def build_prompt(key: str, **kwargs) -> str:
-    """Собирает промпт по ключу. Бросает ValueError если ключ не найден —
-    раньше отсутствующий ключ тихо давал пустой промпт и мусорный ответ AI."""
+    # Добавляем текущий год в контекст для разборов которые на него ссылаются
     kwargs.setdefault("year", datetime.now().year)
-    template = PROMPTS.get(key)
-    if not template:
-        logging.error(f"build_prompt: промпт не найден для ключа '{key}'")
-        raise ValueError(f"Промпт '{key}' не существует в PROMPTS")
-    return template.format(**kwargs)
+    return PROMPTS.get(key, "").format(**kwargs)
 
 # ─── КЛАВИАТУРЫ ──────────────────────────────────────────────────────────────
 def check_menu() -> InlineKeyboardMarkup:
@@ -827,6 +749,7 @@ def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
 def main_menu(user=None) -> InlineKeyboardMarkup:
     buttons = []
 
+    # Корректировка 2: бесплатный разбор на выбор (любой до 99⭐)
     if user and not user.get("free_used"):
         buttons.append([InlineKeyboardButton(
             text="🎁 Бесплатный разбор на выбор",
@@ -853,6 +776,7 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
     )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# Корректировка 2: меню выбора бесплатного разбора (все разборы до 99⭐)
 def free_choose_menu() -> InlineKeyboardMarkup:
     buttons = []
     for key in sorted(FREE_ELIGIBLE):
@@ -923,6 +847,7 @@ def section_love_menu(user=None) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# Корректировка 3: новые разделы
 def section_health_menu(user=None) -> InlineKeyboardMarkup:
     purchased = user.get("purchased", []) if user else []
     buttons = []
@@ -1005,22 +930,20 @@ def notif_off_menu() -> InlineKeyboardMarkup:
     ])
 
 # ─── КУПОНЫ ──────────────────────────────────────────────────────────────────
-async def create_coupon(code: str, max_uses: int = 1, max_per_user: int = 0) -> tuple[str, str]:
-    """Возвращает (статус, детали). Статус: 'ok', 'exists', 'error'.
-    Раньше любая ошибка БД маскировалась под 'exists' из-за слишком широкого
-    except asyncpg.UniqueViolationError — теперь настоящая причина идёт в логи."""
+async def create_coupon(code: str, max_uses: int = 1) -> str:
+    """Возвращает: 'ok', 'exists', 'error'"""
     expires = utc_now() + timedelta(hours=48)
     try:
         await db_pool.execute(
-            'INSERT INTO coupons (code, expires_at, max_uses, max_per_user) VALUES ($1, $2, $3, $4)',
-            code.upper(), expires, max_uses, max_per_user
+            'INSERT INTO coupons (code, expires_at, max_uses) VALUES ($1, $2, $3)',
+            code.upper(), expires, max_uses
         )
-        return 'ok', ''
+        return 'ok'
     except asyncpg.UniqueViolationError:
-        return 'exists', ''
+        return 'exists'
     except Exception as e:
-        logging.error(f"create_coupon error для кода {code}: {e}", exc_info=True)
-        return 'error', str(e)
+        logging.error(f"create_coupon error: {e}")
+        return 'error' 
 
 async def use_coupon(code: str, user_id: int) -> str:
     row = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code.upper())
@@ -1030,16 +953,6 @@ async def use_coupon(code: str, user_id: int) -> str:
         return 'expired'
     if row['uses_count'] >= row['max_uses']:
         return 'limit'
-
-    max_per_user = row.get('max_per_user') or 0
-    if max_per_user > 0:
-        used_by_user = await db_pool.fetchval(
-            'SELECT COUNT(*) FROM coupon_uses WHERE code = $1 AND user_id = $2',
-            code.upper(), user_id
-        )
-        if used_by_user >= max_per_user:
-            return 'user_limit'
-
     # Фиксируем использование атомарно
     updated = await db_pool.fetchval(
         '''UPDATE coupons SET uses_count = uses_count + 1
@@ -1056,6 +969,8 @@ async def use_coupon(code: str, user_id: int) -> str:
     return 'ok'
 
 # ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
+# Корректировка 1: убраны из main_menu, теперь только /notifications
+
 @dp.message(Command("notifications"), StateFilter("*"))
 async def notifications_cmd(message: Message, state: FSMContext):
     await state.clear()
@@ -1139,6 +1054,8 @@ async def my_readings(callback: CallbackQuery):
     await callback.answer()
 
 # ─── БЕСПЛАТНЫЙ РАЗБОР НА ВЫБОР ─────────────────────────────────────────────
+# Корректировка 2
+
 @dp.callback_query(F.data == "free_choose")
 async def free_choose_handler(callback: CallbackQuery, state: FSMContext):
     user = await get_user(callback.from_user.id)
@@ -1158,6 +1075,7 @@ async def free_choose_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Бесплатный разбор уже использован 🔮", show_alert=True)
         return
 
+    # Если имени нет — спросить
     if not user.get("first_name"):
         await callback.message.answer("✨ Как мне тебя называть? Введи своё имя 👇")
         await state.set_state(Form.waiting_name)
@@ -1204,8 +1122,11 @@ async def handle_free_date(message: Message, state: FSMContext):
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
+    # Помечаем бесплатный как использованный
     user["free_used"] = True
     await save_user(message.from_user.id, user)
+    await _process_date(message, message.from_user.id, user, text, state, is_free=True)
+
 # ─── ОНБОРДИНГ ───────────────────────────────────────────────────────────────
 @dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
@@ -1271,6 +1192,7 @@ async def handle_name(message: Message, state: FSMContext):
     user["first_name"] = name
     await save_user(message.from_user.id, user)
 
+    # Если пришли сюда через free_choose — показываем выбор разборов
     if not user.get("free_used"):
         await message.answer(
             f"Приятно познакомиться, {name}! 🌸\n\n"
@@ -1337,8 +1259,6 @@ async def promo_cmd(message: Message, state: FSMContext):
         await message.answer("❌ Этот промокод уже истёк.")
     elif result == 'limit':
         await message.answer("❌ Этот промокод исчерпан — все использования закончились.")
-    elif result == 'user_limit':
-        await message.answer("❌ Ты уже использовала этот промокод максимальное число раз.")
     elif result == 'ok':
         await message.answer(
             "🎁 Промокод активирован! Выбери свой бесплатный разбор 👇",
@@ -1354,45 +1274,34 @@ async def coupon_cmd(message: Message, state: FSMContext):
         await message.answer(
             "Использование:\n"
             "/coupon КОД — создать на 1 использование\n"
-            "/coupon КОД 30 — создать на 30 использований всего\n"
-            "/coupon КОД 30 1 — 30 всего, но не больше 1 раза на человека\n\n"
-            "Пример: /coupon INSTAGRAM2026 30"
+            "/coupon КОД 10 — создать на 10 использований\n\n"
+            "Пример: /coupon INSTAGRAM2026 50"
         )
         return
-    code         = parts[1].upper()
-    max_uses     = 1
-    max_per_user = 0
+    code     = parts[1].upper()
+    max_uses = 1
     if len(parts) >= 3:
         try:
             max_uses = max(1, int(parts[2]))
         except ValueError:
-            await message.answer("❌ Число использований должно быть целым числом.\nПример: /coupon INSTAGRAM2026 30")
+            await message.answer("❌ Число использований должно быть целым числом.\nПример: /coupon INSTAGRAM2026 10")
             return
-    if len(parts) >= 4:
-        try:
-            max_per_user = max(0, int(parts[3]))
-        except ValueError:
-            await message.answer("❌ Лимит на человека должен быть целым числом.")
-            return
-    status, details = await create_coupon(code, max_uses, max_per_user)
-    if status == 'ok':
-        expires      = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
-        per_user_str = f"\nЛимит на человека: {max_per_user} раз" if max_per_user > 0 else ""
+    result = await create_coupon(code, max_uses)
+    if result == 'ok':
+        expires  = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
+        uses_str = f"{max_uses} раз" if max_uses > 1 else "1 раз"
         await message.answer(
             f"✅ Промокод создан!\n\n"
             f"Код: <code>{code}</code>\n"
-            f"Лимит использований: {max_uses} раз{per_user_str}\n"
+            f"Лимит использований: {uses_str}\n"
             f"Действует до: {expires}\n\n"
             f"Юзер вводит: /promo {code}",
             parse_mode="HTML"
         )
-    elif status == 'exists':
+    elif result == 'exists':
         await message.answer("❌ Такой промокод уже существует.")
     else:
-        await message.answer(
-            f"❌ Ошибка создания промокода:\n<code>{details}</code>\n\nПолный traceback в логах Railway.",
-            parse_mode="HTML"
-        )
+        await message.answer("❌ Ошибка создания промокода — проверь логи Railway.")
 
 @dp.message(Command("coupon_stat"), StateFilter("*"))
 async def coupon_stat_cmd(message: Message, state: FSMContext):
@@ -1412,12 +1321,10 @@ async def coupon_stat_cmd(message: Message, state: FSMContext):
         'SELECT user_id, used_at FROM coupon_uses WHERE code = $1 ORDER BY used_at DESC LIMIT 20',
         code
     )
-    expires_str  = row['expires_at'].strftime("%d.%m.%Y %H:%M") if row['expires_at'] else "бессрочно"
-    max_per_user = row.get('max_per_user') or 0
-    per_user_str = f", лимит на человека: {max_per_user} раз" if max_per_user > 0 else ""
+    expires_str = row['expires_at'].strftime("%d.%m.%Y %H:%M") if row['expires_at'] else "бессрочно"
     lines = [
         f"📊 Промокод: <code>{code}</code>",
-        f"Использований: {row['uses_count']} / {row['max_uses']}{per_user_str}",
+        f"Использований: {row['uses_count']} / {row['max_uses']}",
         f"Действует до: {expires_str}",
     ]
     if uses:
@@ -1578,6 +1485,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         user["destiny_number"] = number
         await save_user(user_id, user)
 
+    # Корректировка 5: промежуточное сообщение через 20 сек
     wait_msg = await message.answer(f"⏳ Ева составляет разбор для {name}... Подожди немного ✨")
 
     async def send_intermediate():
@@ -1602,6 +1510,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         title = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
 
+        # Корректировка 4: PDF для разборов 79⭐ и выше
         if waiting in PDF_KEYS:
             try:
                 pdf_bytes = generate_pdf(title, answer, user_name=name)
@@ -1654,24 +1563,22 @@ async def handle_two_dates(message: Message, state: FSMContext):
     intermediate_task = asyncio.create_task(send_intermediate())
 
     try:
-        n2 = calculate_destiny(parts[1])
-        # Полный нумерологический контекст для ОБОИХ людей — раньше для второго
-        # передавалось только число судьбы (n2), без матрицы/кармы/личного года.
-        context1 = build_numerology_context(name, parts[0], label="Первый человек")
-        context2 = build_numerology_context("Второй человек", parts[1], label="Второй человек")
-        context  = context1 + "\n" + context2
-        prompt   = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
-        answer   = await ask_ai(prompt)
+        n2      = calculate_destiny(parts[1])
+        context = build_numerology_context(name, parts[0])
+        prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
+        answer  = await ask_ai(prompt)
         intermediate_task.cancel()
 
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
 
-        try:
-            pdf_bytes = generate_pdf("💑 Совместимость", answer, user_name=name)
-            pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
-            await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
-        except Exception as pdf_err:
-            logging.warning(f"PDF compat error: {pdf_err}")
+        # PDF для compat (99⭐ — не входит в PDF_KEYS, но compat = 99, а PDF от 79)
+        if "compat" in PDF_KEYS:
+            try:
+                pdf_bytes = generate_pdf("💑 Совместимость", answer, user_name=name)
+                pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
+                await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
+            except Exception as pdf_err:
+                logging.warning(f"PDF compat error: {pdf_err}")
 
         await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("compat", user))
         await state.clear()
