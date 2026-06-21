@@ -674,16 +674,16 @@ async def _try_groq(prompt: str) -> str | None:
                 break
     return None
 
-async def _try_deepseek(prompt: str) -> str | None:
-    """Фолбек на DeepSeek. Возвращает текст или None."""
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+async def _try_openmodel(prompt: str) -> str | None:
+    """Фолбек на OpenModel (deepseek-v4-flash). Возвращает текст или None."""
+    api_key = os.getenv("DEEPSEEK_API_KEY")  # ключ формата om_****
     if not api_key:
         return None
-    url     = "https://api.deepseek.com/chat/completions"
+    url     = "https://api.openmodel.app/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
         data = {
-            "model": "deepseek-chat",
+            "model": "deepseek-v4-flash",
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": prompt},
@@ -696,12 +696,12 @@ async def _try_deepseek(prompt: str) -> str | None:
             raw = response.json()["choices"][0]["message"]["content"]
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             if has_foreign(raw):
-                logging.warning("DeepSeek returned foreign chars")
+                logging.warning("OpenModel вернул иностранные символы")
                 return None
-            logging.info("DeepSeek ответил успешно")
+            logging.info("OpenModel ответил успешно")
             return clean_text(raw)
     except Exception as e:
-        logging.warning(f"DeepSeek failed: {e}")
+        logging.warning(f"OpenModel failed: {e}")
         return None
 
 async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
@@ -711,8 +711,8 @@ async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -
     if result:
         return result
     # 2. Фолбек на DeepSeek
-    logging.warning("Groq не дал результат — пробую DeepSeek")
-    result = await _try_deepseek(prompt)
+    logging.warning("Groq не дал результат — пробую OpenModel (deepseek-v4-flash)")
+    result = await _try_openmodel(prompt)
     if result:
         return result
     raise Exception("Все провайдеры недоступны или вернули иностранные символы")
