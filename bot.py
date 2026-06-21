@@ -111,14 +111,18 @@ def _ensure_font() -> str:
             logging.warning(f"Файл {FONT_PATH} не является TTF, пробую скачать")
         except Exception:
             pass
-    # Скачиваем DejaVuSans из jsDelivr (CDN, доступен без VPN)
+    # Скачиваем DejaVuSans из официального релиза
     try:
-        import urllib.request
-        url = "https://cdn.jsdelivr.net/npm/@fontsource/dejavu-sans@5.0.17/files/dejavu-sans-all-400-normal.woff2"
-        # woff2 не подходит для fpdf2 — качаем ttf напрямую
-        url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
-        urllib.request.urlretrieve(url, FONT_PATH)
-        logging.info(f"Шрифт скачан в {FONT_PATH}")
+        import urllib.request, zipfile, io
+        zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip"
+        logging.info("Скачиваю шрифт DejaVuSans...")
+        resp = urllib.request.urlopen(zip_url, timeout=30)
+        zdata = resp.read()
+        with zipfile.ZipFile(io.BytesIO(zdata)) as z:
+            ttf_name = next(n for n in z.namelist() if "DejaVuSans.ttf" in n and "Bold" not in n and "Oblique" not in n and "Mono" not in n and "Condensed" not in n)
+            with z.open(ttf_name) as src, open(FONT_PATH, "wb") as dst:
+                dst.write(src.read())
+        logging.info(f"Шрифт установлен: {FONT_PATH}")
         return FONT_PATH
     except Exception as e:
         logging.warning(f"Не удалось скачать шрифт: {e}")
@@ -574,6 +578,8 @@ async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -
                         break
                     response.raise_for_status()
                     raw = response.json()["choices"][0]["message"]["content"]
+                    # Вырезаем thinking-блоки (<think>...</think>) у reasoning моделей
+                    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
                     if has_foreign(raw):
                         logging.warning(f"Model {model} attempt {attempt+1} returned foreign chars, retrying...")
                         continue
