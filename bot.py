@@ -495,7 +495,7 @@ def utc_now() -> datetime:
 # Корректировка 8: убран llama-3.1-8b-instant
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",
-    "llama3-8b-8192",
+    "llama-3.1-70b-versatile",
 ]
 
 SYSTEM_PROMPT = (
