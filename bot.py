@@ -522,8 +522,9 @@ def utc_now() -> datetime:
 # ─── GROQ + RETRY + ОЧИСТКА ──────────────────────────────────────────────────
 # Корректировка 8: убран llama-3.1-8b-instant
 GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "mixtral-8x7b-32768",
+    "qwen/qwen3.6-27b",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
 ]
 
 SYSTEM_PROMPT = (
