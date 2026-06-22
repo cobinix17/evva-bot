@@ -31,9 +31,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not BOT_TOKEN or not DATABASE_URL:
     raise EnvironmentError("BOT_TOKEN и DATABASE_URL должны быть установлены!")
-if not GROQ_API_KEY and not os.getenv("YANDEX_API_KEY"):
+if not any([os.getenv("CEREBRAS_API_KEY"), os.getenv("GROQ_API_KEY"), os.getenv("OPENROUTER_API_KEY")]):
     raise EnvironmentError(
-        "Нужен хотя бы один ИИ-провайдер: YANDEX_API_KEY (+YANDEX_FOLDER_ID) или GROQ_API_KEY."
+        "Нужен хотя бы один ИИ-провайдер: CEREBRAS_API_KEY, GROQ_API_KEY или OPENROUTER_API_KEY."
     )
 
 CHANNEL         = "@eva_numerologg"
@@ -719,20 +719,33 @@ async def check_subscription(user_id: int) -> bool:
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-# ─── ИИ-ПРОВАЙДЕРЫ: YANDEXGPT → GROQ ───────────────────────────────────────
-# Цепочка: YandexGPT (основной, платный, нативный русский язык)
-# → Groq (бесплатный резерв, но с жёсткими rate limits).
-# GigaChat убран — требует Сбер ID для регистрации.
+# ─── ИИ-ПРОВАЙДЕРЫ: CEREBRAS → GROQ → OPENROUTER ───────────────────────────
+# Cerebras — быстрый, бесплатный тир, отлично держит русский язык
+# Groq — резерв, бесплатный но с жёсткими rate limits
+# OpenRouter — последний рубеж, платный по токенам но с авто-роутингом
+# по 5+ моделям внутри одного запроса (OpenRouter сам перебирает если одна упала)
 
-YANDEX_API_KEY    = os.getenv("YANDEX_API_KEY")
-YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID")
-YANDEX_MODEL      = os.getenv("YANDEX_MODEL", "yandexgpt-lite")  # lite — дешевле и доступен без привязки карты
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
+CEREBRAS_MODEL   = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")
 
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODELS  = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "gemma2-9b-it",
+]
 
-GROQ_MODELS = [
-    "qwen/qwen3.6-27b",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Список моделей для авто-роутинга OpenRouter — перебираются по порядку
+# если одна недоступна или превысила лимит
+OPENROUTER_MODELS = [
+    "meta-llama/llama-3.3-70b-instruct",
+    "google/gemini-flash-1.5",
+    "deepseek/deepseek-chat",
+    "mistralai/mistral-small-3.1-24b-instruct",
+    "qwen/qwen-2.5-72b-instruct",
+    "microsoft/phi-4",
+    "google/gemini-flash-1.5-8b",
 ]
 
 SYSTEM_PROMPT = (
@@ -752,61 +765,45 @@ SYSTEM_PROMPT = (
     "Используй абзацы. Заканчивай полным предложением."
 )
 
-async def _try_yandex(prompt: str) -> str | None:
-    """YandexGPT — основной провайдер.
-    Промпт намеренно переносим в system-сообщение, а в user шлём короткий
-    триггер. YandexGPT lite эхоит user-сообщение перед ответом — системный
-    промпт он не повторяет. Это решает проблему с мусором в начале разбора."""
-    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
+async def _try_cerebras(prompt: str) -> str | None:
+    """Cerebras — основной провайдер. Очень быстрый inference,
+    бесплатный тир, OpenAI-совместимый API."""
+    if not CEREBRAS_API_KEY:
         return None
-    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
-    headers = {
-        "Authorization": f"Api-Key {YANDEX_API_KEY}",
-        "Content-Type":  "application/json",
-        "x-folder-id":   YANDEX_FOLDER_ID,
+    url     = "https://api.cerebras.ai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {CEREBRAS_API_KEY}", "Content-Type": "application/json"}
+    data    = {
+        "model": CEREBRAS_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
+        "max_tokens": 4000,
+        "temperature": 0.7,
     }
-
-    models_to_try = [YANDEX_MODEL]
-    if YANDEX_MODEL not in ("yandexgpt-lite", "yandexgpt-lite/latest"):
-        models_to_try.append("yandexgpt-lite")
-
-    for model in models_to_try:
-        data = {
-            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/{model}",
-            "completionOptions": {
-                "stream":      False,
-                "temperature": 0.6,
-                "maxTokens":   2000,
-            },
-            "messages": [
-                # Весь промпт — в system, чтобы YandexGPT его не повторял
-                {"role": "system", "text": SYSTEM_PROMPT + "\n\n" + prompt},
-                # Короткий триггер в user — модель не эхоит системный промпт
-                {"role": "user",   "text": "Напиши разбор."},
-            ],
-        }
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, headers=headers, json=data, timeout=60)
-                if response.status_code == 400:
-                    logging.warning(f"YandexGPT {model} 400: {response.text[:600]}")
-                    continue
-                response.raise_for_status()
-                raw = response.json()["result"]["alternatives"][0]["message"]["text"].strip()
-                if has_foreign(raw):
-                    logging.warning(f"YandexGPT {model} вернул иностранные символы")
-                    cleaned = clean_text(raw)
-                    return cleaned if cleaned.strip() else None
-                logging.info(f"YandexGPT {model} ответил успешно")
-                return clean_text(raw)
-        except httpx.HTTPStatusError as e:
-            logging.warning(f"YandexGPT {model} HTTP {e.response.status_code}: {e.response.text[:400]}")
-        except Exception as e:
-            logging.warning(f"YandexGPT {model} failed: {e}")
-    return None
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=data, timeout=45)
+            if response.status_code == 429:
+                logging.warning("Cerebras 429 rate limit")
+                return None
+            response.raise_for_status()
+            raw     = response.json()["choices"][0]["message"]["content"]
+            raw     = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+            cleaned = clean_text(raw)
+            if not cleaned.strip():
+                return None
+            if has_foreign(raw) and len(cleaned) < 200:
+                logging.warning("Cerebras вернул иностранные символы")
+                return None
+            logging.info("Cerebras ответил успешно")
+            return cleaned
+    except Exception as e:
+        logging.warning(f"Cerebras failed: {e}")
+        return None
 
 async def _try_groq(prompt: str) -> str | None:
-    """Groq — резерв если YandexGPT недоступен. Бесплатный, но с rate limits."""
+    """Groq — второй в цепочке. Бесплатный, но с rate limits."""
     if not GROQ_API_KEY:
         return None
     url     = "https://api.groq.com/openai/v1/chat/completions"
@@ -827,39 +824,83 @@ async def _try_groq(prompt: str) -> str | None:
                     response = await client.post(url, headers=headers, json=data, timeout=45)
                     if response.status_code == 429:
                         retry_after = int(response.headers.get("retry-after", 5))
-                        logging.warning(f"Groq {model} 429 rate limit, retry-after={retry_after}s")
+                        logging.warning(f"Groq {model} 429, retry-after={retry_after}s")
                         await asyncio.sleep(min(retry_after, 10))
                         break
                     if response.status_code == 400:
                         logging.warning(f"Groq {model} 400: {response.text[:300]}")
                         break
                     response.raise_for_status()
-                    raw = response.json()["choices"][0]["message"]["content"]
-                    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-                    raw = strip_preamble(raw)
+                    raw     = response.json()["choices"][0]["message"]["content"]
+                    raw     = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
                     cleaned = clean_text(raw)
                     if not cleaned.strip():
-                        logging.warning(f"Groq {model} attempt {attempt+1} — пустой текст после чистки")
                         continue
-                    if has_foreign(raw):
-                        # Не отбрасываем полностью — чистим и возвращаем если осталось достаточно текста
-                        logging.warning(f"Groq {model} attempt {attempt+1} — иностранные символы, возвращаю очищенный текст")
-                        if len(cleaned) > 200:
-                            return cleaned
+                    if has_foreign(raw) and len(cleaned) < 200:
+                        logging.warning(f"Groq {model} attempt {attempt+1} — иностранные символы")
                         continue
+                    logging.info(f"Groq {model} ответил успешно")
                     return cleaned
             except Exception as e:
                 logging.warning(f"Groq {model} attempt {attempt+1} failed: {e}")
                 break
     return None
 
+async def _try_openrouter(prompt: str) -> str | None:
+    """OpenRouter — последний рубеж. Платный по токенам, но умеет
+    автоматически роутить между 20+ моделями. Мы передаём список моделей
+    в поле 'models' — OpenRouter перебирает их по порядку если одна упала."""
+    if not OPENROUTER_API_KEY:
+        return None
+    url     = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type":  "application/json",
+        "HTTP-Referer":  "https://t.me/nnumerology_bot",
+        "X-Title":       "Eva Numerolog Bot",
+    }
+    data = {
+        "models": OPENROUTER_MODELS,   # авто-роутинг по списку
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
+        "max_tokens": 4000,
+        "temperature": 0.7,
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=data, timeout=60)
+            if response.status_code == 429:
+                logging.warning("OpenRouter 429 rate limit")
+                return None
+            response.raise_for_status()
+            raw     = response.json()["choices"][0]["message"]["content"]
+            raw     = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+            cleaned = clean_text(raw)
+            if not cleaned.strip():
+                return None
+            if has_foreign(raw) and len(cleaned) < 200:
+                logging.warning("OpenRouter вернул иностранные символы")
+                return None
+            model_used = response.json().get("model", "unknown")
+            logging.info(f"OpenRouter ответил успешно (модель: {model_used})")
+            return cleaned
+    except Exception as e:
+        logging.warning(f"OpenRouter failed: {e}")
+        return None
+
 async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
-    """YandexGPT → Groq. Первый, кто ответил — побеждает."""
-    result = await _try_yandex(prompt)
+    """Cerebras → Groq → OpenRouter."""
+    result = await _try_cerebras(prompt)
     if result:
         return result
-    logging.warning("YandexGPT не дал результат — пробую Groq")
+    logging.warning("Cerebras не дал результат — пробую Groq")
     result = await _try_groq(prompt)
+    if result:
+        return result
+    logging.warning("Groq не дал результат — пробую OpenRouter")
+    result = await _try_openrouter(prompt)
     if result:
         return result
     raise Exception("Все провайдеры недоступны или вернули иностранные символы")
