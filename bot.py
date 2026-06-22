@@ -31,10 +31,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not BOT_TOKEN or not DATABASE_URL:
     raise EnvironmentError("BOT_TOKEN и DATABASE_URL должны быть установлены!")
-if not GROQ_API_KEY and not os.getenv("YANDEX_API_KEY") and not os.getenv("GIGACHAT_AUTH_KEY"):
+if not GROQ_API_KEY and not os.getenv("YANDEX_API_KEY"):
     raise EnvironmentError(
-        "Нужен хотя бы один ИИ-провайдер: YANDEX_API_KEY (+YANDEX_FOLDER_ID), "
-        "GIGACHAT_AUTH_KEY или GROQ_API_KEY."
+        "Нужен хотя бы один ИИ-провайдер: YANDEX_API_KEY (+YANDEX_FOLDER_ID) или GROQ_API_KEY."
     )
 
 CHANNEL         = "@eva_numerologg"
@@ -681,32 +680,15 @@ async def check_subscription(user_id: int) -> bool:
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-# ─── ИИ-ПРОВАЙДЕРЫ: YANDEXGPT → GIGACHAT → GROQ ─────────────────────────────
-# Раньше был Groq на всех трёх точках (генерация разбора, совместимость,
-# ежедневный пост в канал) — у бесплатного тарифа Groq лимит всего 30 запросов
-# в минуту и ~1000 в день НА ВСЮ организацию, общий на все три точки сразу.
-# При реальном трафике это упирается в 429 почти сразу.
-# "Опенмодель" (api.openmodel.ai) — сторонний неофициальный роутер, поэтому
-# нестабилен. Теперь основные — YandexGPT и GigaChat: официальные API,
-# рублёвый биллинг без загранкарты, и не "соскальзывают" на латиницу/иероглифы,
-# в отличие от Qwen/gpt-oss — то есть сама причина существования
-# has_foreign()-ретраев в большинстве случаев просто не будет возникать.
-# Groq остаётся последним бесплатным резервом на случай, если оба недоступны.
+# ─── ИИ-ПРОВАЙДЕРЫ: YANDEXGPT → GROQ ───────────────────────────────────────
+# Цепочка: YandexGPT (основной, платный, нативный русский язык)
+# → Groq (бесплатный резерв, но с жёсткими rate limits).
+# GigaChat убран — требует Сбер ID для регистрации.
 
 YANDEX_API_KEY    = os.getenv("YANDEX_API_KEY")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID")
-YANDEX_MODEL      = os.getenv("YANDEX_MODEL", "yandexgpt/latest")  # yandexgpt-lite/latest — дешевле
+YANDEX_MODEL      = os.getenv("YANDEX_MODEL", "yandexgpt-lite")  # lite — дешевле и доступен без привязки карты
 
-GIGACHAT_AUTH_KEY  = os.getenv("GIGACHAT_AUTH_KEY")
-GIGACHAT_SCOPE     = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")  # PERS — физлицо/самозанятый
-GIGACHAT_MODEL     = os.getenv("GIGACHAT_MODEL", "GigaChat-2")  # Pro/Max нужны B2B/CORP scope
-GIGACHAT_VERIFY_SSL = os.getenv("GIGACHAT_VERIFY_SSL", "false").lower() == "true"
-# По умолчанию SSL-проверка выключена: GigaChat подписан сертификатом НУЦ Минцифры,
-# которого нет в стандартном доверенном хранилище. Если поставишь сертификат
-# на сервер — выстави GIGACHAT_VERIFY_SSL=true в Railway для большей безопасности.
-
-_gigachat_token_cache = {"token": None, "expires_at": 0}
-_gigachat_token_lock  = asyncio.Lock()
 
 GROQ_MODELS = [
     "qwen/qwen3.6-27b",
@@ -732,7 +714,9 @@ SYSTEM_PROMPT = (
 )
 
 async def _try_yandex(prompt: str) -> str | None:
-    """YandexGPT — основной провайдер. Нативный API Yandex Foundation Models."""
+    """YandexGPT — основной провайдер. Нативный API Yandex Foundation Models.
+    При 400 автоматически пробуем yandexgpt-lite как запасной вариант —
+    новые аккаунты без привязки карты иногда имеют доступ только к lite."""
     if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
         return None
     url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
@@ -741,98 +725,51 @@ async def _try_yandex(prompt: str) -> str | None:
         "Content-Type":  "application/json",
         "x-folder-id":   YANDEX_FOLDER_ID,
     }
-    data = {
-        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/{YANDEX_MODEL}",
-        "completionOptions": {
-            "stream": False,
-            "temperature": 0.6,
-            "maxTokens": "4000",
-        },
-        "messages": [
-            {"role": "system", "text": SYSTEM_PROMPT},
-            {"role": "user",   "text": prompt},
-        ],
-    }
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=data, timeout=45)
-            response.raise_for_status()
-            raw = response.json()["result"]["alternatives"][0]["message"]["text"]
-            raw = raw.strip()
-            if has_foreign(raw):
-                logging.warning("YandexGPT вернул иностранные символы")
-                return clean_text(raw) if clean_text(raw).strip() else None
-            return clean_text(raw)
-    except Exception as e:
-        logging.warning(f"YandexGPT failed: {e}")
-        return None
 
-async def _get_gigachat_token() -> str | None:
-    """OAuth-токен GigaChat живёт 30 минут — кэшируем с запасом в 60 секунд."""
-    async with _gigachat_token_lock:
-        now = time.time()
-        if _gigachat_token_cache["token"] and _gigachat_token_cache["expires_at"] - 60 > now:
-            return _gigachat_token_cache["token"]
-        if not GIGACHAT_AUTH_KEY:
-            return None
-        import uuid as _uuid
-        url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-        headers = {
-            "Content-Type":  "application/x-www-form-urlencoded",
-            "Accept":        "application/json",
-            "RqUID":         str(_uuid.uuid4()),
-            "Authorization": f"Basic {GIGACHAT_AUTH_KEY}",
+    # Пробуем основную модель, потом lite как запасной вариант
+    models_to_try = [YANDEX_MODEL]
+    if YANDEX_MODEL not in ("yandexgpt-lite", "yandexgpt-lite/latest"):
+        models_to_try.append("yandexgpt-lite")
+
+    for model in models_to_try:
+        data = {
+            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/{model}",
+            "completionOptions": {
+                "stream":    False,
+                "temperature": 0.6,
+                "maxTokens": 2000,   # integer, не строка
+            },
+            "messages": [
+                {"role": "system", "text": SYSTEM_PROMPT},
+                {"role": "user",   "text": prompt},
+            ],
         }
         try:
-            async with httpx.AsyncClient(verify=GIGACHAT_VERIFY_SSL) as client:
-                response = await client.post(
-                    url, headers=headers,
-                    data={"scope": GIGACHAT_SCOPE}, timeout=20
-                )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=headers, json=data, timeout=60)
+                if response.status_code == 400:
+                    # Логируем полное тело ошибки — помогает диагностировать
+                    logging.warning(
+                        f"YandexGPT {model} 400: {response.text[:600]}"
+                    )
+                    continue  # пробуем следующую модель
                 response.raise_for_status()
-                payload = response.json()
-                _gigachat_token_cache["token"]      = payload["access_token"]
-                _gigachat_token_cache["expires_at"] = payload["expires_at"] / 1000  # мс → сек
-                return _gigachat_token_cache["token"]
-        except Exception as e:
-            logging.warning(f"GigaChat token error: {e}")
-            return None
-
-async def _try_gigachat(prompt: str) -> str | None:
-    """GigaChat — первый резерв. Лимит PERS — 1 запрос/сек, ловим 429 мягко."""
-    token = await _get_gigachat_token()
-    if not token:
-        return None
-    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    data = {
-        "model": GIGACHAT_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt},
-        ],
-        "max_tokens": 4000,
-    }
-    for attempt in range(2):
-        try:
-            async with httpx.AsyncClient(verify=GIGACHAT_VERIFY_SSL) as client:
-                response = await client.post(url, headers=headers, json=data, timeout=45)
-                if response.status_code == 429:
-                    logging.warning("GigaChat 429 — превышен 1 RPS, пробую ещё раз через секунду")
-                    await asyncio.sleep(1.2)
-                    continue
-                response.raise_for_status()
-                raw = response.json()["choices"][0]["message"]["content"].strip()
+                raw = response.json()["result"]["alternatives"][0]["message"]["text"]
+                raw = raw.strip()
                 if has_foreign(raw):
-                    logging.warning("GigaChat вернул иностранные символы")
-                    return clean_text(raw) if clean_text(raw).strip() else None
+                    logging.warning(f"YandexGPT {model} вернул иностранные символы")
+                    cleaned = clean_text(raw)
+                    return cleaned if cleaned.strip() else None
+                logging.info(f"YandexGPT {model} ответил успешно")
                 return clean_text(raw)
+        except httpx.HTTPStatusError as e:
+            logging.warning(f"YandexGPT {model} HTTP {e.response.status_code}: {e.response.text[:400]}")
         except Exception as e:
-            logging.warning(f"GigaChat attempt {attempt+1} failed: {e}")
+            logging.warning(f"YandexGPT {model} failed: {e}")
     return None
 
 async def _try_groq(prompt: str) -> str | None:
-    """Groq — последний бесплатный резерв, если Yandex и GigaChat недоступны."""
+    """Groq — резерв если YandexGPT недоступен. Бесплатный, но с rate limits."""
     if not GROQ_API_KEY:
         return None
     url     = "https://api.groq.com/openai/v1/chat/completions"
@@ -873,15 +810,11 @@ async def _try_groq(prompt: str) -> str | None:
     return None
 
 async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
-    """YandexGPT → GigaChat → Groq. Первый, кто ответил без иностранных символов, побеждает."""
+    """YandexGPT → Groq. Первый, кто ответил — побеждает."""
     result = await _try_yandex(prompt)
     if result:
         return result
-    logging.warning("YandexGPT не дал результат — пробую GigaChat")
-    result = await _try_gigachat(prompt)
-    if result:
-        return result
-    logging.warning("GigaChat не дал результат — пробую Groq")
+    logging.warning("YandexGPT не дал результат — пробую Groq")
     result = await _try_groq(prompt)
     if result:
         return result
