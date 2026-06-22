@@ -794,16 +794,22 @@ async def _try_groq(prompt: str) -> str | None:
                         await asyncio.sleep(min(retry_after, 10))
                         break
                     if response.status_code == 400:
-                        err_body = response.text[:300]
-                        logging.warning(f"Groq {model} 400: {err_body}")
+                        logging.warning(f"Groq {model} 400: {response.text[:300]}")
                         break
                     response.raise_for_status()
                     raw = response.json()["choices"][0]["message"]["content"]
                     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-                    if has_foreign(raw):
-                        logging.warning(f"Groq {model} attempt {attempt+1} foreign chars, retrying...")
+                    cleaned = clean_text(raw)
+                    if not cleaned.strip():
+                        logging.warning(f"Groq {model} attempt {attempt+1} — пустой текст после чистки")
                         continue
-                    return clean_text(raw)
+                    if has_foreign(raw):
+                        # Не отбрасываем полностью — чистим и возвращаем если осталось достаточно текста
+                        logging.warning(f"Groq {model} attempt {attempt+1} — иностранные символы, возвращаю очищенный текст")
+                        if len(cleaned) > 200:
+                            return cleaned
+                        continue
+                    return cleaned
             except Exception as e:
                 logging.warning(f"Groq {model} attempt {attempt+1} failed: {e}")
                 break
