@@ -163,17 +163,25 @@ HEADER_EMOJI = (
 )
 
 def strip_preamble(text: str) -> str:
-    """YandexGPT lite иногда эхом повторяет инструкции из промпта перед
-    настоящим ответом. Эта функция обрезает всё до первого эмодзи-заголовка
-    раздела (☠, 🔮, ✨ и т.д.) — именно с них всегда начинается разбор.
-    Если ни одного такого эмодзи нет — возвращаем текст как есть."""
-    earliest = len(text)
-    for emoji in HEADER_EMOJI:
-        pos = text.find(emoji)
-        if pos != -1 and pos < earliest:
-            earliest = pos
-    if earliest < len(text):
-        return text[earliest:].strip()
+    """YandexGPT lite эхом повторяет инструкции промпта — там эмодзи-заголовки
+    встречаются в виде маркированного списка (каждый на своей строке, без текста
+    после). Настоящий ответ начинается с эмодзи-заголовка, ЗА КОТОРЫМ идёт
+    реальный абзац текста (длиннее 40 символов и не начинающийся с другого эмодзи).
+    Если такого места нет — возвращаем текст как есть."""
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not any(stripped.startswith(e) for e in HEADER_EMOJI):
+            continue
+        # Ищем первую непустую строку после этого заголовка
+        for next_line in lines[i + 1:]:
+            nl = next_line.strip()
+            if not nl:
+                continue
+            # Если следующая содержательная строка — это длинный текст, а не ещё один маркер
+            if len(nl) > 40 and not any(nl.startswith(e) for e in HEADER_EMOJI):
+                return '\n'.join(lines[i:]).strip()
+            break  # следующая строка — снова маркер или короткая → это ещё эхо, идём дальше
     return text.strip()
 
 # Цветовая палитра — нумерологическая тема (лаванда / аметист / золото)
