@@ -162,6 +162,20 @@ HEADER_EMOJI = (
     "💑","💘","💍","🌠","🏢","😨","🗓","⚖️","🔗","🪤","🗝",
 )
 
+def strip_preamble(text: str) -> str:
+    """YandexGPT lite иногда эхом повторяет инструкции из промпта перед
+    настоящим ответом. Эта функция обрезает всё до первого эмодзи-заголовка
+    раздела (☠, 🔮, ✨ и т.д.) — именно с них всегда начинается разбор.
+    Если ни одного такого эмодзи нет — возвращаем текст как есть."""
+    earliest = len(text)
+    for emoji in HEADER_EMOJI:
+        pos = text.find(emoji)
+        if pos != -1 and pos < earliest:
+            earliest = pos
+    if earliest < len(text):
+        return text[earliest:].strip()
+    return text.strip()
+
 # Цветовая палитра — нумерологическая тема (лаванда / аметист / золото)
 C_BG          = (250, 247, 255)   # фон страницы
 C_BAR         = (157, 117, 196)   # верх/низ полосы
@@ -408,6 +422,23 @@ def clean_text(text: str) -> str:
         ):
             result.append(char)
     return ''.join(result)
+
+# Emoji, с которых начинаются разделы разбора
+_HEADER_EMOJI_RE = re.compile(
+    r'(?:^|\n)((?:🔮|✨|💎|💰|💕|🔴|🌟|📅|🎯|💡|🚧|💪|🌱|🎭|💼|🤝|📈|🗺|🌍|🏆'
+    r'|💚|⚡|🫀|😤|📜|🔄|🌳|😔|💔|💑|💘|💍|🌠|🏢|😨|🗓|⚖️|🪤|🗝|☠|❄️|😍'
+    r'|💫|🔗|⭐).+)',
+    re.DOTALL
+)
+
+def strip_preamble(text: str) -> str:
+    """YandexGPT иногда выдаёт структурированный план перед ответом
+    (секции 1, 2, 3...). Находим начало реального контента по первому
+    emoji-заголовку и отрезаем всё, что перед ним."""
+    match = _HEADER_EMOJI_RE.search(text)
+    if match:
+        return text[match.start(1):].strip()
+    return text
 
 # ─── ЦЕНЫ И МЕТАДАННЫЕ ───────────────────────────────────────────────────────
 TITLES = {
@@ -755,13 +786,13 @@ async def _try_yandex(prompt: str) -> str | None:
                     continue  # пробуем следующую модель
                 response.raise_for_status()
                 raw = response.json()["result"]["alternatives"][0]["message"]["text"]
-                raw = raw.strip()
+                raw = strip_preamble(raw.strip())
                 if has_foreign(raw):
                     logging.warning(f"YandexGPT {model} вернул иностранные символы")
-                    cleaned = clean_text(raw)
+                    cleaned = strip_preamble(clean_text(raw))
                     return cleaned if cleaned.strip() else None
                 logging.info(f"YandexGPT {model} ответил успешно")
-                return clean_text(raw)
+                return strip_preamble(clean_text(raw))
         except httpx.HTTPStatusError as e:
             logging.warning(f"YandexGPT {model} HTTP {e.response.status_code}: {e.response.text[:400]}")
         except Exception as e:
@@ -799,6 +830,7 @@ async def _try_groq(prompt: str) -> str | None:
                     response.raise_for_status()
                     raw = response.json()["choices"][0]["message"]["content"]
                     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+                    raw = strip_preamble(raw)
                     cleaned = clean_text(raw)
                     if not cleaned.strip():
                         logging.warning(f"Groq {model} attempt {attempt+1} — пустой текст после чистки")
