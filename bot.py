@@ -26,7 +26,7 @@ from readings import MATRIX_LITE, PROMPTS
 from broadcasts import MORNING
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")  # последний бесплатный резерв, не обязателен
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")  # теперь последний бесплатный резерв, не обязателен
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not BOT_TOKEN or not DATABASE_URL:
@@ -42,7 +42,7 @@ ADMIN_ID        = 5854618444
 CONTACT_URL     = "https://t.me/eva_numer"
 
 # Шрифт для PDF — должен лежать в репо как DejaVuSans.ttf
-FONT_PATH      = os.path.join(os.path.dirname(__file__), "DejaVuSans.ttf")
+FONT_PATH = os.path.join(os.path.dirname(__file__), "DejaVuSans.ttf")
 BOLD_FONT_PATH = os.path.join(os.path.dirname(__file__), "DejaVuSans-Bold.ttf")
 
 logging.basicConfig(level=logging.INFO)
@@ -102,7 +102,7 @@ async def send_long(chat_id, text: str):
         await asyncio.sleep(0.3)
 
 # ─── PDF ГЕНЕРАЦИЯ ────────────────────────────────────────────────────────────
-def _ensure_font() -> str | None:
+def _ensure_font() -> str:
     """Проверяет шрифт, при необходимости скачивает. Возвращает путь или None."""
     if os.path.exists(FONT_PATH):
         try:
@@ -114,7 +114,7 @@ def _ensure_font() -> str | None:
         except Exception:
             pass
     try:
-        import urllib.request, zipfile
+        import urllib.request, zipfile, io
         zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip"
         logging.info("Скачиваю шрифт DejaVuSans...")
         resp = urllib.request.urlopen(zip_url, timeout=30)
@@ -129,7 +129,7 @@ def _ensure_font() -> str | None:
         logging.warning(f"Не удалось скачать шрифт: {e}")
         return None
 
-def _ensure_bold_font() -> str | None:
+def _ensure_bold_font() -> str:
     """Жирное начертание DejaVuSans-Bold — для настоящих жирных заголовков в PDF.
     Необязательно: при неудаче просто используется обычное начертание."""
     if os.path.exists(BOLD_FONT_PATH):
@@ -141,7 +141,7 @@ def _ensure_bold_font() -> str | None:
         except Exception:
             pass
     try:
-        import urllib.request, zipfile
+        import urllib.request, zipfile, io
         zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip"
         resp = urllib.request.urlopen(zip_url, timeout=30)
         zdata = resp.read()
@@ -154,10 +154,7 @@ def _ensure_bold_font() -> str | None:
         logging.warning(f"Не удалось скачать жирный шрифт: {e}")
         return None
 
-# Эмодзи-маркеры подзаголовков внутри текста разбора — ЕДИНЫЙ источник правды,
-# используется и в strip_preamble(), и в generate_pdf(). Раньше существовало
-# два почти одинаковых списка/regex в разных местах файла, которые легко
-# рассинхронизировались при добавлении новых разборов.
+# Эмодзи-маркеры подзаголовков внутри текста разбора
 HEADER_EMOJI = (
     "🔮","✨","💎","💰","💕","🔴","🌟","📅","🎯","💡","🚧",
     "💪","⚠️","🌱","🎭","💼","🤝","📈","⏰","🗺","🌍","🏆",
@@ -165,109 +162,45 @@ HEADER_EMOJI = (
     "💑","💘","💍","🌠","🏢","😨","🗓","⚖️","🔗","🪤","🗝",
 )
 
-def _is_header_line(s: str) -> bool:
-    return any(s.startswith(e) for e in HEADER_EMOJI)
-
 def strip_preamble(text: str) -> str:
-    """YandexGPT lite иногда 'проговаривает' инструкцию промпта перед тем как
-    выдать настоящий ответ — повторяет список emoji-заголовков несколько раз
-    подряд (как план/анализ задачи), и только в последнем повторении за
-    каждым заголовком наконец идёт реальный абзац текста.
-
-    Раньше в файле было ДВА разных определения strip_preamble — второе молча
-    переопределяло первое (Python не предупреждает об этом), и активная
-    версия искала только ПЕРВОЕ совпадение emoji-заголовка — то есть отрезала
-    текст слишком рано, оставляя кусок преамбулы в начале настоящего ответа.
-
-    Эта версия ищет последний непрерывный "круг" заголовков (тот, что не
-    повторяется снова после себя) и берёт текст начиная с него."""
+    """YandexGPT lite эхом повторяет инструкции промпта — там эмодзи-заголовки
+    встречаются в виде маркированного списка (каждый на своей строке, без текста
+    после). Настоящий ответ начинается с эмодзи-заголовка, ЗА КОТОРЫМ идёт
+    реальный абзац текста (длиннее 40 символов и не начинающийся с другого эмодзи).
+    Если такого места нет — возвращаем текст как есть."""
     lines = text.split('\n')
-    n = len(lines)
-
-    def has_real_content_after(idx: int) -> bool:
-        j = idx + 1
-        while j < n:
-            nl = lines[j].strip()
-            if not nl:
-                j += 1
-                continue
-            return len(nl) > 40 and not _is_header_line(nl)
-        return False
-
-    # Заголовки, за которыми реально следует абзац (не просто очередной
-    # заголовок из списка-плана)
-    real_header_indices = [
-        i for i in range(n)
-        if _is_header_line(lines[i].strip()) and has_real_content_after(i)
-    ]
-    if not real_header_indices:
-        return text.strip()
-
-    # Идём с конца: набираем последний уникальный круг заголовков. Как только
-    # встречаем заголовок, который уже видели (идя с конца) — значит начался
-    # предыдущий круг повторения, останавливаемся.
-    seen_titles = set()
-    start = real_header_indices[-1]
-    for idx in reversed(real_header_indices):
-        title = lines[idx].strip()
-        if title in seen_titles:
-            break
-        seen_titles.add(title)
-        start = idx
-
-    return '\n'.join(lines[start:]).strip()
-
-# ── Карта "лангсвопов" (langswap) ──
-# YandexGPT иногда случайно подменяет кириллическую букву на визуально похожую
-# латинскую внутри русского слова (задокументированное поведение самой
-# модели — разработчики называют это "лангсвопом"). Раньше clean_text просто
-# ВЫБРАСЫВАЛ такие латинские буквы как "недопустимый символ", оставляя дырку
-# в середине слова ("Твoей" -> "Твй"). Теперь сначала восстанавливаем букву,
-# и только потом фильтруем.
-_LANGSWAP_MAP = {
-    'a': 'а', 'A': 'А',
-    'e': 'е', 'E': 'Е',
-    'o': 'о', 'O': 'О',
-    'p': 'р', 'P': 'Р',
-    'c': 'с', 'C': 'С',
-    'x': 'х', 'X': 'Х',
-    'y': 'у', 'Y': 'У',
-    'T': 'Т', 'H': 'Н', 'K': 'К', 'M': 'М', 'B': 'В',
-}
-_CYR_RE = re.compile(r'[а-яА-ЯёЁ]')
-
-def fix_langswap(text: str) -> str:
-    """Заменяет одиночную латинскую букву, зажатую соседством кириллицы,
-    на её кириллический аналог. Не трогает целые латинские слова/фразы —
-    те будут отброшены клавиатурой has_foreign/clean_text как и раньше."""
-    chars = list(text)
-    n = len(chars)
-    for i, ch in enumerate(chars):
-        repl = _LANGSWAP_MAP.get(ch)
-        if repl is None:
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not any(stripped.startswith(e) for e in HEADER_EMOJI):
             continue
-        prev_cyr = i > 0 and bool(_CYR_RE.match(chars[i - 1]))
-        next_cyr = i < n - 1 and bool(_CYR_RE.match(chars[i + 1]))
-        if prev_cyr or next_cyr:
-            chars[i] = repl
-    return ''.join(chars)
+        # Ищем первую непустую строку после этого заголовка
+        for next_line in lines[i + 1:]:
+            nl = next_line.strip()
+            if not nl:
+                continue
+            # Если следующая содержательная строка — это длинный текст, а не ещё один маркер
+            if len(nl) > 40 and not any(nl.startswith(e) for e in HEADER_EMOJI):
+                return '\n'.join(lines[i:]).strip()
+            break  # следующая строка — снова маркер или короткая → это ещё эхо, идём дальше
+    return text.strip()
 
 # Цветовая палитра — нумерологическая тема (лаванда / аметист / золото)
-C_BG          = (250, 247, 255)
-C_BAR         = (157, 117, 196)
-C_BORDER      = (197, 165, 224)
-C_TITLE       = (104, 52, 158)
-C_HEADER      = (122, 64, 172)
-C_BODY        = (51, 36, 71)
-C_BADGE_FILL  = (234, 224, 248)
+C_BG          = (250, 247, 255)   # фон страницы
+C_BAR         = (157, 117, 196)   # верх/низ полосы
+C_BORDER      = (197, 165, 224)   # тонкая рамка
+C_TITLE       = (104, 52, 158)    # заголовок разбора
+C_HEADER      = (122, 64, 172)    # подзаголовки внутри текста
+C_BODY        = (51, 36, 71)      # основной текст
+C_BADGE_FILL  = (234, 224, 248)   # фон бейджа с именем/датой
 C_BADGE_TEXT  = (104, 64, 148)
-C_ACCENT      = (172, 130, 212)
+C_ACCENT      = (172, 130, 212)   # звёздочки, тонкие линии
 
 class NumerologyPDF(FPDF):
-    """PDF с фирменным оформлением Евы — фон, рамка и полосы рисуются на
-    КАЖДОЙ странице через header()/footer(), а не только на первой. Раньше
-    декор рисовался один раз вручную после add_page(), поэтому у длинных
-    разборов 2-я и последующие страницы оставались пустыми и белыми."""
+    """PDF с фирменным оформлением Евы — фон, рамка и полосы рисуются
+    на КАЖДОЙ странице через header()/footer(), а не только на первой.
+    Раньше декор рисовался один раз вручную после add_page(), поэтому
+    у длинных разборов 2-я и последующие страницы оставались пустыми
+    и белыми — это и была причина «несовпадающего» вида PDF."""
 
     def __init__(self, font_name: str = "Helvetica"):
         super().__init__()
@@ -276,18 +209,23 @@ class NumerologyPDF(FPDF):
 
     def header(self):
         W, H = self.w, self.h
+        # фон
         self.set_fill_color(*C_BG)
         self.rect(0, 0, W, H, style="F")
+        # верхняя и нижняя полосы
         self.set_fill_color(*C_BAR)
         self.rect(0, 0, W, 9, style="F")
         self.rect(0, H - 9, W, 9, style="F")
+        # тонкая рамка
         self.set_draw_color(*C_BORDER)
         self.set_line_width(0.5)
         self.rect(12, 13, W - 24, H - 13 - 12)
+        # подпись бренда в верхней полосе
         self.set_font(self.font_name, style="B", size=9)
         self.set_text_color(255, 255, 255)
         self.set_xy(0, 2)
         self.cell(W, 5.5, "✦  EVA NUMEROLOG  ✦", align="C")
+        # курсор для контента — единая точка отсчёта на КАЖДОЙ странице
         self.set_xy(self.l_margin, 21)
 
     def footer(self):
@@ -298,7 +236,9 @@ class NumerologyPDF(FPDF):
 
 
 def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
-    """Красивый PDF для женской аудитории — единый стиль на всех страницах."""
+    """Красивый PDF для женской аудитории — оформлен в едином стиле на
+    всех страницах, ровные поля, заголовок/имя/дата собраны в аккуратный
+    блок вместо разрозненных строк, которые раньше наезжали друг на друга."""
     font_path = _ensure_font()
     font_name = "DejaVu" if font_path else "Helvetica"
 
@@ -311,20 +251,22 @@ def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
             pdf.add_font("DejaVu", style="B", fname=bold_path or font_path)
         except Exception as e:
             logging.warning(f"Не удалось загрузить шрифт: {e}")
-            font_name     = "Helvetica"
+            font_name   = "Helvetica"
             pdf.font_name = "Helvetica"
 
     pdf.set_margins(20, 21, 20)
-    pdf.add_page()
+    pdf.add_page()  # header() отработает автоматически и на этой, и на всех след. страницах
 
     W = pdf.w
 
+    # ── Заголовок разбора (рисуется один раз, на первой странице) ──
     clean_title = re.sub(r"[^\w\s\(\)\-—.,]", "", title, flags=re.UNICODE).strip()
     pdf.set_font(font_name, style="B", size=18)
     pdf.set_text_color(*C_TITLE)
     pdf.multi_cell(0, 9, clean_title.upper(), align="C")
     pdf.ln(2)
 
+    # ── декоративный разделитель со звездой по центру ──
     y   = pdf.get_y()
     mid = W / 2
     pdf.set_draw_color(*C_ACCENT)
@@ -337,6 +279,7 @@ def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
     pdf.cell(10, 7, "✦", align="C")
     pdf.set_y(y + 8)
 
+    # ── Бейдж: имя + дата создания в одной аккуратной строке ──
     info_parts = []
     if user_name:
         info_parts.append(f"Для {user_name}")
@@ -357,6 +300,7 @@ def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
     pdf.cell(badge_w, 6, info_text, align="C")
     pdf.set_xy(pdf.l_margin, badge_y + badge_h + 8)
 
+    # ── Основной текст ──
     pdf.set_font(font_name, size=11.5)
     pdf.set_text_color(*C_BODY)
 
@@ -366,7 +310,7 @@ def generate_pdf(title: str, text: str, user_name: str = "") -> bytes:
             pdf.ln(4)
             continue
         clean_line = re.sub(r"[^\w\s\(\)\-—.,!?:;]", "", line, flags=re.UNICODE).strip()
-        is_header  = _is_header_line(paragraph)
+        is_header  = any(paragraph.startswith(e) for e in HEADER_EMOJI)
         if is_header and clean_line:
             pdf.ln(1)
             pdf.set_x(pdf.l_margin)
@@ -473,11 +417,6 @@ def has_foreign(text: str) -> bool:
     return bool(FOREIGN_RE.search(text))
 
 def clean_text(text: str) -> str:
-    """ИСПРАВЛЕНО: сначала восстанавливаем 'лангсвопы' (одиночные латинские
-    буквы внутри кириллических слов — fix_langswap), и только потом отбрасываем
-    оставшиеся недопустимые символы. Раньше латинская буква внутри слова просто
-    выбрасывалась посимвольно, оставляя дырку ('Твoей' -> 'Твй' вместо 'Твоей')."""
-    text = fix_langswap(text)
     result = []
     for char in text:
         cp = ord(char)
@@ -491,6 +430,23 @@ def clean_text(text: str) -> str:
         ):
             result.append(char)
     return ''.join(result)
+
+# Emoji, с которых начинаются разделы разбора
+_HEADER_EMOJI_RE = re.compile(
+    r'(?:^|\n)((?:🔮|✨|💎|💰|💕|🔴|🌟|📅|🎯|💡|🚧|💪|🌱|🎭|💼|🤝|📈|🗺|🌍|🏆'
+    r'|💚|⚡|🫀|😤|📜|🔄|🌳|😔|💔|💑|💘|💍|🌠|🏢|😨|🗓|⚖️|🪤|🗝|☠|❄️|😍'
+    r'|💫|🔗|⭐).+)',
+    re.DOTALL
+)
+
+def strip_preamble(text: str) -> str:
+    """YandexGPT иногда выдаёт структурированный план перед ответом
+    (секции 1, 2, 3...). Находим начало реального контента по первому
+    emoji-заголовку и отрезаем всё, что перед ним."""
+    match = _HEADER_EMOJI_RE.search(text)
+    if match:
+        return text[match.start(1):].strip()
+    return text
 
 # ─── ЦЕНЫ И МЕТАДАННЫЕ ───────────────────────────────────────────────────────
 TITLES = {
@@ -520,11 +476,13 @@ TITLES = {
     "toxic":           "☠️ Токсичная или кармическая связь",
     "lonely":          "😔 Почему ты одинока",
     "breakup":         "💔 Разбор после расставания",
+    # Раздел 4 — Здоровье и энергия
     "health_code":     "💚 Код здоровья",
     "energy_drain":    "⚡ Что крадёт энергию",
     "body_message":    "🫀 Послания тела",
     "stress_number":   "😤 Число стресса",
     "intuition":       "🔮 Интуиция и внутренний голос",
+    # Раздел 5 — Прошлое и будущее
     "past_life":       "📜 Прошлые жизни",
     "future_portal":   "🌟 Прогноз на 3 года",
     "turning_point":   "🔄 Поворотные точки судьбы",
@@ -557,11 +515,13 @@ PRICES = {
     "lonely":        49,
     "main_fear":     49,
     "strong_weak":   49,
+    # Раздел 4
     "health_code":   79,
     "energy_drain":  49,
     "body_message":  49,
     "stress_number": 49,
     "intuition":     79,
+    # Раздел 5
     "past_life":     99,
     "future_portal": 149,
     "turning_point": 79,
@@ -597,11 +557,13 @@ UPSELLS = {
     "days":          ("finance",       "forecast_2026"),
     "strong_weak":   ("hidden_talents","main_fear"),
     "main_fear":     ("strong_weak",   "karma"),
+    # Раздел 4
     "health_code":   ("energy_drain",  "intuition"),
     "energy_drain":  ("health_code",   "stress_number"),
     "body_message":  ("energy_drain",  "health_code"),
     "stress_number": ("energy_drain",  "body_message"),
     "intuition":     ("health_code",   "past_life"),
+    # Раздел 5
     "past_life":     ("ancestor_code", "karma"),
     "future_portal": ("turning_point", "forecast_2026"),
     "turning_point": ("future_portal", "past_life"),
@@ -648,6 +610,7 @@ async def init_db():
             uses_count INTEGER DEFAULT 0
         )
     ''')
+    # Таблица отдельных применений — для истории и /coupon_stat
     await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS coupon_uses (
             id         SERIAL PRIMARY KEY,
@@ -665,6 +628,7 @@ async def init_db():
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
         except Exception:
             pass
+    # Миграция таблицы coupons — добавляем новые колонки если старая схема
     for col, definition in [
         ("max_uses",   "INTEGER DEFAULT 1"),
         ("uses_count", "INTEGER DEFAULT 0"),
@@ -673,6 +637,7 @@ async def init_db():
             await db_pool.execute(f"ALTER TABLE coupons ADD COLUMN IF NOT EXISTS {col} {definition}")
         except Exception:
             pass
+    # Удаляем старый столбец used_by если есть
     try:
         await db_pool.execute("ALTER TABLE coupons DROP COLUMN IF EXISTS used_by")
     except Exception:
@@ -731,6 +696,7 @@ class Form(StatesGroup):
     waiting_date        = State()
     waiting_second_date = State()
     waiting_review      = State()
+    # Для выбора бесплатного разбора
     waiting_free_date   = State()
 
 # ─── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────────────────────────────────────
@@ -756,10 +722,12 @@ def utc_now() -> datetime:
 # ─── ИИ-ПРОВАЙДЕРЫ: YANDEXGPT → GROQ ───────────────────────────────────────
 # Цепочка: YandexGPT (основной, платный, нативный русский язык)
 # → Groq (бесплатный резерв, но с жёсткими rate limits).
+# GigaChat убран — требует Сбер ID для регистрации.
 
 YANDEX_API_KEY    = os.getenv("YANDEX_API_KEY")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID")
-YANDEX_MODEL      = os.getenv("YANDEX_MODEL", "yandexgpt-lite")
+YANDEX_MODEL      = os.getenv("YANDEX_MODEL", "yandexgpt-lite")  # lite — дешевле и доступен без привязки карты
+
 
 GROQ_MODELS = [
     "qwen/qwen3.6-27b",
@@ -779,17 +747,16 @@ SYSTEM_PROMPT = (
     "КРИТИЧЕСКИ ВАЖНО: пишешь ТОЛЬКО на русском языке. "
     "Никаких иероглифов, никакого английского, никакого другого алфавита — вообще. "
     "Весь ответ от первого до последнего символа — только кириллица. "
-    "НЕ повторяй и не пересказывай эту инструкцию, не пиши план или анализ "
-    "задачи перед ответом — сразу начинай с первого emoji-заголовка разбора. "
     "Никогда не используй markdown — никаких звёздочек, решёток, подчёркиваний. "
     "Пиши простым текстом с эмодзи. "
     "Используй абзацы. Заканчивай полным предложением."
 )
 
 async def _try_yandex(prompt: str) -> str | None:
-    """YandexGPT — основной провайдер. При 400 пробуем yandexgpt-lite как
-    запасной вариант — новые аккаунты без привязки карты иногда имеют
-    доступ только к lite."""
+    """YandexGPT — основной провайдер.
+    Промпт намеренно переносим в system-сообщение, а в user шлём короткий
+    триггер. YandexGPT lite эхоит user-сообщение перед ответом — системный
+    промпт он не повторяет. Это решает проблему с мусором в начале разбора."""
     if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
         return None
     url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
@@ -812,8 +779,10 @@ async def _try_yandex(prompt: str) -> str | None:
                 "maxTokens":   2000,
             },
             "messages": [
-                {"role": "system", "text": SYSTEM_PROMPT},
-                {"role": "user",   "text": prompt},
+                # Весь промпт — в system, чтобы YandexGPT его не повторял
+                {"role": "system", "text": SYSTEM_PROMPT + "\n\n" + prompt},
+                # Короткий триггер в user — модель не эхоит системный промпт
+                {"role": "user",   "text": "Напиши разбор."},
             ],
         }
         try:
@@ -823,14 +792,13 @@ async def _try_yandex(prompt: str) -> str | None:
                     logging.warning(f"YandexGPT {model} 400: {response.text[:600]}")
                     continue
                 response.raise_for_status()
-                raw = response.json()["result"]["alternatives"][0]["message"]["text"]
-                raw = strip_preamble(raw.strip())
+                raw = response.json()["result"]["alternatives"][0]["message"]["text"].strip()
                 if has_foreign(raw):
                     logging.warning(f"YandexGPT {model} вернул иностранные символы")
-                    cleaned = strip_preamble(clean_text(raw))
+                    cleaned = clean_text(raw)
                     return cleaned if cleaned.strip() else None
                 logging.info(f"YandexGPT {model} ответил успешно")
-                return strip_preamble(clean_text(raw))
+                return clean_text(raw)
         except httpx.HTTPStatusError as e:
             logging.warning(f"YandexGPT {model} HTTP {e.response.status_code}: {e.response.text[:400]}")
         except Exception as e:
@@ -874,6 +842,7 @@ async def _try_groq(prompt: str) -> str | None:
                         logging.warning(f"Groq {model} attempt {attempt+1} — пустой текст после чистки")
                         continue
                     if has_foreign(raw):
+                        # Не отбрасываем полностью — чистим и возвращаем если осталось достаточно текста
                         logging.warning(f"Groq {model} attempt {attempt+1} — иностранные символы, возвращаю очищенный текст")
                         if len(cleaned) > 200:
                             return cleaned
@@ -884,7 +853,7 @@ async def _try_groq(prompt: str) -> str | None:
                 break
     return None
 
-async def ask_ai(prompt: str) -> str:
+async def ask_ai(prompt: str, chat_id: int = None, waiting_msg_id: int = None) -> str:
     """YandexGPT → Groq. Первый, кто ответил — побеждает."""
     result = await _try_yandex(prompt)
     if result:
@@ -896,14 +865,9 @@ async def ask_ai(prompt: str) -> str:
     raise Exception("Все провайдеры недоступны или вернули иностранные символы")
 
 def build_prompt(key: str, **kwargs) -> str:
-    """Собирает промпт по ключу. Бросает ValueError если ключ не найден —
-    раньше отсутствующий ключ тихо давал пустой промпт и мусорный ответ AI."""
+    # Добавляем текущий год в контекст для разборов которые на него ссылаются
     kwargs.setdefault("year", datetime.now().year)
-    template = PROMPTS.get(key)
-    if not template:
-        logging.error(f"build_prompt: промпт не найден для ключа '{key}'")
-        raise ValueError(f"Промпт '{key}' не существует в PROMPTS")
-    return template.format(**kwargs)
+    return PROMPTS.get(key, "").format(**kwargs)
 
 # ─── КЛАВИАТУРЫ ──────────────────────────────────────────────────────────────
 def check_menu() -> InlineKeyboardMarkup:
@@ -932,6 +896,7 @@ def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
 def main_menu(user=None) -> InlineKeyboardMarkup:
     buttons = []
 
+    # Корректировка 2: бесплатный разбор на выбор (любой до 99⭐)
     if user and not user.get("free_used"):
         buttons.append([InlineKeyboardButton(
             text="🎁 Бесплатный разбор на выбор",
@@ -958,6 +923,7 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
     )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# Корректировка 2: меню выбора бесплатного разбора (все разборы до 99⭐)
 def free_choose_menu() -> InlineKeyboardMarkup:
     buttons = []
     for key in sorted(FREE_ELIGIBLE):
@@ -1028,6 +994,7 @@ def section_love_menu(user=None) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# Корректировка 3: новые разделы
 def section_health_menu(user=None) -> InlineKeyboardMarkup:
     purchased = user.get("purchased", []) if user else []
     buttons = []
@@ -1098,9 +1065,12 @@ def retry_menu(key: str) -> InlineKeyboardMarkup:
     ])
 
 def coupon_razboy_menu(code: str, user: dict = None) -> InlineKeyboardMarkup:
-    """Код промокода зашит прямо в callback_data каждой кнопки
-    (coupon::КОД::ключ) — списание происходит при реальном выборе разбора,
-    не при вводе /promo."""
+    """ИСПРАВЛЕНО: код промокода теперь зашит прямо в callback_data каждой
+    кнопки (coupon::КОД::ключ). Раньше код нигде не передавался дальше — и
+    обработчик нажатия просто дарил разбор бесплатно без проверки лимита
+    использований. Теперь каждое нажатие реально списывает одно использование
+    с конкретного промокода — лимит из /coupon КОД 20 наконец работает как
+    задумано: друг может выбрать ровно 20 разных разборов, не больше."""
     purchased = user.get("purchased", []) if user else []
     buttons   = []
     for key, title in PAID_RAZBORY.items():
@@ -1130,8 +1100,8 @@ async def create_coupon(code: str, max_uses: int = 1) -> str:
     except asyncpg.UniqueViolationError:
         return 'exists'
     except Exception as e:
-        logging.error(f"create_coupon error: {e}", exc_info=True)
-        return 'error'
+        logging.error(f"create_coupon error: {e}")
+        return 'error' 
 
 async def use_coupon(code: str, user_id: int) -> str:
     row = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code.upper())
@@ -1141,6 +1111,7 @@ async def use_coupon(code: str, user_id: int) -> str:
         return 'expired'
     if row['uses_count'] >= row['max_uses']:
         return 'limit'
+    # Фиксируем использование атомарно
     updated = await db_pool.fetchval(
         '''UPDATE coupons SET uses_count = uses_count + 1
            WHERE code = $1 AND uses_count < max_uses
@@ -1162,6 +1133,8 @@ async def coupon_remaining(code: str) -> int:
     return max(0, row['max_uses'] - row['uses_count'])
 
 # ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
+# Корректировка 1: убраны из main_menu, теперь только /notifications
+
 @dp.message(Command("notifications"), StateFilter("*"))
 async def notifications_cmd(message: Message, state: FSMContext):
     await state.clear()
@@ -1245,6 +1218,8 @@ async def my_readings(callback: CallbackQuery):
     await callback.answer()
 
 # ─── БЕСПЛАТНЫЙ РАЗБОР НА ВЫБОР ─────────────────────────────────────────────
+# Корректировка 2
+
 @dp.callback_query(F.data == "free_choose")
 async def free_choose_handler(callback: CallbackQuery, state: FSMContext):
     user = await get_user(callback.from_user.id)
@@ -1264,6 +1239,7 @@ async def free_choose_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Бесплатный разбор уже использован 🔮", show_alert=True)
         return
 
+    # Если имени нет — спросить
     if not user.get("first_name"):
         await callback.message.answer("✨ Как мне тебя называть? Введи своё имя 👇")
         await state.set_state(Form.waiting_name)
@@ -1305,16 +1281,12 @@ async def free_pick_handler(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(Form.waiting_free_date))
 async def handle_free_date(message: Message, state: FSMContext):
-    """ИСПРАВЛЕНО: в предыдущей версии файла здесь отсутствовал финальный
-    вызов _process_date — функция помечала free_used=True и просто
-    завершалась, ничего не отправляя пользователю. Бесплатный разбор по
-    выбору был полностью сломан: пользователь вводил дату и не получал
-    никакого ответа, а повторно бесплатным воспользоваться уже не мог."""
     user = await get_user(message.from_user.id)
     text = message.text.strip()
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
+    # Помечаем бесплатный как использованный
     user["free_used"] = True
     await save_user(message.from_user.id, user)
     await _process_date(message, message.from_user.id, user, text, state, is_free=True)
@@ -1384,6 +1356,7 @@ async def handle_name(message: Message, state: FSMContext):
     user["first_name"] = name
     await save_user(message.from_user.id, user)
 
+    # Если пришли сюда через free_choose — показываем выбор разборов
     if not user.get("free_used"):
         await message.answer(
             f"Приятно познакомиться, {name}! 🌸\n\n"
@@ -1437,8 +1410,13 @@ async def menu_cmd(message: Message, state: FSMContext):
 
 @dp.message(Command("promo"), StateFilter("*"))
 async def promo_cmd(message: Message, state: FSMContext):
-    """Списание происходит при выборе конкретного разбора (coupon_razboy_handler),
-    не здесь — здесь только проверка что код существует, не истёк, не исчерпан."""
+    """ИСПРАВЛЕНО: раньше использование купона списывалось здесь же, при вводе
+    /promo — то есть весь запас уходил за ОДИН ввод команды, а дальше меню
+    выбора разбора оставалось висеть в чате и позволяло забрать любое
+    количество разборов бесплатно без дальнейшего списания (по сути дыра).
+    Теперь здесь только проверка: код существует, не истёк, не исчерпан.
+    Списание происходит за реальный клик по конкретному разбору —
+    смотри coupon_razboy_handler."""
     await state.clear()
     parts = message.text.strip().split()
     if len(parts) < 2:
@@ -1474,8 +1452,9 @@ async def coupon_cmd(message: Message, state: FSMContext):
             "Использование:\n"
             "/coupon КОД — создать на 1 использование\n"
             "/coupon КОД 20 — создать на 20 использований\n\n"
-            "Один код можно вводить /promo несколько раз — каждый выбранный "
-            "разбор спишет одно использование, пока не закончится лимит.\n\n"
+            "Один код можно вводить /promo несколько раз (хоть тем же другом) — "
+            "каждый выбранный разбор спишет одно использование, пока не "
+            "закончится лимит.\n\n"
             "Пример: /coupon FRIEND20 20"
         )
         return
@@ -1577,9 +1556,11 @@ async def admin_panel(message: Message, state: FSMContext):
 # ─── КУПОН — ВЫБОР РАЗБОРА ───────────────────────────────────────────────────
 @dp.callback_query(F.data.startswith("coupon::"))
 async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
-    """Код промокода приходит прямо в callback_data (coupon::КОД::ключ), и
-    списание use_coupon() происходит ИМЕННО ЗДЕСЬ, в момент выбора
-    конкретного разбора — а не при вводе /promo."""
+    """ИСПРАВЛЕНО: код промокода теперь приходит прямо в callback_data
+    (coupon::КОД::ключ), и списание use_coupon() происходит ИМЕННО ЗДЕСЬ,
+    в момент выбора конкретного разбора — а не при вводе /promo. Поэтому
+    лимит из /coupon КОД 20 теперь действительно ограничивает 20 разборами,
+    а не одним кликом мимо системы."""
     try:
         _, code, key = callback.data.split("::", 2)
     except ValueError:
@@ -1589,6 +1570,7 @@ async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
     user = await get_user(callback.from_user.id)
 
     if key in user["purchased"]:
+        # Уже куплен/получен раньше — повторная бесплатная выдача без списания лимита
         user["waiting"] = key
         await save_user(callback.from_user.id, user)
         await callback.answer("Этот разбор уже у тебя — пришлю заново 🔮")
@@ -1647,6 +1629,7 @@ async def noop_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "free")
 async def free_handler(callback: CallbackQuery, state: FSMContext):
+    # Оставляем для обратной совместимости — перенаправляем на новый флоу
     await free_choose_handler(callback, state)
 
 async def send_invoice(chat_id, title, description, payload, amount):
@@ -1711,6 +1694,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         user["destiny_number"] = number
         await save_user(user_id, user)
 
+    # Корректировка 5: промежуточное сообщение через 20 сек
     wait_msg = await message.answer(f"⏳ Ева составляет разбор для {name}... Подожди немного ✨")
 
     async def send_intermediate():
@@ -1735,6 +1719,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         title = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
 
+        # Корректировка 4: PDF для разборов 79⭐ и выше
         if waiting in PDF_KEYS:
             try:
                 pdf_bytes = generate_pdf(title, answer, user_name=name)
@@ -1795,12 +1780,14 @@ async def handle_two_dates(message: Message, state: FSMContext):
 
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
 
-        try:
-            pdf_bytes = generate_pdf("💑 Совместимость", answer, user_name=name)
-            pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
-            await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
-        except Exception as pdf_err:
-            logging.warning(f"PDF compat error: {pdf_err}")
+        # PDF для compat (99⭐ — не входит в PDF_KEYS, но compat = 99, а PDF от 79)
+        if "compat" in PDF_KEYS:
+            try:
+                pdf_bytes = generate_pdf("💑 Совместимость", answer, user_name=name)
+                pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
+                await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
+            except Exception as pdf_err:
+                logging.warning(f"PDF compat error: {pdf_err}")
 
         await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("compat", user))
         await state.clear()
@@ -1931,7 +1918,7 @@ async def send_daily_channel_post():
             )
         except Exception as e:
             logging.error(f"Channel post error: {e}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # гарантируем что не запустится дважды в одну минуту
 
 # ─── WEB ─────────────────────────────────────────────────────────────────────
 async def healthcheck(request):
