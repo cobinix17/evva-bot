@@ -3,3 +3,4 @@ httpx
 aiohttp
 asyncpg
 fpdf2
+pyenchant
