@@ -913,13 +913,19 @@ def utc_now() -> datetime:
 # OpenRouter — последний рубеж, платный по токенам но с авто-роутингом
 
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
-CEREBRAS_MODEL   = os.getenv("CEREBRAS_MODEL", "llama-3.3-70b")
+# llama-3.3-70b снята Cerebras с публичных эндпоинтов (даёт 404, не 400/401).
+# Актуальный публичный каталог Cerebras на июнь 2026: gpt-oss-120b (production)
+# и zai-glm-4.7 (preview). Используем production-модель по умолчанию.
+CEREBRAS_MODEL   = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# llama-3.3-70b-versatile и llama-3.1-8b-instant были анонсированы Groq как
+# депрецированные 17 июня 2026 (см. console.groq.com/docs/deprecations).
+# Переходим на рекомендованные провайдером замены.
 GROQ_MODELS  = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
-    "gemma2-9b-it",
+    "openai/gpt-oss-120b",
+    "qwen/qwen3.6-27b",
+    "openai/gpt-oss-20b",
 ]
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
