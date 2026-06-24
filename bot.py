@@ -218,6 +218,52 @@ def strip_preamble(text: str) -> str:
 
     return '\n'.join(lines[start:]).strip()
 
+def _header_emoji_of(s: str) -> str | None:
+    for e in HEADER_EMOJI:
+        if s.startswith(e):
+            return e
+    return None
+
+def dedupe_repeated_sections(text: str) -> str:
+    """С включённым reasoning_effort='high' модель (особенно gpt-oss-120b)
+    иногда честно проходит всю структуру промпта, но ближе к концу ответа
+    'спотыкается' и повторяет последние 1-2 раздела ещё раз — пересказывая
+    тот же смысл другими словами под тем же emoji-заголовком. strip_preamble
+    не лечит это: он ищет повтор структуры В НАЧАЛЕ текста (план перед
+    ответом), а это повтор В СЕРЕДИНЕ/КОНЦЕ уже сданного содержательного
+    ответа.
+
+    Здесь мы оставляем только ПЕРВОЕ появление каждого emoji-раздела —
+    от его заголовка до начала следующего заголовка (любого) — и отбрасываем
+    повторные появления того же раздела целиком, не трогая остальную
+    структуру. Текст без повторов проходит через эту функцию без изменений."""
+    lines = text.split('\n')
+    n = len(lines)
+
+    section_starts = []
+    for i, line in enumerate(lines):
+        emoji = _header_emoji_of(line.strip())
+        if emoji:
+            section_starts.append((i, emoji))
+
+    if not section_starts:
+        return text
+
+    seen_emoji = set()
+    keep_ranges = []
+    for idx, (start_line, emoji) in enumerate(section_starts):
+        end_line = section_starts[idx + 1][0] if idx + 1 < len(section_starts) else n
+        if emoji in seen_emoji:
+            continue
+        seen_emoji.add(emoji)
+        keep_ranges.append((start_line, end_line))
+
+    result_lines = lines[:section_starts[0][0]]
+    for start, end in keep_ranges:
+        result_lines.extend(lines[start:end])
+
+    return '\n'.join(result_lines).strip()
+
 # ── Карта "лангсвопов" ──
 # Языковые модели иногда случайно подменяют кириллическую букву на визуально
 # похожую латинскую внутри русского слова. Раньше clean_text просто
@@ -971,12 +1017,16 @@ SYSTEM_PROMPT = (
 
 def _finalize_ai_text(raw: str, source: str) -> str | None:
     """Общий пайплайн постобработки для всех трёх провайдеров:
-    1) убираем <think> блоки, 2) отрезаем преамбулу, 3) восстанавливаем
-    лангсвопы и фильтруем недопустимые символы, 4) решаем принять/отбросить
-    по ДОЛЕ иностранных символов, а не по абсолютной длине, 5) исправляем
-    орфографические опечатки самой модели через словарь (если доступен)."""
+    1) убираем <think> блоки, 2) отрезаем преамбулу, 3) убираем повторные
+    появления одного и того же emoji-раздела (модель иногда пересказывает
+    последние пункты структуры второй раз ближе к концу ответа),
+    4) восстанавливаем лангсвопы и фильтруем недопустимые символы,
+    5) решаем принять/отбросить по ДОЛЕ иностранных символов, а не по
+    абсолютной длине, 6) исправляем орфографические опечатки модели
+    через словарь (если доступен)."""
     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     raw = strip_preamble(raw)
+    raw = dedupe_repeated_sections(raw)
     ratio = foreign_ratio(raw)
     cleaned = clean_text(raw)
     if not cleaned.strip():
