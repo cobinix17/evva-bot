@@ -1,21 +1,31 @@
 # ai.py — ИИ-провайдеры: Cerebras → Groq → OpenRouter
+# Синхронизировано с актуальным bot.py. Самодостаточный модуль: не импортирует
+# ничего из bot.py/config.py, держит свои копии HEADER_EMOJI и хелперов
+# постобработки текста — так модуль можно использовать независимо.
 import os
 import re
 import logging
 import asyncio
 import httpx
 
-# ── НОВЫЙ SYSTEM_PROMPT ───────────────────────────────────────────────────────
+# ── СИСТЕМНЫЙ ПРОМПТ ─────────────────────────────────────────────────────────
+# Сохраняем конкретность и запрет "воды", но требования к объёму смягчены
+# ("около", диапазоны, без жёстких минимумов по словам). Жёсткие минимумы слов
+# (раньше: "не менее 1300 слов, каждый блок 4-5 абзацев") статистически
+# провоцировали модель (особенно gpt-oss-120b) либо обрывать структуру ради
+# скорости, либо повторять последние пункты второй раз, пытаясь "дотянуть"
+# объём. Полнота структуры важнее точного количества слов.
 SYSTEM_PROMPT = (
     "Ты — Ева, нумеролог с 15-летним опытом практики. "
-    "Ты делаешь платные разборы для женщин — твои клиентки платят за качество, "
-    "поэтому каждый разбор должен быть подробным, конкретным и ценным.\n\n"
+    "Ты делаешь платные разборы для женщин — каждый разбор должен быть "
+    "конкретным и ценным, без лишней воды.\n\n"
     "ГОЛОС И СТИЛЬ:\n"
     "Говори как профессионал на живой консультации — уверенно, без лекций. "
-    "Используй фразы: 'Я смотрю на твою дату и вижу...', "
-    "'Твои числа говорят очень чётко...', 'Первое что бросается в глаза — ...'. "
-    "Каждый блок — это 3-4 связных абзаца, не одно предложение.\n\n"
-    "ЗАПРЕЩЁННЫЕ ФРАЗЫ — никогда не пиши:\n"
+    "Можешь использовать фразы вроде 'Я смотрю на твою дату и вижу...', "
+    "'Твои числа говорят очень чётко...'. "
+    "Каждый блок — это связный текст из нескольких предложений по делу, "
+    "не одна короткая фраза.\n\n"
+    "ЗАПРЕЩЁННЫЕ ФРАЗЫ — избегай:\n"
     "не бойся / помни / ты должна / будь открыта / возможно / наверное / "
     "может быть / вероятно / постарайся / стремись / важно понять / "
     "это нормально / у тебя всё получится / верь в себя / ты сильная. "
@@ -24,21 +34,25 @@ SYSTEM_PROMPT = (
     "Плохо: 'ты сильная и способная'. "
     "Хорошо: 'твоё число 8 даёт деловое мышление — ты видишь где деньги раньше других'. "
     "Плохо: 'в этом году будут перемены'. "
-    "Хорошо: 'март-апрель 2026 — пиковый период для карьерных решений, именно тогда действуй'. "
+    "Хорошо: 'март-апрель 2026 — пиковый период для карьерных решений'. "
     "Называй конкретные числа, месяцы, паттерны, ситуации.\n\n"
-    "ОБЪЁМ — критически важно:\n"
-    "Разбор за 149 звёзд = не менее 1300 слов. Каждый блок по 4-5 абзацев. "
-    "Разбор за 99 звёзд = не менее 1000 слов. Каждый блок по 3-4 абзаца. "
-    "Разбор за 79 звёзд = не менее 700 слов. Каждый блок по 2-3 абзаца. "
-    "Разбор за 49 звёзд = не менее 400 слов. Каждый блок по 2 абзаца. "
-    "Никогда не обрывай разбор на середине. Заканчивай полным блоком.\n\n"
+    "ОБЪЁМ И ПОЛНОТА — сначала полнота, потом объём:\n"
+    "Если в запросе дан список emoji-заголовков — ответь по КАЖДОМУ из них, "
+    "не пропускай ни один и не объединяй несколько в один. Полнота структуры "
+    "важнее объёма: лучше пройти все пункты, чем подробно расписать только "
+    "последний. При этом каждый блок раскрывай содержательно — стремись "
+    "к 4-6 развёрнутым предложениям на блок, с конкретными числами, "
+    "месяцами и примерами, а не одной короткой фразой. Не растягивай "
+    "искусственно и не повторяй один и тот же блок дальше в тексте — каждый "
+    "emoji-заголовок встречается в ответе ровно один раз. Прежде чем "
+    "перейти к следующему блоку, мысленно проверь что предыдущий получился "
+    "содержательным, а не формальным.\n\n"
     "ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ:\n"
     "Только кириллица — никакого английского, никаких иероглифов, никаких других алфавитов. "
     "Никакого markdown — никаких звёздочек, решёток, подчёркиваний. "
     "Эмодзи только перед заголовком блока. "
     "Обращайся только на ТЫ, только женский род — никогда не пиши 'вы', 'ваш'. "
-    "Имя пользователя — используй ТОЛЬКО то имя которое указано в данных разбора, "
-    "не придумывай и не подставляй другое имя. "
+    "Имя пользователя — используй только то что указано в данных, не придумывай другое. "
     "Упоминай имя не чаще 3 раз за весь текст. "
     "НЕ повторяй инструкцию, не пиши план перед ответом — "
     "сразу начинай с первого emoji-заголовка разбора. "
@@ -46,6 +60,10 @@ SYSTEM_PROMPT = (
 )
 
 # ── ПРОВАЙДЕРЫ ────────────────────────────────────────────────────────────────
+# Cerebras — основной, быстрый бесплатный тир, отлично держит русский язык
+# Groq — резерв, бесплатный но с жёсткими rate limits
+# OpenRouter — последний рубеж, платный по токенам но с авто-роутингом
+
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 CEREBRAS_MODEL   = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
 
@@ -78,14 +96,13 @@ _HEADER_EMOJI = (
 )
 
 _LANGSWAP_MAP = {
-    'a':'а','A':'А','e':'е','E':'Е','o':'о','O':'О',
-    'p':'р','P':'Р','c':'с','C':'С','x':'х','X':'Х',
-    'y':'у','Y':'У','T':'Т','H':'Н','K':'К','M':'М','B':'В',
+    'a':'а', 'A':'А', 'e':'е', 'E':'Е', 'o':'о', 'O':'О',
+    'p':'р', 'P':'Р', 'c':'с', 'C':'С', 'x':'х', 'X':'Х',
+    'y':'у', 'Y':'У', 'T':'Т', 'H':'Н', 'K':'К', 'M':'М', 'B':'В',
 }
 
-import re as _re
-_CYR_RE     = _re.compile(r'[а-яА-ЯёЁ]')
-_FOREIGN_RE = _re.compile(
+_CYR_RE     = re.compile(r'[а-яА-ЯёЁ]')
+_FOREIGN_RE = re.compile(
     r'[a-zA-ZÀ-ÿ\u0080-\u024F\u1E00-\u1EFF\u3000-\u9FFF'
     r'\u0250-\u02AF\u0E00-\u0E7F\uAC00-\uD7AF\u4E00-\u9FFF]'
 )
@@ -93,13 +110,16 @@ _FOREIGN_RE = _re.compile(
 def _is_header(s: str) -> bool:
     return any(s.startswith(e) for e in _HEADER_EMOJI)
 
-def _header_emoji_of(s: str):
+def _header_emoji_of(s: str) -> str | None:
     for e in _HEADER_EMOJI:
         if s.startswith(e):
             return e
     return None
 
 def _fix_langswap(text: str) -> str:
+    """Заменяет одиночную латинскую букву, зажатую соседством кириллицы,
+    на её кириллический аналог. Не трогает целые латинские слова/фразы —
+    те будут отброшены _clean_text как и раньше."""
     chars = list(text)
     n = len(chars)
     for i, ch in enumerate(chars):
@@ -119,6 +139,8 @@ def _foreign_ratio(text: str) -> float:
     return len(_FOREIGN_RE.findall(text)) / len(stripped)
 
 def _clean_text(text: str) -> str:
+    """Сначала восстанавливаем 'лангсвопы', и только потом отбрасываем
+    оставшиеся недопустимые символы."""
     text = _fix_langswap(text)
     result = []
     for char in text:
@@ -131,6 +153,12 @@ def _clean_text(text: str) -> str:
     return ''.join(result)
 
 def _strip_preamble(text: str) -> str:
+    """Любой из ИИ-провайдеров может изредка 'проговорить' структуру ответа
+    перед самим ответом — повторить список emoji-заголовков несколько раз
+    подряд как план/анализ задачи, и только в последнем повторении за каждым
+    заголовком наконец идёт реальный абзац. Ищет последний непрерывный
+    "круг" заголовков (тот, что не повторяется снова после себя) и берёт
+    текст начиная с него."""
     lines = text.split('\n')
     n = len(lines)
 
@@ -159,27 +187,33 @@ def _strip_preamble(text: str) -> str:
     return '\n'.join(lines[start:]).strip()
 
 def _dedupe_sections(text: str) -> str:
-    """Убирает повторные секции. Сравниваем по полному тексту заголовка —
-    🔮 Матрица судьбы и 🔮 Что говорит дата — разные заголовки с одним эмодзи,
-    раньше второй удалялся."""
+    """Модель иногда честно проходит всю структуру промпта, но ближе к концу
+    ответа 'спотыкается' и повторяет последние 1-2 раздела ещё раз —
+    пересказывая тот же смысл другими словами под тем же emoji-заголовком.
+    _strip_preamble не лечит это: он ищет повтор структуры В НАЧАЛЕ текста
+    (план перед ответом), а это повтор В СЕРЕДИНЕ/КОНЦЕ уже сданного
+    содержательного ответа. Оставляем только ПЕРВОЕ появление каждого
+    emoji-раздела — от его заголовка до начала следующего заголовка
+    (любого) — и отбрасываем повторные появления того же раздела целиком."""
     lines = text.split('\n')
     n     = len(lines)
 
     section_starts = []
     for i, line in enumerate(lines):
-        if _header_emoji_of(line.strip()):
-            section_starts.append((i, line.strip()))
+        emoji = _header_emoji_of(line.strip())
+        if emoji:
+            section_starts.append((i, emoji))
 
     if not section_starts:
         return text
 
-    seen_headers = set()
-    keep_ranges  = []
-    for idx, (start_line, header) in enumerate(section_starts):
+    seen_emoji  = set()
+    keep_ranges = []
+    for idx, (start_line, emoji) in enumerate(section_starts):
         end_line = section_starts[idx + 1][0] if idx + 1 < len(section_starts) else n
-        if header in seen_headers:
+        if emoji in seen_emoji:
             continue
-        seen_headers.add(header)
+        seen_emoji.add(emoji)
         keep_ranges.append((start_line, end_line))
 
     result_lines = lines[:section_starts[0][0]]
@@ -187,10 +221,46 @@ def _dedupe_sections(text: str) -> str:
         result_lines.extend(lines[start:end])
     return '\n'.join(result_lines).strip()
 
+# ── ПРОВЕРКА ПОЛНОТЫ СТРУКТУРЫ ───────────────────────────────────────────────
+def expected_sections_from_prompt(prompt: str) -> set:
+    """Извлекает множество emoji-разделов, которые промпт требует от модели,
+    парся строки структуры внутри самого текста промпта (там, где они
+    перечислены как план ответа: '🔮 Заголовок — пояснение'). Не хранит
+    список вручную — берёт прямо из реального prompt, поэтому не
+    рассинхронизируется при правке внешних файлов с шаблонами промптов."""
+    found = set()
+    for line in prompt.split('\n'):
+        emoji = _header_emoji_of(line.strip())
+        if emoji:
+            found.add(emoji)
+    return found
+
+def actual_sections(answer: str) -> set:
+    found = set()
+    for line in answer.split('\n'):
+        emoji = _header_emoji_of(line.strip())
+        if emoji:
+            found.add(emoji)
+    return found
+
+def is_structure_complete(prompt: str, answer: str, min_ratio: float = 0.6) -> bool:
+    """True если ответ покрывает хотя бы min_ratio ожидаемых разделов из
+    структуры, заданной в промпте. 60%, не 100% — модель иногда объединяет
+    два близких пункта в один абзац под одним заголовком, это не дефект.
+    Промпты без явной emoji-структуры (compat, дневной пост в канал)
+    пропускают проверку (всегда True), так как для них нет фиксированного
+    списка разделов для сравнения."""
+    expected = expected_sections_from_prompt(prompt)
+    if not expected:
+        return True
+    actual   = actual_sections(answer)
+    coverage = len(actual & expected) / len(expected)
+    return coverage >= min_ratio
+
 # ── ОРФОГРАФИЯ ────────────────────────────────────────────────────────────────
 _SPELL_DICT  = None
 _SPELL_READY = None
-_WORD_RE     = _re.compile(r'[а-яА-ЯёЁ]+')
+_WORD_RE     = re.compile(r'[а-яА-ЯёЁ]+')
 
 def _get_spell_dict():
     global _SPELL_DICT, _SPELL_READY
@@ -213,6 +283,9 @@ def _similar_enough(a, b):
     return common >= max(1, len(set(a.lower())) // 2)
 
 def _fix_spelling(text: str) -> str:
+    """Проверяет каждое кириллическое слово длиннее 3 букв через hunspell;
+    если слово отсутствует в словаре и первый вариант исправления похож по
+    написанию — тихо заменяет."""
     spell = _get_spell_dict()
     if spell is None:
         return text
@@ -235,7 +308,15 @@ def _fix_spelling(text: str) -> str:
         logging.warning(f"fix_spelling упал: {e}"); return text
 
 def _finalize(raw: str, source: str) -> str | None:
-    raw     = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
+    """Общий пайплайн постобработки для всех трёх провайдеров:
+    1) убираем <think> блоки, 2) отрезаем преамбулу, 3) убираем повторные
+    появления одного и того же emoji-раздела, 4) восстанавливаем лангсвопы
+    и фильтруем недопустимые символы, 5) решаем принять/отбросить по ДОЛЕ
+    иностранных символов, 6) исправляем орфографические опечатки модели
+    через словарь (если доступен). Проверка ПОЛНОТЫ структуры (все ли
+    ожидаемые разделы присутствуют) выполняется отдельно в ask_ai, потому
+    что для неё нужен оригинальный prompt, а не только ответ."""
+    raw     = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     raw     = _strip_preamble(raw)
     raw     = _dedupe_sections(raw)
     ratio   = _foreign_ratio(raw)
@@ -248,6 +329,13 @@ def _finalize(raw: str, source: str) -> str | None:
 
 # ── CEREBRAS ──────────────────────────────────────────────────────────────────
 async def _try_cerebras(prompt: str) -> str | None:
+    """Cerebras — основной провайдер. reasoning_effort='high' + max_tokens
+    увеличен — даёт модели больше пространства довести структуру до конца,
+    но НЕ гарантирует полноту (gpt-oss-120b всё равно может срезать путь на
+    отдельных запросах) — поэтому финальная проверка полноты в ask_ai.
+    timeout 90 секунд: высокий reasoning_effort плюс больший целевой объём
+    ответа (4-6 предложений на блок) требуют больше времени и на
+    размышление, и на сам текст."""
     if not CEREBRAS_API_KEY:
         return None
     url     = "https://api.cerebras.ai/v1/chat/completions"
@@ -264,9 +352,9 @@ async def _try_cerebras(prompt: str) -> str | None:
     }
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.post(url, headers=headers, json=data, timeout=45)
+            r = await client.post(url, headers=headers, json=data, timeout=90)
             if r.status_code == 429:
-                logging.warning("Cerebras 429"); return None
+                logging.warning("Cerebras 429 rate limit"); return None
             r.raise_for_status()
             raw    = r.json()["choices"][0]["message"]["content"]
             result = _finalize(raw, "Cerebras")
@@ -277,6 +365,7 @@ async def _try_cerebras(prompt: str) -> str | None:
 
 # ── GROQ ──────────────────────────────────────────────────────────────────────
 async def _try_groq(prompt: str) -> str | None:
+    """Groq — второй в цепочке. Бесплатный, но с rate limits."""
     if not GROQ_API_KEY:
         return None
     url     = "https://api.groq.com/openai/v1/chat/completions"
@@ -312,6 +401,8 @@ async def _try_groq(prompt: str) -> str | None:
 
 # ── OPENROUTER ────────────────────────────────────────────────────────────────
 async def _try_openrouter(prompt: str) -> str | None:
+    """OpenRouter — последний рубеж. Платный по токенам, но умеет
+    автоматически роутить между моделями, перебирая список по порядку."""
     if not OPENROUTER_API_KEY:
         return None
     url     = "https://openrouter.ai/api/v1/chat/completions"
@@ -334,7 +425,7 @@ async def _try_openrouter(prompt: str) -> str | None:
         async with httpx.AsyncClient() as client:
             r = await client.post(url, headers=headers, json=data, timeout=60)
             if r.status_code == 429:
-                logging.warning("OpenRouter 429"); return None
+                logging.warning("OpenRouter 429 rate limit"); return None
             r.raise_for_status()
             body       = r.json()
             raw        = body["choices"][0]["message"]["content"]
@@ -347,12 +438,38 @@ async def _try_openrouter(prompt: str) -> str | None:
 
 # ── ГЛАВНАЯ ФУНКЦИЯ ───────────────────────────────────────────────────────────
 async def ask_ai(prompt: str) -> str:
-    result = await _try_cerebras(prompt)
-    if result: return result
-    logging.warning("Cerebras не дал результат — пробую Groq")
-    result = await _try_groq(prompt)
-    if result: return result
-    logging.warning("Groq не дал результат — пробую OpenRouter")
-    result = await _try_openrouter(prompt)
-    if result: return result
-    raise Exception("Все провайдеры недоступны")
+    """Cerebras → Groq → OpenRouter, с проверкой ПОЛНОТЫ структуры ответа.
+
+    Если провайдер дал ответ, но он покрывает меньше 60% ожидаемых
+    emoji-разделов из промпта (как в реальном случае с 'matrix_full', когда
+    gpt-oss-120b отвечал только последним блоком из восьми) — результат не
+    принимается, и бот переходит к следующему провайдеру, как при полном
+    отказе. Каждый провайдер также получает одну повторную попытку САМ С
+    СОБОЙ перед тем как сдаться — иногда у той же модели со второй попытки
+    структура получается полной. Если все варианты неполные — отдаётся
+    лучший доступный результат, а не отказ."""
+    providers = [
+        ("Cerebras",   _try_cerebras),
+        ("Groq",       _try_groq),
+        ("OpenRouter", _try_openrouter),
+    ]
+    last_incomplete: str | None = None
+
+    for name, fn in providers:
+        for attempt in range(2):  # сама попытка + один повтор у того же провайдера
+            result = await fn(prompt)
+            if not result:
+                break  # этот провайдер недоступен вовсе — переходим к следующему
+            if is_structure_complete(prompt, result):
+                return result
+            logging.warning(
+                f"{name} попытка {attempt + 1}: ответ неполный по структуре, "
+                f"{'повторяю' if attempt == 0 else 'перехожу к следующему провайдеру'}"
+            )
+            last_incomplete = result
+        # переходим к следующему провайдеру во внешнем цикле
+
+    if last_incomplete:
+        logging.warning("Все провайдеры дали неполную структуру — отдаю последний доступный результат")
+        return last_incomplete
+    raise Exception("Все провайдеры недоступны или вернули иностранные символы")
