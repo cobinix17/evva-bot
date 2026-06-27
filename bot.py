@@ -1,33 +1,42 @@
 import os
-import re
 import time
 import logging
 import asyncio
 import json
-import httpx
-import asyncpg
 import random
-import io
-import math
 from datetime import datetime, date, timedelta, timezone
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     Message, CallbackQuery, LabeledPrice, PreCheckoutQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton, TelegramObject,
-    BufferedInputFile
+    TelegramObject, BufferedInputFile
 )
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
-from fpdf import FPDF
+
 from readings import MATRIX_LITE, PROMPTS
 from broadcasts import MORNING
 
+import db
+from config import TITLES, PRICES, PDF_KEYS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS
+from ai import ask_ai
+from pdf import generate_pdf
+from numerology import (
+    calculate_destiny, calculate_day_number, is_valid_date,
+    build_numerology_context,
+)
+from keyboards import (
+    check_menu, date_choice_menu, notifications_menu, main_menu,
+    free_choose_menu, section_destiny_menu, section_money_menu,
+    section_love_menu, section_health_menu, section_past_menu,
+    my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
+    notif_off_menu,
+)
+
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")  # последний бесплатный резерв, не обязателен
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not BOT_TOKEN or not DATABASE_URL:
@@ -40,11 +49,6 @@ if not any([os.getenv("CEREBRAS_API_KEY"), os.getenv("GROQ_API_KEY"), os.getenv(
 CHANNEL         = "@eva_numerologg"
 REVIEWS_CHANNEL = "@eva_numerolog_otz"
 ADMIN_ID        = 5854618444
-CONTACT_URL     = "https://t.me/eva_numer"
-
-# Шрифт для PDF — должен лежать в репо как DejaVuSans.ttf
-FONT_PATH      = os.path.join(os.path.dirname(__file__), "DejaVuSans.ttf")
-BOLD_FONT_PATH = os.path.join(os.path.dirname(__file__), "DejaVuSans-Bold.ttf")
 
 logging.basicConfig(level=logging.INFO)
 # fontTools.subset выводит десятки строк уровня INFO на каждую вставку шрифта
@@ -52,10 +56,10 @@ logging.basicConfig(level=logging.INFO)
 # Railway и прячут реальные warning/error. Поднимаем порог только для этого
 # модуля, остальное логирование бота не трогаем.
 logging.getLogger("fontTools.subset").setLevel(logging.WARNING)
+
 bot     = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp      = Dispatcher(storage=storage)
-db_pool = None
 
 # ─── АНТИФЛУД MIDDLEWARE ─────────────────────────────────────────────────────
 class AntiFloodMiddleware(BaseMiddleware):
@@ -107,872 +111,6 @@ async def send_long(chat_id, text: str):
         await bot.send_message(chat_id, part)
         await asyncio.sleep(0.3)
 
-# ─── PDF ГЕНЕРАЦИЯ ────────────────────────────────────────────────────────────
-def _ensure_font() -> str | None:
-    """Проверяет шрифт, при необходимости скачивает. Возвращает путь или None."""
-    if os.path.exists(FONT_PATH):
-        try:
-            with open(FONT_PATH, "rb") as f:
-                magic = f.read(4)
-            if magic[:2] in (b"\x00\x01", b"OT", b"tr", b"\x00\x00"):
-                return FONT_PATH
-            logging.warning(f"Файл {FONT_PATH} не является TTF, пробую скачать")
-        except Exception:
-            pass
-    try:
-        import urllib.request, zipfile
-        zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip"
-        logging.info("Скачиваю шрифт DejaVuSans...")
-        resp = urllib.request.urlopen(zip_url, timeout=30)
-        zdata = resp.read()
-        with zipfile.ZipFile(io.BytesIO(zdata)) as z:
-            ttf_name = next(n for n in z.namelist() if "DejaVuSans.ttf" in n and "Bold" not in n and "Oblique" not in n and "Mono" not in n and "Condensed" not in n)
-            with z.open(ttf_name) as src, open(FONT_PATH, "wb") as dst:
-                dst.write(src.read())
-        logging.info(f"Шрифт установлен: {FONT_PATH}")
-        return FONT_PATH
-    except Exception as e:
-        logging.warning(f"Не удалось скачать шрифт: {e}")
-        return None
-
-def _ensure_bold_font() -> str | None:
-    """Жирное начертание DejaVuSans-Bold — для настоящих жирных заголовков в PDF.
-    Необязательно: при неудаче просто используется обычное начертание."""
-    if os.path.exists(BOLD_FONT_PATH):
-        try:
-            with open(BOLD_FONT_PATH, "rb") as f:
-                magic = f.read(4)
-            if magic[:2] in (b"\x00\x01", b"OT", b"tr", b"\x00\x00"):
-                return BOLD_FONT_PATH
-        except Exception:
-            pass
-    try:
-        import urllib.request, zipfile
-        zip_url = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip"
-        resp = urllib.request.urlopen(zip_url, timeout=30)
-        zdata = resp.read()
-        with zipfile.ZipFile(io.BytesIO(zdata)) as z:
-            ttf_name = next(n for n in z.namelist() if "DejaVuSans-Bold.ttf" in n and "Oblique" not in n and "Mono" not in n and "Condensed" not in n)
-            with z.open(ttf_name) as src, open(BOLD_FONT_PATH, "wb") as dst:
-                dst.write(src.read())
-        return BOLD_FONT_PATH
-    except Exception as e:
-        logging.warning(f"Не удалось скачать жирный шрифт: {e}")
-        return None
-
-# Эмодзи-маркеры подзаголовков внутри текста разбора — единый источник правды
-HEADER_EMOJI = (
-    "🔮","✨","💎","💰","💕","🔴","🌟","📅","🎯","💡","🚧",
-    "💪","⚠️","🌱","🎭","💼","🤝","📈","⏰","🗺","🌍","🏆",
-    "💚","⚡","🫀","😤","📜","🔄","🌳","❄️","☠️","😔","💔",
-    "💑","💘","💍","🌠","🏢","😨","🗓","⚖️","🔗","🪤","🗝",
-)
-
-def _is_header_line(s: str) -> bool:
-    return any(s.startswith(e) for e in HEADER_EMOJI)
-
-def _header_emoji_of(s: str) -> str | None:
-    for e in HEADER_EMOJI:
-        if s.startswith(e):
-            return e
-    return None
-
-def strip_preamble(text: str) -> str:
-    """Любой из ИИ-провайдеров (Cerebras / Groq / OpenRouter) может изредка
-    'проговорить' структуру ответа перед самим ответом — повторить список
-    emoji-заголовков несколько раз подряд как план/анализ задачи, и только
-    в последнем повторении за каждым заголовком наконец идёт реальный абзац.
-
-    Эта версия ищет последний непрерывный "круг" заголовков (тот, что не
-    повторяется снова после себя) и берёт текст начиная с него."""
-    lines = text.split('\n')
-    n = len(lines)
-
-    def has_real_content_after(idx: int) -> bool:
-        j = idx + 1
-        while j < n:
-            nl = lines[j].strip()
-            if not nl:
-                j += 1
-                continue
-            return len(nl) > 40 and not _is_header_line(nl)
-        return False
-
-    real_header_indices = [
-        i for i in range(n)
-        if _is_header_line(lines[i].strip()) and has_real_content_after(i)
-    ]
-    if not real_header_indices:
-        return text.strip()
-
-    seen_titles = set()
-    start = real_header_indices[-1]
-    for idx in reversed(real_header_indices):
-        title = lines[idx].strip()
-        if title in seen_titles:
-            break
-        seen_titles.add(title)
-        start = idx
-
-    return '\n'.join(lines[start:]).strip()
-
-def dedupe_repeated_sections(text: str) -> str:
-    """Модель иногда честно проходит всю структуру промпта, но ближе к концу
-    ответа 'спотыкается' и повторяет последние 1-2 раздела ещё раз —
-    пересказывая тот же смысл другими словами под тем же emoji-заголовком.
-    strip_preamble не лечит это: он ищет повтор структуры В НАЧАЛЕ текста
-    (план перед ответом), а это повтор В СЕРЕДИНЕ/КОНЦЕ уже сданного
-    содержательного ответа.
-
-    Здесь мы оставляем только ПЕРВОЕ появление каждого emoji-раздела —
-    от его заголовка до начала следующего заголовка (любого) — и отбрасываем
-    повторные появления того же раздела целиком, не трогая остальную
-    структуру. Текст без повторов проходит через эту функцию без изменений."""
-    lines = text.split('\n')
-    n = len(lines)
-
-    section_starts = []
-    for i, line in enumerate(lines):
-        emoji = _header_emoji_of(line.strip())
-        if emoji:
-            section_starts.append((i, emoji))
-
-    if not section_starts:
-        return text
-
-    seen_emoji = set()
-    keep_ranges = []
-    for idx, (start_line, emoji) in enumerate(section_starts):
-        end_line = section_starts[idx + 1][0] if idx + 1 < len(section_starts) else n
-        if emoji in seen_emoji:
-            continue
-        seen_emoji.add(emoji)
-        keep_ranges.append((start_line, end_line))
-
-    result_lines = lines[:section_starts[0][0]]
-    for start, end in keep_ranges:
-        result_lines.extend(lines[start:end])
-
-    return '\n'.join(result_lines).strip()
-
-def expected_sections_from_prompt(prompt: str) -> set:
-    """Извлекает множество emoji-разделов, которые промпт требует от модели,
-    парся строки структуры внутри самого текста промпта (там, где они
-    перечислены как план ответа: '🔮 Заголовок — пояснение'). Не хранит
-    список вручную — берёт прямо из реального prompt, поэтому не
-    рассинхронизируется при правке readings.py."""
-    found = set()
-    for line in prompt.split('\n'):
-        emoji = _header_emoji_of(line.strip())
-        if emoji:
-            found.add(emoji)
-    return found
-
-def actual_sections(answer: str) -> set:
-    found = set()
-    for line in answer.split('\n'):
-        emoji = _header_emoji_of(line.strip())
-        if emoji:
-            found.add(emoji)
-    return found
-
-def is_structure_complete(prompt: str, answer: str, min_ratio: float = 0.6) -> bool:
-    """True если ответ покрывает хотя бы min_ratio ожидаемых разделов из
-    структуры, заданной в промпте. 60%, не 100% — модель иногда объединяет
-    два близких пункта в один абзац под одним заголовком, это не дефект.
-    Промпты без явной emoji-структуры (compat, дневной пост в канал)
-    пропускают проверку (всегда True), так как для них нет фиксированного
-    списка разделов для сравнения."""
-    expected = expected_sections_from_prompt(prompt)
-    if not expected:
-        return True
-    actual = actual_sections(answer)
-    coverage = len(actual & expected) / len(expected)
-    return coverage >= min_ratio
-
-# ── Карта "лангсвопов" ──
-# Языковые модели иногда случайно подменяют кириллическую букву на визуально
-# похожую латинскую внутри русского слова. Раньше clean_text просто
-# ВЫБРАСЫВАЛ такую латинскую букву как "недопустимый символ", оставляя дырку
-# в середине слова ("Твoей" -> "Твй"). Теперь сначала восстанавливаем букву,
-# и только потом фильтруем.
-_LANGSWAP_MAP = {
-    'a': 'а', 'A': 'А',
-    'e': 'е', 'E': 'Е',
-    'o': 'о', 'O': 'О',
-    'p': 'р', 'P': 'Р',
-    'c': 'с', 'C': 'С',
-    'x': 'х', 'X': 'Х',
-    'y': 'у', 'Y': 'У',
-    'T': 'Т', 'H': 'Н', 'K': 'К', 'M': 'М', 'B': 'В',
-}
-_CYR_RE = re.compile(r'[а-яА-ЯёЁ]')
-
-def fix_langswap(text: str) -> str:
-    """Заменяет одиночную латинскую букву, зажатую соседством кириллицы,
-    на её кириллический аналог. Не трогает целые латинские слова/фразы —
-    те будут отброшены has_foreign/clean_text как и раньше."""
-    chars = list(text)
-    n = len(chars)
-    for i, ch in enumerate(chars):
-        repl = _LANGSWAP_MAP.get(ch)
-        if repl is None:
-            continue
-        prev_cyr = i > 0 and bool(_CYR_RE.match(chars[i - 1]))
-        next_cyr = i < n - 1 and bool(_CYR_RE.match(chars[i + 1]))
-        if prev_cyr or next_cyr:
-            chars[i] = repl
-    return ''.join(chars)
-
-# Цветовая палитра — нумерологическая тема (лаванда / аметист / золото)
-C_BG          = (250, 247, 255)
-C_BAR         = (157, 117, 196)
-C_BORDER      = (197, 165, 224)
-C_TITLE       = (104, 52, 158)
-C_HEADER      = (122, 64, 172)
-C_BODY        = (51, 36, 71)
-C_BADGE_FILL  = (234, 224, 248)
-C_BADGE_TEXT  = (104, 64, 148)
-C_ACCENT      = (172, 130, 212)
-C_GOLD        = (193, 154, 76)   # золото для нумерологических символов
-
-def _draw_star_polygon(pdf: FPDF, cx: float, cy: float, r_outer: float, r_inner: float,
-                        points: int, color, rotate_deg: float = -90, line_width: float = 0.45):
-    """Рисует многолучевую звезду (восьмиконечная — классический нумерологический
-    символ октаграммы) чистыми линиями, без внешних иконочных шрифтов."""
-    pdf.set_draw_color(*color)
-    pdf.set_line_width(line_width)
-    coords = []
-    total_vertices = points * 2
-    for i in range(total_vertices):
-        angle = math.radians(rotate_deg + i * 360 / total_vertices)
-        r = r_outer if i % 2 == 0 else r_inner
-        x = cx + r * math.cos(angle)
-        y = cy + r * math.sin(angle)
-        coords.append((x, y))
-    for i in range(total_vertices):
-        x1, y1 = coords[i]
-        x2, y2 = coords[(i + 1) % total_vertices]
-        pdf.line(x1, y1, x2, y2)
-
-def _draw_corner_ornament(pdf: FPDF, x: float, y: float, size: float, color,
-                           flip_x: bool = False, flip_y: bool = False):
-    """Простой геометрический уголок-орнамент (вложенные L-образные линии) —
-    традиционный эзотерический декор страницы, рисуется только линиями."""
-    sx = -1 if flip_x else 1
-    sy = -1 if flip_y else 1
-    pdf.set_draw_color(*color)
-    for i, offset in enumerate((0, 2.2, 4.4)):
-        lw = 0.6 if i == 0 else 0.3
-        pdf.set_line_width(lw)
-        ox, oy = x + offset * sx, y + offset * sy
-        pdf.line(ox, oy, ox + size * sx, oy)
-        pdf.line(ox, oy, ox, oy + size * sy)
-
-def _draw_number_medallion(pdf: FPDF, cx: float, cy: float, radius: float,
-                            number: int, font_name: str):
-    """Медальон с числом судьбы — круг с золотым ободом и числом внутри,
-    традиционная нумерологическая подача 'личного числа'."""
-    pdf.set_draw_color(*C_GOLD)
-    pdf.set_line_width(0.7)
-    pdf.ellipse(cx - radius, cy - radius, radius * 2, radius * 2, style="D")
-    pdf.set_draw_color(*C_ACCENT)
-    pdf.set_line_width(0.3)
-    pdf.ellipse(cx - radius + 1.6, cy - radius + 1.6, (radius - 1.6) * 2, (radius - 1.6) * 2, style="D")
-    text = str(number)
-    pdf.set_font(font_name, style="B", size=radius * 1.15)
-    pdf.set_text_color(*C_TITLE)
-    tw = pdf.get_string_width(text)
-    pdf.set_xy(cx - tw / 2, cy - radius * 0.62)
-    pdf.cell(tw, radius * 1.2, text, align="C")
-
-class NumerologyPDF(FPDF):
-    """PDF с фирменным оформлением Евы — фон, рамка, орнаментальные уголки и
-    полосы рисуются на КАЖДОЙ странице через header()/footer(), а не только
-    на первой (раньше декор рисовался один раз вручную после add_page(), и у
-    длинных разборов 2-я+ страницы оставались пустыми и белыми)."""
-
-    def __init__(self, font_name: str = "Helvetica"):
-        super().__init__()
-        self.font_name = font_name
-        self.set_auto_page_break(auto=True, margin=18)
-
-    def header(self):
-        W, H = self.w, self.h
-        self.set_fill_color(*C_BG)
-        self.rect(0, 0, W, H, style="F")
-        self.set_fill_color(*C_BAR)
-        self.rect(0, 0, W, 9, style="F")
-        self.rect(0, H - 9, W, 9, style="F")
-        self.set_draw_color(*C_BORDER)
-        self.set_line_width(0.5)
-        self.rect(12, 13, W - 24, H - 13 - 12)
-
-        corner_size = 9
-        _draw_corner_ornament(self, 14, 16, corner_size, C_GOLD, flip_x=False, flip_y=False)
-        _draw_corner_ornament(self, W - 14, 16, corner_size, C_GOLD, flip_x=True, flip_y=False)
-        _draw_corner_ornament(self, 14, H - 15, corner_size, C_GOLD, flip_x=False, flip_y=True)
-        _draw_corner_ornament(self, W - 14, H - 15, corner_size, C_GOLD, flip_x=True, flip_y=True)
-
-        self.set_font(self.font_name, style="B", size=9)
-        self.set_text_color(255, 255, 255)
-        self.set_xy(0, 2)
-        self.cell(W, 5.5, "✦  EVA NUMEROLOG  ✦", align="C")
-        self.set_xy(self.l_margin, 21)
-
-    def footer(self):
-        self.set_y(-8.3)
-        self.set_font(self.font_name, size=8)
-        self.set_text_color(255, 255, 255)
-        self.cell(0, 5.5, f"Telegram: @nnumerology_bot   •   стр. {self.page_no()}", align="C")
-
-
-def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int | None = None) -> bytes:
-    """Красивый PDF для женской аудитории, с нумерологической символикой:
-    восьмиконечная звезда-октаграмма в разделителе, орнаментальные уголки
-    страницы и медальон с числом судьбы рядом с именем (если оно известно)."""
-    font_path = _ensure_font()
-    font_name = "DejaVu" if font_path else "Helvetica"
-
-    pdf = NumerologyPDF(font_name=font_name)
-
-    if font_path:
-        try:
-            bold_path = _ensure_bold_font()
-            pdf.add_font("DejaVu", style="", fname=font_path)
-            pdf.add_font("DejaVu", style="B", fname=bold_path or font_path)
-        except Exception as e:
-            logging.warning(f"Не удалось загрузить шрифт: {e}")
-            font_name     = "Helvetica"
-            pdf.font_name = "Helvetica"
-
-    pdf.set_margins(20, 21, 20)
-    pdf.add_page()
-
-    W = pdf.w
-
-    clean_title = re.sub(r"[^\w\s\(\)\-—.,]", "", title, flags=re.UNICODE).strip()
-    pdf.set_font(font_name, style="B", size=18)
-    pdf.set_text_color(*C_TITLE)
-    pdf.multi_cell(0, 9, clean_title.upper(), align="C")
-    pdf.ln(2)
-
-    y   = pdf.get_y()
-    mid = W / 2
-    pdf.set_draw_color(*C_ACCENT)
-    pdf.set_line_width(0.4)
-    pdf.line(pdf.l_margin + 6, y + 3.5, mid - 7, y + 3.5)
-    pdf.line(mid + 7, y + 3.5, W - pdf.r_margin - 6, y + 3.5)
-    _draw_star_polygon(pdf, mid, y + 3.5, r_outer=4.2, r_inner=1.8, points=8, color=C_GOLD)
-    pdf.set_y(y + 9)
-
-    info_parts = []
-    if user_name:
-        info_parts.append(f"Для {user_name}")
-    info_parts.append(datetime.now().strftime("%d.%m.%Y"))
-    info_text = "   •   ".join(info_parts)
-
-    pdf.set_font(font_name, size=10.5)
-    medallion_d = 11 if destiny_number is not None else 0
-    badge_w = pdf.get_string_width(info_text) + 16 + medallion_d
-    badge_h = 8.5
-    badge_x = (W - badge_w) / 2
-    badge_y = pdf.get_y()
-    pdf.set_fill_color(*C_BADGE_FILL)
-    pdf.set_draw_color(*C_BORDER)
-    pdf.set_line_width(0.3)
-    pdf.rect(badge_x, badge_y, badge_w, badge_h, style="DF")
-
-    text_x = badge_x
-    if destiny_number is not None:
-        _draw_number_medallion(
-            pdf, badge_x + medallion_d / 2 + 2, badge_y + badge_h / 2,
-            radius=medallion_d / 2, number=destiny_number, font_name=font_name
-        )
-        text_x = badge_x + medallion_d + 2
-
-    pdf.set_xy(text_x, badge_y + 1.4)
-    pdf.set_text_color(*C_BADGE_TEXT)
-    pdf.cell(badge_w - (text_x - badge_x), 6, info_text, align="C")
-    pdf.set_xy(pdf.l_margin, badge_y + badge_h + 8)
-
-    pdf.set_font(font_name, size=11.5)
-    pdf.set_text_color(*C_BODY)
-
-    for paragraph in text.split("\n"):
-        line = paragraph.strip()
-        if not line:
-            pdf.ln(4)
-            continue
-        clean_line = re.sub(r"[^\w\s\(\)\-—.,!?:;]", "", line, flags=re.UNICODE).strip()
-        is_header  = _is_header_line(paragraph)
-        if is_header and clean_line:
-            pdf.ln(1)
-            pdf.set_x(pdf.l_margin)
-            pdf.set_font(font_name, style="B", size=12.5)
-            pdf.set_text_color(*C_HEADER)
-            pdf.multi_cell(0, 8, clean_line)
-            pdf.set_font(font_name, size=11.5)
-            pdf.set_text_color(*C_BODY)
-            pdf.ln(1)
-        elif clean_line:
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(0, 7, clean_line)
-            pdf.ln(1)
-
-    return bytes(pdf.output())
-
-# ─── НУМЕРОЛОГИЧЕСКИЕ РАСЧЁТЫ ────────────────────────────────────────────────
-def calculate_destiny(date_str: str) -> int:
-    digits = [int(d) for d in date_str if d.isdigit()]
-    total  = sum(digits)
-    while total > 9 and total not in (11, 22, 33):
-        total = sum(int(d) for d in str(total))
-    return total
-
-def calculate_personal_year(date_str: str) -> int:
-    parts = date_str.split(".")
-    day, month = int(parts[0]), int(parts[1])
-    current_year = datetime.now().year
-    total = (sum(int(d) for d in str(day)) +
-             sum(int(d) for d in str(month)) +
-             sum(int(d) for d in str(current_year)))
-    while total > 9 and total not in (11, 22, 33):
-        total = sum(int(d) for d in str(total))
-    return total
-
-def calculate_karmic_numbers(date_str: str) -> list:
-    digits_present = set(int(d) for d in date_str if d.isdigit() and d != '0')
-    return sorted(set(range(1, 10)) - digits_present)
-
-def calculate_matrix(date_str: str) -> dict:
-    parts   = date_str.split(".")
-    day     = int(parts[0])
-    month   = int(parts[1])
-    destiny = calculate_destiny(date_str)
-
-    def reduce(n):
-        while n > 22:
-            n = sum(int(d) for d in str(n))
-        return n
-
-    a = day
-    b = month
-    c = sum(int(d) for d in str(int(parts[2])))
-    while c > 22:
-        c = sum(int(d) for d in str(c))
-    d = reduce(a + b + c)
-    e = reduce(a + b + c + d)
-    return {"день": a, "месяц": b, "год": c,
-            "первое_число": d, "второе_число": e, "число_судьбы": destiny}
-
-def calculate_name_number(name: str) -> int:
-    ru_alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-    total = 0
-    for ch in name.lower():
-        if ch in ru_alphabet:
-            total += ru_alphabet.index(ch) + 1
-    while total > 9 and total not in (11, 22, 33):
-        total = sum(int(d) for d in str(total))
-    return total if total > 0 else 0
-
-def calculate_day_number(today: date) -> int:
-    total = sum(int(d) for d in str(today.day) + str(today.month) + str(today.year))
-    while total > 9 and total not in (11, 22, 33):
-        total = sum(int(d) for d in str(total))
-    return total
-
-def build_numerology_context(name: str, date_str: str) -> str:
-    destiny     = calculate_destiny(date_str)
-    personal_yr = calculate_personal_year(date_str)
-    karmic      = calculate_karmic_numbers(date_str)
-    matrix      = calculate_matrix(date_str)
-    name_number = calculate_name_number(name)
-    karmic_str  = ", ".join(map(str, karmic)) if karmic else "отсутствуют"
-    return (
-        f"Пол: женский. Всегда обращайся в женском роде.\n"
-        f"Имя: {name}\n"
-        f"Дата рождения: {date_str}\n"
-        f"Число судьбы: {destiny}\n"
-        f"Число имени: {name_number}\n"
-        f"Личный год ({datetime.now().year}): {personal_yr}\n"
-        f"Кармические числа (отсутствующие): {karmic_str}\n"
-        f"Матрица судьбы — день: {matrix['день']}, месяц: {matrix['месяц']}, "
-        f"год: {matrix['год']}, первое число: {matrix['первое_число']}, "
-        f"второе число: {matrix['второе_число']}\n"
-    )
-
-# ─── ЗАЩИТА ОТ ИНОСТРАННЫХ СИМВОЛОВ ─────────────────────────────────────────
-FOREIGN_RE = re.compile(
-    r'[a-zA-ZÀ-ÿ\u0080-\u024F\u1E00-\u1EFF\u3000-\u9FFF'
-    r'\u0250-\u02AF\u0E00-\u0E7F\uAC00-\uD7AF\u4E00-\u9FFF]'
-)
-
-def has_foreign(text: str) -> bool:
-    return bool(FOREIGN_RE.search(text))
-
-def foreign_ratio(text: str) -> float:
-    """Доля иностранных символов от общей длины текста (без пробелов)."""
-    stripped = text.replace(" ", "").replace("\n", "")
-    if not stripped:
-        return 0.0
-    foreign_count = len(FOREIGN_RE.findall(text))
-    return foreign_count / len(stripped)
-
-def clean_text(text: str) -> str:
-    """Сначала восстанавливаем 'лангсвопы', и только потом отбрасываем
-    оставшиеся недопустимые символы."""
-    text = fix_langswap(text)
-    result = []
-    for char in text:
-        cp = ord(char)
-        if (
-            0x0400 <= cp <= 0x04FF or
-            0x2000 <= cp <= 0x206F or
-            0x2600 <= cp <= 0x27FF or
-            0x1F300 <= cp <= 0x1FFFF or
-            0x2700 <= cp <= 0x27BF or
-            char in '0123456789.,!?:;-—()«»"\'\n\r\t ⭐'
-        ):
-            result.append(char)
-    return ''.join(result)
-
-# ─── ОРФОГРАФИЧЕСКАЯ КОРРЕКЦИЯ (pyenchant + hunspell, русский словарь) ──────
-_SPELL_DICT = None
-_SPELL_READY = None
-
-def _get_spell_dict():
-    global _SPELL_DICT, _SPELL_READY
-    if _SPELL_READY is not None:
-        return _SPELL_DICT
-    try:
-        import enchant
-        d = enchant.Dict("ru_RU")
-        d.check("привет")
-        _SPELL_DICT = d
-        _SPELL_READY = True
-        logging.info("Орфографический словарь ru_RU загружен")
-    except Exception as e:
-        logging.warning(f"Орфографический словарь ru_RU недоступен, спеллчекер отключён: {e}")
-        _SPELL_DICT = None
-        _SPELL_READY = False
-    return _SPELL_DICT
-
-_WORD_RE = re.compile(r'[а-яА-ЯёЁ]+')
-
-def _similar_enough(a: str, b: str) -> bool:
-    if abs(len(a) - len(b)) > max(2, len(a) // 3):
-        return False
-    common = sum(1 for ch in set(a.lower()) if ch in b.lower())
-    return common >= max(1, len(set(a.lower())) // 2)
-
-def fix_spelling(text: str) -> str:
-    """Проверяет каждое кириллическое слово длиннее 3 букв через hunspell;
-    если слово отсутствует в словаре и первый вариант исправления похож по
-    написанию — тихо заменяет."""
-    spell = _get_spell_dict()
-    if spell is None:
-        return text
-
-    def _replace(match: re.Match) -> str:
-        word = match.group(0)
-        if len(word) <= 3:
-            return word
-        try:
-            if spell.check(word):
-                return word
-            suggestions = spell.suggest(word)
-            if not suggestions:
-                return word
-            best = suggestions[0]
-            if " " in best or "-" in best:
-                return word
-            if not _similar_enough(word, best):
-                return word
-            if word[0].isupper():
-                best = best[0].upper() + best[1:]
-            return best
-        except Exception:
-            return word
-
-    try:
-        return _WORD_RE.sub(_replace, text)
-    except Exception as e:
-        logging.warning(f"fix_spelling упал, возвращаю текст без изменений: {e}")
-        return text
-
-# ─── ЦЕНЫ И МЕТАДАННЫЕ ───────────────────────────────────────────────────────
-TITLES = {
-    "free":            "💫 Матрица судьбы",
-    "matrix_full":     "🔮 Матрица судьбы",
-    "finance":         "💹 Финансовый прогноз",
-    "wealth_blocks":   "🚧 Блоки богатства",
-    "freedom_path":    "🗺 Путь к свободе",
-    "calling":         "🌠 Призвание",
-    "promotion":       "📈 Повышение",
-    "own_business":    "🏢 Свой бизнес",
-    "hidden_talents":  "✨ Скрытые таланты",
-    "main_fear":       "😨 Главный страх",
-    "forecast_2026":   "🗓 Прогноз на 2026 год",
-    "strong_weak":     "⚖️ Сильная и слабая сторона",
-    "compat":          "💑 Совместимость двух людей",
-    "when":            "💘 Когда встретишь того самого",
-    "portrait":        "💍 Портрет идеального партнёра",
-    "unlucky":         "💔 Почему не везёт в любви",
-    "mission":         "🌟 Предназначение и миссия",
-    "karma":           "🔴 Кармический долг",
-    "career":          "💼 Карьерный путь",
-    "money":           "💰 Денежный код",
-    "days":            "🌙 Сильные и слабые дни",
-    "ex":              "💔 Вернётся ли бывший",
-    "cold":            "❄️ Почему он охладел",
-    "toxic":           "☠️ Токсичная или кармическая связь",
-    "lonely":          "😔 Почему ты одинока",
-    "breakup":         "💔 Разбор после расставания",
-    "health_code":     "💚 Код здоровья",
-    "energy_drain":    "⚡ Что крадёт энергию",
-    "body_message":    "🫀 Послания тела",
-    "stress_number":   "😤 Число стресса",
-    "intuition":       "🔮 Интуиция и внутренний голос",
-    "past_life":       "📜 Прошлые жизни",
-    "future_portal":   "🌟 Прогноз на 3 года",
-    "turning_point":   "🔄 Поворотные точки судьбы",
-    "ancestor_code":   "🌳 Родовой код",
-}
-
-PRICES = {
-    "matrix_full":   149,
-    "forecast_2026": 149,
-    "wealth_blocks": 149,
-    "freedom_path":  149,
-    "mission":       99,
-    "karma":         99,
-    "compat":        99,
-    "own_business":  99,
-    "finance":       99,
-    "promotion":     99,
-    "calling":       79,
-    "career":        79,
-    "money":         79,
-    "when":          79,
-    "portrait":      79,
-    "breakup":       79,
-    "toxic":         79,
-    "hidden_talents":79,
-    "days":          79,
-    "unlucky":       49,
-    "ex":            49,
-    "cold":          49,
-    "lonely":        49,
-    "main_fear":     49,
-    "strong_weak":   49,
-    "health_code":   79,
-    "energy_drain":  49,
-    "body_message":  49,
-    "stress_number": 49,
-    "intuition":     79,
-    "past_life":     99,
-    "future_portal": 149,
-    "turning_point": 79,
-    "ancestor_code": 99,
-}
-
-# Разборы для которых генерируется PDF (79⭐ и выше)
-PDF_KEYS = {k for k, v in PRICES.items() if v >= 79}
-
-UPSELLS = {
-    "matrix_full":   ("forecast_2026", "mission"),
-    "forecast_2026": ("matrix_full",   "karma"),
-    "finance":       ("wealth_blocks", "freedom_path"),
-    "wealth_blocks": ("finance",       "own_business"),
-    "freedom_path":  ("calling",       "own_business"),
-    "calling":       ("career",        "own_business"),
-    "career":        ("promotion",     "money"),
-    "money":         ("finance",       "wealth_blocks"),
-    "karma":         ("mission",       "matrix_full"),
-    "mission":       ("karma",         "hidden_talents"),
-    "hidden_talents":("calling",       "strong_weak"),
-    "promotion":     ("career",        "own_business"),
-    "own_business":  ("freedom_path",  "finance"),
-    "compat":        ("when",          "portrait"),
-    "when":          ("portrait",      "compat"),
-    "portrait":      ("when",          "unlucky"),
-    "unlucky":       ("ex",            "lonely"),
-    "ex":            ("toxic",         "compat"),
-    "cold":          ("toxic",         "ex"),
-    "toxic":         ("cold",          "breakup"),
-    "lonely":        ("unlucky",       "portrait"),
-    "breakup":       ("ex",            "toxic"),
-    "days":          ("finance",       "forecast_2026"),
-    "strong_weak":   ("hidden_talents","main_fear"),
-    "main_fear":     ("strong_weak",   "karma"),
-    "health_code":   ("energy_drain",  "intuition"),
-    "energy_drain":  ("health_code",   "stress_number"),
-    "body_message":  ("energy_drain",  "health_code"),
-    "stress_number": ("energy_drain",  "body_message"),
-    "intuition":     ("health_code",   "past_life"),
-    "past_life":     ("ancestor_code", "karma"),
-    "future_portal": ("turning_point", "forecast_2026"),
-    "turning_point": ("future_portal", "past_life"),
-    "ancestor_code": ("past_life",     "karma"),
-}
-
-# Разделы меню
-SECTION_DESTINY = ["matrix_full", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026"]
-SECTION_MONEY   = ["finance", "wealth_blocks", "freedom_path", "calling", "promotion", "own_business", "career", "money", "days"]
-SECTION_LOVE    = ["compat", "when", "portrait", "unlucky", "ex", "cold", "toxic", "lonely", "breakup"]
-SECTION_HEALTH  = ["health_code", "energy_drain", "body_message", "stress_number", "intuition"]
-SECTION_PAST    = ["past_life", "future_portal", "turning_point", "ancestor_code"]
-
-PAID_RAZBORY = {k: v for k, v in TITLES.items() if k != "free"}
-
-# Разборы которые могут быть бесплатными (до 99⭐ включительно)
-FREE_ELIGIBLE = {k for k, v in PRICES.items() if v <= 99}
-
-# Короткое описание того, что получит человек в разборе — показывается
-# сразу после выбора темы, перед запросом даты, чтобы было понятнее за что
-# платишь до того как вводить дату рождения.
-RAZBOR_DESCRIPTIONS = {
-    "matrix_full":   "Полная картина личности: характер, таланты, деньги, любовь, карма и предназначение в одном разборе.",
-    "finance":       "Когда ждать рост доходов, какие источники сработают и чего избегать в деньгах.",
-    "wealth_blocks": "Какие внутренние блоки мешают разбогатеть и как их снять.",
-    "freedom_path":  "Конкретный путь к финансовой независимости — через найм, бизнес или творчество.",
-    "calling":       "Твоё истинное призвание и как превратить его в доход.",
-    "promotion":     "Лучшее время для повышения и как себя показать руководству.",
-    "own_business":  "Подходит ли тебе своё дело, в какой нише и когда стартовать.",
-    "hidden_talents":"Скрытые способности, которые ты недооцениваешь — и как их монетизировать.",
-    "main_fear":     "Главный страх, который тормозит твою жизнь, и как от него освободиться.",
-    "forecast_2026": "Подробный прогноз на 2026 год: любовь, деньги, рост, лучшие месяцы.",
-    "strong_weak":   "Твои сильные и слабые стороны — честно и по числам.",
-    "compat":        "Совместимость с конкретным человеком: сильные стороны пары и зоны риска.",
-    "when":          "Когда встретишь своего человека и каким он будет.",
-    "portrait":      "Нумерологический портрет твоего идеального партнёра.",
-    "unlucky":       "Истинная причина неудач в любви и как разорвать паттерн.",
-    "mission":       "Твоя жизненная миссия — для чего ты пришла в этот мир.",
-    "karma":         "Кармический долг этой жизни и как его закрыть.",
-    "career":        "Идеальный карьерный путь именно для твоих чисел.",
-    "money":         "Твой денежный код: как приходят и уходят деньги, и что это активирует.",
-    "days":          "Сильные и слабые дни месяца — когда действовать, когда отдыхать.",
-    "ex":            "Вернётся ли бывший — прямой ответ по числам.",
-    "cold":          "Почему партнёр охладел и что с этим делать.",
-    "toxic":         "Токсичная связь или кармический урок — точный диагноз.",
-    "lonely":        "Истинная причина одиночества и как её изменить.",
-    "breakup":       "Разбор расставания: что произошло и что ждёт дальше.",
-    "health_code":   "Твой код здоровья — природная конституция и слабые места.",
-    "energy_drain":  "Что крадёт твою энергию и как её восстановить.",
-    "body_message":  "Что тело пытается сказать через симптомы и состояния.",
-    "stress_number": "Как ты реагируешь на стресс и что реально помогает.",
-    "intuition":     "Насколько сильна твоя интуиция и как её развить.",
-    "past_life":     "Прошлые жизни и их след в нынешней судьбе.",
-    "future_portal": "Подробный прогноз на ближайшие 3 года.",
-    "turning_point": "Когда наступит следующий поворотный момент судьбы.",
-    "ancestor_code": "Родовые программы — что досталось от предков и как это использовать.",
-}
-
-# ─── DB ──────────────────────────────────────────────────────────────────────
-async def init_db():
-    global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL)
-    await db_pool.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id            BIGINT PRIMARY KEY,
-            first_name         TEXT,
-            free_used          BOOLEAN DEFAULT FALSE,
-            subscribed_channel BOOLEAN DEFAULT FALSE,
-            birth_date         TEXT,
-            destiny_number     INTEGER,
-            purchased          TEXT DEFAULT '[]',
-            waiting            TEXT,
-            review_left        BOOLEAN DEFAULT FALSE,
-            notifications      BOOLEAN DEFAULT TRUE,
-            reviews_left       TEXT DEFAULT '[]'
-        )
-    ''')
-    await db_pool.execute('''
-        CREATE TABLE IF NOT EXISTS coupons (
-            code       TEXT PRIMARY KEY,
-            created_at TIMESTAMP DEFAULT NOW(),
-            expires_at TIMESTAMP,
-            max_uses   INTEGER DEFAULT 1,
-            uses_count INTEGER DEFAULT 0
-        )
-    ''')
-    await db_pool.execute('''
-        CREATE TABLE IF NOT EXISTS coupon_uses (
-            id         SERIAL PRIMARY KEY,
-            code       TEXT NOT NULL,
-            user_id    BIGINT NOT NULL,
-            used_at    TIMESTAMP DEFAULT NOW()
-        )
-    ''')
-    for col, definition in [
-        ("first_name",    "TEXT"),
-        ("notifications", "BOOLEAN DEFAULT TRUE"),
-        ("reviews_left",  "TEXT DEFAULT '[]'"),
-    ]:
-        try:
-            await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
-        except Exception:
-            pass
-    for col, definition in [
-        ("max_uses",   "INTEGER DEFAULT 1"),
-        ("uses_count", "INTEGER DEFAULT 0"),
-    ]:
-        try:
-            await db_pool.execute(f"ALTER TABLE coupons ADD COLUMN IF NOT EXISTS {col} {definition}")
-        except Exception:
-            pass
-    try:
-        await db_pool.execute("ALTER TABLE coupons DROP COLUMN IF EXISTS used_by")
-    except Exception:
-        pass
-
-async def get_user(user_id: int) -> dict:
-    row = await db_pool.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
-    if not row:
-        await db_pool.execute('INSERT INTO users (user_id) VALUES ($1)', user_id)
-        row = await db_pool.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
-    user = dict(row)
-    user['purchased']    = json.loads(user['purchased'] or '[]')
-    user['reviews_left'] = json.loads(user.get('reviews_left') or '[]')
-    if user.get('notifications') is None:
-        user['notifications'] = True
-    if user_id == ADMIN_ID:
-        user['free_used']          = True
-        user['subscribed_channel'] = True
-        for r in list(PAID_RAZBORY.keys()):
-            if r not in user['purchased']:
-                user['purchased'].append(r)
-    return user
-
-async def save_user(user_id: int, user: dict):
-    await db_pool.execute('''
-        UPDATE users SET
-            first_name         = $1,
-            free_used          = $2,
-            subscribed_channel = $3,
-            birth_date          = $4,
-            destiny_number      = $5,
-            purchased           = $6,
-            waiting             = $7,
-            review_left         = $8,
-            notifications       = $9,
-            reviews_left        = $10
-        WHERE user_id = $11
-    ''',
-        user.get('first_name'),
-        user['free_used'],
-        user['subscribed_channel'],
-        user.get('birth_date'),
-        user.get('destiny_number'),
-        json.dumps(user['purchased']),
-        user.get('waiting'),
-        user.get('review_left', False),
-        user.get('notifications', True),
-        json.dumps(user.get('reviews_left', [])),
-        user_id
-    )
-
 # ─── FSM ─────────────────────────────────────────────────────────────────────
 class Form(StatesGroup):
     waiting_name        = State()
@@ -983,13 +121,6 @@ class Form(StatesGroup):
     waiting_free_date   = State()
 
 # ─── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────────────────────────────────────
-def is_valid_date(date_str: str) -> bool:
-    try:
-        datetime.strptime(date_str, "%d.%m.%Y")
-        return True
-    except ValueError:
-        return False
-
 async def check_subscription(user_id: int) -> bool:
     if user_id == ADMIN_ID:
         return True
@@ -1002,263 +133,6 @@ async def check_subscription(user_id: int) -> bool:
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-# ─── ИИ-ПРОВАЙДЕРЫ: CEREBRAS → GROQ → OPENROUTER ───────────────────────────
-# Cerebras — быстрый, бесплатный тир, отлично держит русский язык
-# Groq — резерв, бесплатный но с жёсткими rate limits
-# OpenRouter — последний рубеж, платный по токенам но с авто-роутингом
-
-CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
-CEREBRAS_MODEL   = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODELS  = [
-    "openai/gpt-oss-120b",
-    "qwen/qwen3.6-27b",
-    "openai/gpt-oss-20b",
-]
-
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODELS = [
-    "meta-llama/llama-3.3-70b-instruct",
-    "google/gemini-flash-1.5",
-    "deepseek/deepseek-chat",
-    "mistralai/mistral-small-3.1-24b-instruct",
-    "qwen/qwen-2.5-72b-instruct",
-    "microsoft/phi-4",
-    "google/gemini-flash-1.5-8b",
-]
-
-MAX_FOREIGN_RATIO = 0.03
-
-# СИСТЕМНЫЙ ПРОМПТ: сохраняем конкретность и запрет "воды", но требования
-# к объёму смягчены ("около", диапазоны, без жёстких минимумов по словам).
-# Жёсткие минимумы слов (раньше: "не менее 1300 слов, каждый блок 4-5
-# абзацев") статистически провоцировали модель (особенно gpt-oss-120b) либо
-# обрывать структуру ради скорости, либо повторять последние пункты второй
-# раз, пытаясь "дотянуть" объём. Качество важнее точного количества слов.
-SYSTEM_PROMPT = (
-    "Ты — Ева, нумеролог с 15-летним опытом практики. "
-    "Ты делаешь платные разборы для женщин — каждый разбор должен быть "
-    "конкретным и ценным, без лишней воды.\n\n"
-    "ГОЛОС И СТИЛЬ:\n"
-    "Говори как профессионал на живой консультации — уверенно, без лекций. "
-    "Можешь использовать фразы вроде 'Я смотрю на твою дату и вижу...', "
-    "'Твои числа говорят очень чётко...'. "
-    "Каждый блок — это связный текст из нескольких предложений по делу, "
-    "не одна короткая фраза.\n\n"
-    "ЗАПРЕЩЁННЫЕ ФРАЗЫ — избегай:\n"
-    "не бойся / помни / ты должна / будь открыта / возможно / наверное / "
-    "может быть / вероятно / постарайся / стремись / важно понять / "
-    "это нормально / у тебя всё получится / верь в себя / ты сильная. "
-    "Эти фразы — вода. Вместо них давай конкретику.\n\n"
-    "КОНКРЕТНОСТЬ — это главное:\n"
-    "Плохо: 'ты сильная и способная'. "
-    "Хорошо: 'твоё число 8 даёт деловое мышление — ты видишь где деньги раньше других'. "
-    "Плохо: 'в этом году будут перемены'. "
-    "Хорошо: 'март-апрель 2026 — пиковый период для карьерных решений'. "
-    "Называй конкретные числа, месяцы, паттерны, ситуации.\n\n"
-    "ОБЪЁМ И ПОЛНОТА — сначала полнота, потом объём:\n"
-    "Если в запросе дан список emoji-заголовков — ответь по КАЖДОМУ из них, "
-    "не пропускай ни один и не объединяй несколько в один. Полнота структуры "
-    "важнее объёма: лучше пройти все пункты, чем подробно расписать только "
-    "последний. При этом каждый блок раскрывай содержательно — стремись "
-    "к 4-6 развёрнутым предложениям на блок, с конкретными числами, "
-    "месяцами и примерами, а не одной короткой фразой. Не растягивай "
-    "искусственно и не повторяй один и тот же блок дальше в тексте — каждый "
-    "emoji-заголовок встречается в ответе ровно один раз. Прежде чем "
-    "перейти к следующему блоку, мысленно проверь что предыдущий получился "
-    "содержательным, а не формальным.\n\n"
-    "ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ:\n"
-    "Только кириллица — никакого английского, никаких иероглифов, никаких других алфавитов. "
-    "Никакого markdown — никаких звёздочек, решёток, подчёркиваний. "
-    "Эмодзи только перед заголовком блока. "
-    "Обращайся только на ТЫ, только женский род — никогда не пиши 'вы', 'ваш'. "
-    "Имя пользователя — используй только то что указано в данных, не придумывай другое. "
-    "Упоминай имя не чаще 3 раз за весь текст. "
-    "НЕ повторяй инструкцию, не пиши план перед ответом — "
-    "сразу начинай с первого emoji-заголовка разбора. "
-    "Заканчивай полным предложением."
-)
-
-def _finalize_ai_text(raw: str, source: str) -> str | None:
-    """Общий пайплайн постобработки для всех трёх провайдеров:
-    1) убираем <think> блоки, 2) отрезаем преамбулу, 3) убираем повторные
-    появления одного и того же emoji-раздела, 4) восстанавливаем лангсвопы
-    и фильтруем недопустимые символы, 5) решаем принять/отбросить по ДОЛЕ
-    иностранных символов, 6) исправляем орфографические опечатки модели
-    через словарь (если доступен). Проверка ПОЛНОТЫ структуры (все ли
-    ожидаемые разделы присутствуют) выполняется отдельно в ask_ai, потому
-    что для неё нужен оригинальный prompt, а не только ответ."""
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-    raw = strip_preamble(raw)
-    raw = dedupe_repeated_sections(raw)
-    ratio = foreign_ratio(raw)
-    cleaned = clean_text(raw)
-    if not cleaned.strip():
-        logging.warning(f"{source} — пустой текст после очистки")
-        return None
-    if ratio > MAX_FOREIGN_RATIO:
-        logging.warning(f"{source} — доля иностранных символов {ratio:.1%} превышает порог")
-        return None
-    cleaned = fix_spelling(cleaned)
-    return cleaned
-
-async def _try_cerebras(prompt: str) -> str | None:
-    """Cerebras — основной провайдер. reasoning_effort='high' + max_tokens
-    увеличен — даёт модели больше пространства довести структуру до конца,
-    но НЕ гарантирует полноту (gpt-oss-120b всё равно может срезать путь на
-    отдельных запросах) — поэтому финальная проверка полноты в ask_ai.
-    timeout увеличен с 45 до 90 секунд: высокий reasoning_effort плюс
-    больший целевой объём ответа (4-6 предложений на блок вместо 2-3)
-    требуют больше времени и на размышление, и на сам текст — Cerebras
-    остаётся одним из самых быстрых провайдеров, так что даже 90 секунд
-    почти всегда укладываются в реальное время ответа, а не используются
-    полностью."""
-    if not CEREBRAS_API_KEY:
-        return None
-    url     = "https://api.cerebras.ai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {CEREBRAS_API_KEY}", "Content-Type": "application/json"}
-    data    = {
-        "model": CEREBRAS_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt},
-        ],
-        "max_tokens": 8000,
-        "temperature": 1.0,
-        "reasoning_effort": "high",
-    }
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=data, timeout=90)
-            if response.status_code == 429:
-                logging.warning("Cerebras 429 rate limit")
-                return None
-            response.raise_for_status()
-            raw = response.json()["choices"][0]["message"]["content"]
-            result = _finalize_ai_text(raw, "Cerebras")
-            if result:
-                logging.info("Cerebras ответил успешно")
-            return result
-    except Exception as e:
-        logging.warning(f"Cerebras failed: {e}")
-        return None
-
-async def _try_groq(prompt: str) -> str | None:
-    """Groq — второй в цепочке. Бесплатный, но с rate limits."""
-    if not GROQ_API_KEY:
-        return None
-    url     = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-
-    for model in GROQ_MODELS:
-        for attempt in range(2):
-            try:
-                data = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    "max_tokens": 4000,
-                }
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(url, headers=headers, json=data, timeout=45)
-                    if response.status_code == 429:
-                        retry_after = int(response.headers.get("retry-after", 5))
-                        logging.warning(f"Groq {model} 429, retry-after={retry_after}s")
-                        await asyncio.sleep(min(retry_after, 10))
-                        break
-                    if response.status_code == 400:
-                        logging.warning(f"Groq {model} 400: {response.text[:300]}")
-                        break
-                    response.raise_for_status()
-                    raw    = response.json()["choices"][0]["message"]["content"]
-                    result = _finalize_ai_text(raw, f"Groq {model}")
-                    if result is None:
-                        continue
-                    logging.info(f"Groq {model} ответил успешно")
-                    return result
-            except Exception as e:
-                logging.warning(f"Groq {model} attempt {attempt+1} failed: {e}")
-                break
-    return None
-
-async def _try_openrouter(prompt: str) -> str | None:
-    """OpenRouter — последний рубеж. Платный по токенам, но умеет
-    автоматически роутить между моделями, перебирая список по порядку."""
-    if not OPENROUTER_API_KEY:
-        return None
-    url     = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type":  "application/json",
-        "HTTP-Referer":  "https://t.me/nnumerology_bot",
-        "X-Title":       "Eva Numerolog Bot",
-    }
-    data = {
-        "models": OPENROUTER_MODELS,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt},
-        ],
-        "max_tokens": 4000,
-        "temperature": 0.7,
-    }
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=data, timeout=60)
-            if response.status_code == 429:
-                logging.warning("OpenRouter 429 rate limit")
-                return None
-            response.raise_for_status()
-            body       = response.json()
-            raw        = body["choices"][0]["message"]["content"]
-            model_used = body.get("model", "unknown")
-            result     = _finalize_ai_text(raw, "OpenRouter")
-            if result:
-                logging.info(f"OpenRouter ответил успешно (модель: {model_used})")
-            return result
-    except Exception as e:
-        logging.warning(f"OpenRouter failed: {e}")
-        return None
-
-async def ask_ai(prompt: str) -> str:
-    """Cerebras → Groq → OpenRouter, с проверкой ПОЛНОТЫ структуры ответа.
-
-    Если провайдер дал ответ, но он покрывает меньше 60% ожидаемых
-    emoji-разделов из промпта (как в реальном случае с 'matrix_full',
-    когда gpt-oss-120b отвечал только последним блоком из восьми) —
-    результат не принимается, и бот переходит к следующему провайдеру,
-    как при полном отказе. Каждый провайдер также получает одну повторную
-    попытку САМ С СОБОЙ перед тем как сдаться — иногда у той же модели со
-    второй попытки структура получается полной."""
-    providers = [
-        ("Cerebras", _try_cerebras),
-        ("Groq", _try_groq),
-        ("OpenRouter", _try_openrouter),
-    ]
-    last_incomplete: str | None = None
-
-    for name, fn in providers:
-        for attempt in range(2):  # сама попытка + один повтор у того же провайдера
-            result = await fn(prompt)
-            if not result:
-                break  # этот провайдер недоступен вовсе — переходим к следующему
-            if is_structure_complete(prompt, result):
-                return result
-            logging.warning(
-                f"{name} попытка {attempt + 1}: ответ неполный по структуре, "
-                f"{'повторяю' if attempt == 0 else 'перехожу к следующему провайдеру'}"
-            )
-            last_incomplete = result
-        # переходим к следующему провайдеру в внешнем цикле
-
-    if last_incomplete:
-        logging.warning("Все провайдеры дали неполную структуру — отдаю последний доступный результат")
-        return last_incomplete
-    raise Exception("Все провайдеры недоступны или вернули иностранные символы")
-
 def build_prompt(key: str, **kwargs) -> str:
     """Собирает промпт по ключу. Бросает ValueError если ключ не найден."""
     kwargs.setdefault("year", datetime.now().year)
@@ -1268,263 +142,11 @@ def build_prompt(key: str, **kwargs) -> str:
         raise ValueError(f"Промпт '{key}' не существует в PROMPTS")
     return template.format(**kwargs)
 
-# ─── КЛАВИАТУРЫ ──────────────────────────────────────────────────────────────
-def check_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Я подписалась!", callback_data="check_sub")],
-    ])
-
-def date_choice_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Для себя",    callback_data="use_my_date")],
-        [InlineKeyboardButton(text="📅 Другая дата", callback_data="use_new_date")],
-    ])
-
-def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
-    if notifications_on:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")],
-            [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
-        ])
-    else:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔔 Включить уведомления", callback_data="notif_on")],
-            [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
-        ])
-
-def main_menu(user=None) -> InlineKeyboardMarkup:
-    buttons = []
-
-    if user and not user.get("free_used"):
-        buttons.append([InlineKeyboardButton(
-            text="🎁 Бесплатный разбор на выбор",
-            callback_data="free_choose"
-        )])
-
-    purchased = user.get("purchased", []) if user else []
-    if purchased:
-        count = len(purchased)
-        buttons.append([InlineKeyboardButton(
-            text=f"📚 Мои разборы ({count})",
-            callback_data="my_readings"
-        )])
-
-    buttons.append([InlineKeyboardButton(text="── Выбери тему ──", callback_data="noop")])
-    buttons.append([InlineKeyboardButton(text="🔮 Судьба и личность",    callback_data="section_destiny")])
-    buttons.append([InlineKeyboardButton(text="💰 Деньги и карьера",     callback_data="section_money")])
-    buttons.append([InlineKeyboardButton(text="💑 Любовь и отношения",   callback_data="section_love")])
-    buttons.append([InlineKeyboardButton(text="🌙 Здоровье и энергия",   callback_data="section_health")])
-    buttons.append([InlineKeyboardButton(text="✨ Прошлое и будущее",    callback_data="section_past")])
-    buttons.append([InlineKeyboardButton(
-        text="🌸 Личный разбор от Евы (за рубли)",
-        url=CONTACT_URL
-    )])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def free_choose_menu() -> InlineKeyboardMarkup:
-    buttons = []
-    for key in sorted(FREE_ELIGIBLE):
-        title = TITLES.get(key, key)
-        price = PRICES.get(key, 0)
-        buttons.append([InlineKeyboardButton(
-            text=f"{title} ({price} ⭐ — бесплатно)",
-            callback_data=f"free_pick_{key}"
-        )])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def section_destiny_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
-    items = [
-        ("matrix_full",   "🔮 Матрица судьбы — 149 ⭐"),
-        ("mission",       "🌟 Предназначение и миссия — 99 ⭐"),
-        ("hidden_talents","✨ Скрытые таланты — 79 ⭐"),
-        ("strong_weak",   "⚖️ Сильная/слабая сторона — 49 ⭐"),
-        ("main_fear",     "😨 Главный страх — 49 ⭐"),
-        ("karma",         "🔴 Кармический долг — 99 ⭐"),
-        ("forecast_2026", "🗓 Прогноз на 2026 год — 149 ⭐"),
-    ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def section_money_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
-    items = [
-        ("finance",       "💹 Финансовый прогноз — 99 ⭐"),
-        ("wealth_blocks", "🚧 Блоки богатства — 149 ⭐"),
-        ("freedom_path",  "🗺 Путь к финансовой свободе — 149 ⭐"),
-        ("calling",       "🌠 Призвание — 79 ⭐"),
-        ("promotion",     "📈 Повышение — 99 ⭐"),
-        ("own_business",  "🏢 Свой бизнес — 99 ⭐"),
-        ("career",        "💼 Карьерный путь — 79 ⭐"),
-        ("money",         "💰 Денежный код — 79 ⭐"),
-        ("days",          "🌙 Сильные и слабые дни — 79 ⭐"),
-    ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def section_love_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
-    items = [
-        ("compat",   "💑 Совместимость двух людей — 99 ⭐"),
-        ("when",     "💘 Когда встретишь того самого — 79 ⭐"),
-        ("portrait", "💍 Портрет идеального партнёра — 79 ⭐"),
-        ("unlucky",  "💔 Почему не везёт в любви — 49 ⭐"),
-        ("ex",       "💔 Вернётся ли бывший — 49 ⭐"),
-        ("cold",     "❄️ Почему он охладел — 49 ⭐"),
-        ("toxic",    "☠️ Токсичная связь — 79 ⭐"),
-        ("lonely",   "😔 Почему ты одинока — 49 ⭐"),
-        ("breakup",  "💔 Разбор после расставания — 79 ⭐"),
-    ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def section_health_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
-    items = [
-        ("health_code",   "💚 Код здоровья — 79 ⭐"),
-        ("energy_drain",  "⚡ Что крадёт энергию — 49 ⭐"),
-        ("body_message",  "🫀 Послания тела — 49 ⭐"),
-        ("stress_number", "😤 Число стресса — 49 ⭐"),
-        ("intuition",     "🔮 Интуиция и внутренний голос — 79 ⭐"),
-    ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def section_past_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
-    items = [
-        ("past_life",     "📜 Прошлые жизни — 99 ⭐"),
-        ("future_portal", "🌟 Прогноз на 3 года — 149 ⭐"),
-        ("turning_point", "🔄 Поворотные точки судьбы — 79 ⭐"),
-        ("ancestor_code", "🌳 Родовой код — 99 ⭐"),
-    ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def my_readings_menu(user: dict) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", [])
-    buttons   = []
-    for key in purchased:
-        title = TITLES.get(key, key)
-        buttons.append([InlineKeyboardButton(
-            text=f"✅ {title}",
-            callback_data=f"buy_{key}"
-        )])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
-    buttons     = []
-    suggestions = UPSELLS.get(key, ())
-    for s in suggestions:
-        if s not in user.get("purchased", []):
-            title = TITLES.get(s, s)
-            price = PRICES.get(s, 49)
-            buttons.append([InlineKeyboardButton(
-                text=f"{title} — {price} ⭐",
-                callback_data=f"buy_{s}"
-            )])
-    reviews_left = user.get("reviews_left", [])
-    if key not in reviews_left:
-        buttons.append([InlineKeyboardButton(
-            text="😍 Оставить отзыв",
-            callback_data=f"leave_review_{key}"
-        )])
-    buttons.append([InlineKeyboardButton(text="🔮 Все разборы", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def retry_menu(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Попробовать ещё раз", callback_data=f"buy_{key}")],
-        [InlineKeyboardButton(text="🔮 Меню", callback_data="show_menu")],
-    ])
-
-def coupon_razboy_menu(code: str, user: dict = None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons   = []
-    for key, title in PAID_RAZBORY.items():
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(
-            text=prefix + title,
-            callback_data=f"coupon::{code}::{key}"
-        )])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def notif_off_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔕 Отключить уведомления", callback_data="notif_off")],
-        [InlineKeyboardButton(text="🔮 Меню разборов",          callback_data="show_menu")],
-    ])
-
-# ─── КУПОНЫ ──────────────────────────────────────────────────────────────────
-async def create_coupon(code: str, max_uses: int = 1) -> str:
-    expires = utc_now() + timedelta(hours=48)
-    try:
-        await db_pool.execute(
-            'INSERT INTO coupons (code, expires_at, max_uses) VALUES ($1, $2, $3)',
-            code.upper(), expires, max_uses
-        )
-        return 'ok'
-    except asyncpg.UniqueViolationError:
-        return 'exists'
-    except Exception as e:
-        logging.error(f"create_coupon error: {e}", exc_info=True)
-        return 'error'
-
-async def use_coupon(code: str, user_id: int) -> str:
-    row = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code.upper())
-    if not row:
-        return 'not_found'
-    if row['expires_at'] and row['expires_at'] < utc_now():
-        return 'expired'
-    if row['uses_count'] >= row['max_uses']:
-        return 'limit'
-    updated = await db_pool.fetchval(
-        '''UPDATE coupons SET uses_count = uses_count + 1
-           WHERE code = $1 AND uses_count < max_uses
-           RETURNING uses_count''',
-        code.upper()
-    )
-    if updated is None:
-        return 'limit'
-    await db_pool.execute(
-        'INSERT INTO coupon_uses (code, user_id) VALUES ($1, $2)',
-        code.upper(), user_id
-    )
-    return 'ok'
-
-async def coupon_remaining(code: str) -> int:
-    row = await db_pool.fetchrow('SELECT max_uses, uses_count FROM coupons WHERE code = $1', code.upper())
-    if not row:
-        return 0
-    return max(0, row['max_uses'] - row['uses_count'])
-
 # ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
 @dp.message(Command("notifications"), StateFilter("*"))
 async def notifications_cmd(message: Message, state: FSMContext):
     await state.clear()
-    user = await get_user(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
     notif_on = user.get("notifications", True)
     status = "включены 🔔" if notif_on else "отключены 🔕"
     await message.answer(
@@ -1534,65 +156,61 @@ async def notifications_cmd(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "notif_off")
 async def notif_off(callback: CallbackQuery):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     user["notifications"] = False
-    await save_user(callback.from_user.id, user)
+    await db.save_user(callback.from_user.id, user)
     await callback.answer("🔕 Уведомления отключены", show_alert=True)
     await callback.message.answer(
         "🔕 Утренние уведомления отключены.\n\nВключить обратно: /notifications",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")]
-        ])
+        reply_markup=notif_off_menu()
     )
 
 @dp.callback_query(F.data == "notif_on")
 async def notif_on(callback: CallbackQuery):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     user["notifications"] = True
-    await save_user(callback.from_user.id, user)
+    await db.save_user(callback.from_user.id, user)
     await callback.answer("🔔 Уведомления включены!", show_alert=True)
     await callback.message.answer(
         "🔔 Утренние уведомления включены!\n\nКаждое утро буду присылать нумерологический прогноз 🌅",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")]
-        ])
+        reply_markup=notif_off_menu()
     )
 
 # ─── РАЗДЕЛЫ МЕНЮ ────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "section_destiny")
 async def section_destiny(callback: CallbackQuery):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     await callback.message.answer("🔮 Судьба и личность — выбери разбор:", reply_markup=section_destiny_menu(user))
     await callback.answer()
 
 @dp.callback_query(F.data == "section_money")
 async def section_money(callback: CallbackQuery):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     await callback.message.answer("💰 Деньги и карьера — выбери разбор:", reply_markup=section_money_menu(user))
     await callback.answer()
 
 @dp.callback_query(F.data == "section_love")
 async def section_love(callback: CallbackQuery):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     await callback.message.answer("💑 Любовь и отношения — выбери разбор:", reply_markup=section_love_menu(user))
     await callback.answer()
 
 @dp.callback_query(F.data == "section_health")
 async def section_health(callback: CallbackQuery):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     await callback.message.answer("🌙 Здоровье и энергия — выбери разбор:", reply_markup=section_health_menu(user))
     await callback.answer()
 
 @dp.callback_query(F.data == "section_past")
 async def section_past(callback: CallbackQuery):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     await callback.message.answer("✨ Прошлое и будущее — выбери разбор:", reply_markup=section_past_menu(user))
     await callback.answer()
 
 # ─── МОИ РАЗБОРЫ ─────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "my_readings")
 async def my_readings(callback: CallbackQuery):
-    user      = await get_user(callback.from_user.id)
+    user      = await db.get_user(callback.from_user.id)
     purchased = user.get("purchased", [])
     if not purchased:
         await callback.answer("У тебя пока нет купленных разборов 🔮", show_alert=True)
@@ -1606,7 +224,7 @@ async def my_readings(callback: CallbackQuery):
 # ─── БЕСПЛАТНЫЙ РАЗБОР НА ВЫБОР ─────────────────────────────────────────────
 @dp.callback_query(F.data == "free_choose")
 async def free_choose_handler(callback: CallbackQuery, state: FSMContext):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     if not user["subscribed_channel"]:
         is_sub = await check_subscription(callback.from_user.id)
         if not is_sub:
@@ -1617,7 +235,7 @@ async def free_choose_handler(callback: CallbackQuery, state: FSMContext):
             await callback.answer()
             return
         user["subscribed_channel"] = True
-        await save_user(callback.from_user.id, user)
+        await db.save_user(callback.from_user.id, user)
 
     if user["free_used"]:
         await callback.answer("Бесплатный разбор уже использован 🔮", show_alert=True)
@@ -1639,7 +257,7 @@ async def free_choose_handler(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("free_pick_"))
 async def free_pick_handler(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("free_pick_", "")
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
 
     if user["free_used"]:
         await callback.answer("Бесплатный разбор уже использован!", show_alert=True)
@@ -1650,7 +268,7 @@ async def free_pick_handler(callback: CallbackQuery, state: FSMContext):
         return
 
     user["waiting"] = key
-    await save_user(callback.from_user.id, user)
+    await db.save_user(callback.from_user.id, user)
     await callback.answer()
 
     if key == "compat":
@@ -1664,28 +282,28 @@ async def free_pick_handler(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(Form.waiting_free_date))
 async def handle_free_date(message: Message, state: FSMContext):
-    user = await get_user(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
     text = message.text.strip()
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
     user["free_used"] = True
-    await save_user(message.from_user.id, user)
+    await db.save_user(message.from_user.id, user)
     await _process_date(message, message.from_user.id, user, text, state, is_free=True)
 
 # ─── ОНБОРДИНГ ───────────────────────────────────────────────────────────────
 @dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
     await state.clear()
-    user = await get_user(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
     if not user.get("first_name") and message.from_user.first_name:
         user["first_name"] = message.from_user.first_name
-        await save_user(message.from_user.id, user)
+        await db.save_user(message.from_user.id, user)
     if not user["subscribed_channel"]:
         is_sub = await check_subscription(message.from_user.id)
         if is_sub:
             user["subscribed_channel"] = True
-            await save_user(message.from_user.id, user)
+            await db.save_user(message.from_user.id, user)
     if not user["subscribed_channel"]:
         await message.answer(
             "🔮 Привет! Я Ева — твой личный нумеролог.\n\n"
@@ -1714,13 +332,13 @@ async def start(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, state: FSMContext):
-    user   = await get_user(callback.from_user.id)
+    user   = await db.get_user(callback.from_user.id)
     is_sub = await check_subscription(callback.from_user.id)
     if not is_sub:
         await callback.answer("❌ Ты ещё не подписалась!", show_alert=True)
         return
     user["subscribed_channel"] = True
-    await save_user(callback.from_user.id, user)
+    await db.save_user(callback.from_user.id, user)
     await callback.answer()
     if user["free_used"]:
         await callback.message.answer("✅ Подписка подтверждена!", reply_markup=main_menu(user))
@@ -1734,9 +352,9 @@ async def handle_name(message: Message, state: FSMContext):
     if len(name) < 2 or len(name) > 30:
         await message.answer("Введи настоящее имя (от 2 до 30 символов) 😊")
         return
-    user = await get_user(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
     user["first_name"] = name
-    await save_user(message.from_user.id, user)
+    await db.save_user(message.from_user.id, user)
 
     if not user.get("free_used"):
         await message.answer(
@@ -1760,13 +378,13 @@ async def handle_birth_date(message: Message, state: FSMContext):
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
-    user   = await get_user(message.from_user.id)
+    user   = await db.get_user(message.from_user.id)
     number = calculate_destiny(text)
     user["birth_date"]     = text
     user["destiny_number"] = number
     user["free_used"]      = True
     user["waiting"]        = None
-    await save_user(message.from_user.id, user)
+    await db.save_user(message.from_user.id, user)
     name = user.get("first_name") or "дорогая"
     await message.answer(f"⏳ Составляю твой разбор, {name}... Подожди немного ✨")
     try:
@@ -1786,7 +404,7 @@ async def handle_birth_date(message: Message, state: FSMContext):
 @dp.message(Command("menu"), StateFilter("*"))
 async def menu_cmd(message: Message, state: FSMContext):
     await state.clear()
-    user = await get_user(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
     await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
 
 @dp.message(Command("promo"), StateFilter("*"))
@@ -1797,7 +415,7 @@ async def promo_cmd(message: Message, state: FSMContext):
         await message.answer("Введи промокод так: /promo КОД")
         return
     code = parts[1].upper()
-    row  = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
+    row  = await db.db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
     if not row:
         await message.answer("❌ Такого промокода не существует.")
         return
@@ -1808,7 +426,7 @@ async def promo_cmd(message: Message, state: FSMContext):
     if remaining <= 0:
         await message.answer("❌ Этот промокод исчерпан — все использования закончились.")
         return
-    user = await get_user(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
     await message.answer(
         f"🎁 Промокод активирован! Доступно бесплатных разборов: {remaining}.\n\n"
         "Выбирай из списка — после каждого выбора будет списываться одно "
@@ -1839,7 +457,7 @@ async def coupon_cmd(message: Message, state: FSMContext):
         except ValueError:
             await message.answer("❌ Число использований должно быть целым числом.\nПример: /coupon FRIEND20 20")
             return
-    result = await create_coupon(code, max_uses)
+    result = await db.create_coupon(code, max_uses)
     if result == 'ok':
         expires  = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
         uses_str = f"{max_uses} раз" if max_uses > 1 else "1 раз"
@@ -1866,11 +484,11 @@ async def coupon_stat_cmd(message: Message, state: FSMContext):
         await message.answer("Использование: /coupon_stat КОД")
         return
     code = parts[1].upper()
-    row  = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
+    row  = await db.db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
     if not row:
         await message.answer(f"❌ Промокод {code} не найден.")
         return
-    uses = await db_pool.fetch(
+    uses = await db.db_pool.fetch(
         'SELECT user_id, used_at FROM coupon_uses WHERE code = $1 ORDER BY used_at DESC LIMIT 20',
         code
     )
@@ -1891,13 +509,13 @@ async def coupon_stat_cmd(message: Message, state: FSMContext):
 async def admin_panel(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    total         = await db_pool.fetchval('SELECT COUNT(*) FROM users')
-    free_used     = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE free_used = TRUE')
-    reviews       = await db_pool.fetchval("SELECT COUNT(*) FROM users WHERE reviews_left != '[]'")
-    notif_on      = await db_pool.fetchval('SELECT COUNT(*) FROM users WHERE notifications = TRUE')
-    coupons_total = await db_pool.fetchval('SELECT COUNT(*) FROM coupons')
-    coupons_used  = await db_pool.fetchval('SELECT COUNT(*) FROM coupon_uses')
-    rows = await db_pool.fetch('SELECT purchased FROM users WHERE user_id != $1', ADMIN_ID)
+    total         = await db.db_pool.fetchval('SELECT COUNT(*) FROM users')
+    free_used     = await db.db_pool.fetchval('SELECT COUNT(*) FROM users WHERE free_used = TRUE')
+    reviews       = await db.db_pool.fetchval("SELECT COUNT(*) FROM users WHERE reviews_left != '[]'")
+    notif_on      = await db.db_pool.fetchval('SELECT COUNT(*) FROM users WHERE notifications = TRUE')
+    coupons_total = await db.db_pool.fetchval('SELECT COUNT(*) FROM coupons')
+    coupons_used  = await db.db_pool.fetchval('SELECT COUNT(*) FROM coupon_uses')
+    rows = await db.db_pool.fetch('SELECT purchased FROM users WHERE user_id != $1', ADMIN_ID)
     total_purch = 0
     razbory_cnt = {}
     bought      = 0
@@ -1934,14 +552,14 @@ async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка промокода.", show_alert=True)
         return
 
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
 
     if key in user["purchased"]:
         user["waiting"] = key
-        await save_user(callback.from_user.id, user)
+        await db.save_user(callback.from_user.id, user)
         await callback.answer("Этот разбор уже у тебя — пришлю заново 🔮")
     else:
-        result = await use_coupon(code, callback.from_user.id)
+        result = await db.use_coupon(code, callback.from_user.id)
         if result == 'not_found':
             await callback.answer("❌ Промокод не найден.", show_alert=True)
             return
@@ -1953,8 +571,8 @@ async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
             return
         user["purchased"].append(key)
         user["waiting"] = key
-        await save_user(callback.from_user.id, user)
-        remaining = await coupon_remaining(code)
+        await db.save_user(callback.from_user.id, user)
+        remaining = await db.coupon_remaining(code)
         await callback.answer(f"✅ Добавлено! Осталось использований промокода: {remaining}")
 
     if key == "compat":
@@ -1985,7 +603,7 @@ async def _ask_date(message: Message, user: dict, key: str | None = None):
 
 @dp.callback_query(F.data == "use_my_date")
 async def use_my_date(callback: CallbackQuery, state: FSMContext):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     await callback.answer()
     await _process_date(callback.message, callback.from_user.id, user, user["birth_date"], state)
 
@@ -2014,10 +632,10 @@ async def send_invoice(chat_id, title, description, payload, amount):
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_handler(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("buy_", "")
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     if key in user["purchased"]:
         user["waiting"] = key
-        await save_user(callback.from_user.id, user)
+        await db.save_user(callback.from_user.id, user)
         await callback.answer()
         if key == "compat":
             await callback.message.answer("💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
@@ -2038,12 +656,12 @@ async def pre_checkout(query: PreCheckoutQuery):
 
 @dp.message(F.successful_payment)
 async def successful_payment(message: Message, state: FSMContext):
-    user    = await get_user(message.from_user.id)
+    user    = await db.get_user(message.from_user.id)
     payload = message.successful_payment.invoice_payload
     if payload not in user["purchased"]:
         user["purchased"].append(payload)
     user["waiting"] = payload
-    await save_user(message.from_user.id, user)
+    await db.save_user(message.from_user.id, user)
     if payload == "compat":
         await message.answer("✅ Оплата прошла! Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
         await state.set_state(Form.waiting_second_date)
@@ -2064,7 +682,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     if not user.get("birth_date"):
         user["birth_date"]     = date_str
         user["destiny_number"] = number
-        await save_user(user_id, user)
+        await db.save_user(user_id, user)
 
     wait_msg = await message.answer(f"⏳ Ева составляет разбор для {name}... Подожди немного ✨")
 
@@ -2115,7 +733,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
 
 @dp.message(StateFilter(Form.waiting_second_date))
 async def handle_two_dates(message: Message, state: FSMContext):
-    user  = await get_user(message.from_user.id)
+    user  = await db.get_user(message.from_user.id)
     text  = message.text.strip()
     if "," not in text:
         await message.answer("❌ Введи две даты через запятую.\nНапример: 15.03.1995, 22.07.1998")
@@ -2171,7 +789,7 @@ async def handle_two_dates(message: Message, state: FSMContext):
 
 @dp.message(StateFilter(Form.waiting_date))
 async def handle_date(message: Message, state: FSMContext):
-    user = await get_user(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
     text = message.text.strip()
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
@@ -2182,7 +800,7 @@ async def handle_date(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("leave_review_"))
 async def leave_review(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("leave_review_", "")
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     if key not in user.get("purchased", []):
         await callback.answer("Отзыв можно оставить только после покупки!", show_alert=True)
         return
@@ -2196,7 +814,7 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(Form.waiting_review))
 async def handle_review(message: Message, state: FSMContext):
-    user        = await get_user(message.from_user.id)
+    user        = await db.get_user(message.from_user.id)
     name        = user.get("first_name") or "Аноним"
     data        = await state.get_data()
     review_key  = data.get("review_key", "")
@@ -2207,7 +825,7 @@ async def handle_review(message: Message, state: FSMContext):
         reviews_left.append(review_key)
     user["reviews_left"] = reviews_left
     user["review_left"]  = True
-    await save_user(message.from_user.id, user)
+    await db.save_user(message.from_user.id, user)
     try:
         await bot.send_message(REVIEWS_CHANNEL, review_text)
         await message.answer("✅ Спасибо! Твой отзыв опубликован 💫")
@@ -2218,7 +836,7 @@ async def handle_review(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "show_menu")
 async def show_menu(callback: CallbackQuery):
-    user = await get_user(callback.from_user.id)
+    user = await db.get_user(callback.from_user.id)
     await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
     await callback.answer()
 
@@ -2232,7 +850,7 @@ async def send_daily_horoscope():
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
         try:
-            rows = await db_pool.fetch(
+            rows = await db.db_pool.fetch(
                 'SELECT user_id, first_name, destiny_number FROM users '
                 'WHERE birth_date IS NOT NULL AND destiny_number IS NOT NULL '
                 'AND notifications = TRUE'
@@ -2246,7 +864,7 @@ async def send_daily_horoscope():
                     await bot.send_message(row['user_id'], text, reply_markup=notif_off_menu())
                     await asyncio.sleep(0.05)
                 except TelegramForbiddenError:
-                    await db_pool.execute(
+                    await db.db_pool.execute(
                         'UPDATE users SET notifications = FALSE WHERE user_id = $1',
                         row['user_id']
                     )
@@ -2303,7 +921,7 @@ async def run_web():
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 async def main():
-    await init_db()
+    await db.init_db(DATABASE_URL)
     asyncio.create_task(run_web())
     asyncio.create_task(send_daily_horoscope())
     asyncio.create_task(send_daily_channel_post())
