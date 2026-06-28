@@ -594,7 +594,12 @@ async def _ask_date(message: Message, user: dict, key: str | None = None):
 async def use_my_date(callback: CallbackQuery, state: FSMContext):
     user = await db.get_user(callback.from_user.id)
     await callback.answer()
-    await _process_date(callback.message, callback.from_user.id, user, user["birth_date"], state)
+    current_state = await state.get_state()
+    is_free = (current_state == Form.waiting_free_date.state)
+    if is_free and not user["free_used"]:
+        user["free_used"] = True
+        await db.save_user(callback.from_user.id, user)
+    await _process_date(callback.message, callback.from_user.id, user, user["birth_date"], state, is_free=is_free)
 
 @dp.callback_query(F.data == "use_new_date")
 async def use_new_date(callback: CallbackQuery, state: FSMContext):
@@ -716,6 +721,9 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             for row in kb.inline_keyboard for btn in row
         )
         upsell_text = "✨ Тебе также может подойти 👇" if has_upsells else "🔮 Хочешь ещё разбор?"
+        # сбрасываем waiting чтобы повторный use_my_date не запустил этот же разбор
+        user["waiting"] = None
+        await db.save_user(user_id, user)
         await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
     except Exception as e:
@@ -778,6 +786,8 @@ async def handle_two_dates(message: Message, state: FSMContext):
             for row in kb.inline_keyboard for btn in row
         )
         upsell_text = "✨ Тебе также может подойти 👇" if has_upsells else "🔮 Хочешь ещё разбор?"
+        user["waiting"] = None
+        await db.save_user(message.from_user.id, user)
         await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
     except Exception as e:
@@ -880,6 +890,11 @@ async def send_daily_horoscope():
 
 async def send_daily_channel_post():
     """UTC 7:00 = Москва 10:00 — пост в канал."""
+    _CHANNEL_FALLBACK = [
+        "🔮 Сегодня особый день для тех, кто слушает своё сердце.\n\nЧисла говорят: доверяй интуиции — она не подведёт. Сделай один шаг к тому, что давно откладывала. Именно сегодня он будет правильным.\n\n✨ Узнайте свой личный разбор → @nnumerology_bot",
+        "🌟 День, который напоминает: ты сильнее, чем думаешь.\n\nЧисловая энергия сегодня поддерживает смелые решения. Не жди идеального момента — он уже здесь.\n\n✨ Узнайте свой личный разбор → @nnumerology_bot",
+        "💫 Числа сегодня говорят о переменах к лучшему.\n\nЕсли что-то давно требует твоего внимания — самое время действовать. Вселенная поддерживает тех, кто делает первый шаг.\n\n✨ Узнайте свой личный разбор → @nnumerology_bot",
+    ]
     while True:
         now    = utc_now()
         target = now.replace(hour=7, minute=0, second=0, microsecond=0)
@@ -897,14 +912,18 @@ async def send_daily_channel_post():
                 "Не используй фамильярные обращения. "
                 "Пиши красиво, с эмодзи, атмосферно. 150-200 слов. Только кириллица."
             )
-            post = await ask_ai(prompt)
-            await bot.send_message(
-                CHANNEL,
-                f"🔮 Нумерология дня — {today.strftime('%d.%m.%Y')}\n"
-                f"Число дня: {day_num}\n\n"
-                f"{post}\n\n"
-                f"✨ Узнайте свой личный разбор → @nnumerology_bot"
-            )
+            try:
+                post = await ask_ai(prompt)
+                text = (
+                    f"🔮 Нумерология дня — {today.strftime('%d.%m.%Y')}\n"
+                    f"Число дня: {day_num}\n\n"
+                    f"{post}\n\n"
+                    f"✨ Узнайте свой личный разбор → @nnumerology_bot"
+                )
+            except Exception as ai_err:
+                logging.warning(f"Channel post AI failed, using fallback: {ai_err}")
+                text = random.choice(_CHANNEL_FALLBACK)
+            await bot.send_message(CHANNEL, text)
         except Exception as e:
             logging.error(f"Channel post error: {e}")
         await asyncio.sleep(60)
