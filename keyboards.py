@@ -206,6 +206,7 @@ def coupon_razboy_menu(code: str, user: dict = None) -> InlineKeyboardMarkup:
             text=prefix + title,
             callback_data=f"coupon::{code}::{key}"
         )])
+    buttons.append([InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def notif_off_menu() -> InlineKeyboardMarkup:
