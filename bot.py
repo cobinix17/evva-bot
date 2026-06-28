@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 import asyncio
@@ -119,6 +120,14 @@ class Form(StatesGroup):
     waiting_review      = State()
     waiting_free_date   = State()
 
+# ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
+# Один платный разбор за раз на пользователя. Защищает от параллельного
+# запуска двух генераций (юзер во время 90-сек ожидания уходит в меню и
+# запускает второй разбор) — это удваивает расход токенов и рассинхронизирует
+# поле waiting. Храним в памяти процесса: бот однопроцессный (один polling),
+# поэтому простого set достаточно — внешний стор (Redis) не нужен.
+_generating: set[int] = set()
+
 # ─── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────────────────────────────────────
 async def check_subscription(user_id: int) -> bool:
     if user_id == ADMIN_ID:
@@ -140,6 +149,17 @@ def build_prompt(key: str, **kwargs) -> str:
         logging.error(f"build_prompt: промпт не найден для ключа '{key}'")
         raise ValueError(f"Промпт '{key}' не существует в PROMPTS")
     return template.format(**kwargs)
+
+_NAME_ALLOWED_RE = re.compile(r"[^а-яёА-ЯЁa-zA-Z\s\-]")
+
+def sanitize_name(raw: str) -> str:
+    """Имя пользователя идёт прямо в промпт через {name}. Без очистки
+    юзер может ввести 'имя' с инструкциями для ИИ (prompt injection) или
+    переводами строк, ломающими структуру промпта. Оставляем только буквы,
+    пробел и дефис, схлопываем пробелы, режем длину."""
+    cleaned = _NAME_ALLOWED_RE.sub("", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:30]
 
 # ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
 @dp.message(Command("notifications"), StateFilter("*"))
@@ -296,8 +316,10 @@ async def start(message: Message, state: FSMContext):
     await state.clear()
     user = await db.get_user(message.from_user.id)
     if not user.get("first_name") and message.from_user.first_name:
-        user["first_name"] = message.from_user.first_name
-        await db.save_user(message.from_user.id, user)
+        tg_name = sanitize_name(message.from_user.first_name)
+        if len(tg_name) >= 2:
+            user["first_name"] = tg_name
+            await db.save_user(message.from_user.id, user)
     if not user["subscribed_channel"]:
         is_sub = await check_subscription(message.from_user.id)
         if is_sub:
@@ -347,9 +369,9 @@ async def check_sub(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(Form.waiting_name))
 async def handle_name(message: Message, state: FSMContext):
-    name = message.text.strip()
+    name = sanitize_name(message.text or "")
     if len(name) < 2 or len(name) > 30:
-        await message.answer("Введи настоящее имя (от 2 до 30 символов) 😊")
+        await message.answer("Введи настоящее имя — только буквы, от 2 до 30 символов 😊")
         return
     user = await db.get_user(message.from_user.id)
     user["first_name"] = name
@@ -674,6 +696,13 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu(user))
         await state.clear()
         return
+
+    # Замок: не запускаем вторую генерацию пока идёт первая
+    if user_id in _generating:
+        await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
+        return
+    _generating.add(user_id)
+
     if not user.get("birth_date"):
         user["birth_date"]     = date_str
         user["destiny_number"] = number
@@ -694,11 +723,20 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
 
     intermediate_task = asyncio.create_task(send_intermediate())
 
+    async def stop_intermediate():
+        """Отменяет промежуточное сообщение и ДОЖИДАЕТСЯ завершения,
+        чтобы edit_message_text не сработал уже после готового разбора."""
+        intermediate_task.cancel()
+        try:
+            await intermediate_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
     try:
         context = build_numerology_context(name, date_str)
         prompt  = build_prompt(waiting, name=name, context=context, date=date_str)
         answer  = await ask_ai(prompt)
-        intermediate_task.cancel()
+        await stop_intermediate()
 
         title = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
@@ -727,13 +765,15 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
     except Exception as e:
-        intermediate_task.cancel()
+        await stop_intermediate()
         logging.error(f"Date handler error [{waiting}]: {e}", exc_info=True)
         await message.answer(
             "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
             reply_markup=retry_menu(waiting)
         )
         await state.clear()
+    finally:
+        _generating.discard(user_id)
 
 @dp.message(StateFilter(Form.waiting_second_date))
 async def handle_two_dates(message: Message, state: FSMContext):
@@ -746,7 +786,13 @@ async def handle_two_dates(message: Message, state: FSMContext):
     if len(parts) != 2 or not all(is_valid_date(p) for p in parts):
         await message.answer("❌ Неверный формат. Используй ДД.ММ.ГГГГ, ДД.ММ.ГГГГ")
         return
-    name = user.get("first_name") or "дорогая"
+    name    = user.get("first_name") or "дорогая"
+    user_id = message.from_user.id
+
+    if user_id in _generating:
+        await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
+        return
+    _generating.add(user_id)
 
     wait_msg = await message.answer("⏳ Ева составляет разбор совместимости...")
 
@@ -763,13 +809,20 @@ async def handle_two_dates(message: Message, state: FSMContext):
 
     intermediate_task = asyncio.create_task(send_intermediate())
 
+    async def stop_intermediate():
+        intermediate_task.cancel()
+        try:
+            await intermediate_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
     try:
         n1      = calculate_destiny(parts[0])
         n2      = calculate_destiny(parts[1])
         context = build_numerology_context(name, parts[0])
         prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
         answer  = await ask_ai(prompt)
-        intermediate_task.cancel()
+        await stop_intermediate()
 
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
 
@@ -787,17 +840,19 @@ async def handle_two_dates(message: Message, state: FSMContext):
         )
         upsell_text = "✨ Тебе также может подойти 👇" if has_upsells else "🔮 Хочешь ещё разбор?"
         user["waiting"] = None
-        await db.save_user(message.from_user.id, user)
+        await db.save_user(user_id, user)
         await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
     except Exception as e:
-        intermediate_task.cancel()
+        await stop_intermediate()
         logging.error(f"Compat error: {e}", exc_info=True)
         await message.answer(
             "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
             reply_markup=retry_menu("compat")
         )
         await state.clear()
+    finally:
+        _generating.discard(user_id)
 
 @dp.message(StateFilter(Form.waiting_date))
 async def handle_date(message: Message, state: FSMContext):
