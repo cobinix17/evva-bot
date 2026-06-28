@@ -7,9 +7,7 @@ from datetime import timedelta, datetime, timezone
 
 import asyncpg
 
-from config import PAID_RAZBORY
-
-ADMIN_ID = 5854618444
+from config import PAID_RAZBORY, ADMIN_ID
 
 db_pool = None
 
