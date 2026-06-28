@@ -17,11 +17,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
-from readings import MATRIX_LITE, PROMPTS
+from readings import PROMPTS
 from broadcasts import MORNING
 
 import db
-from config import TITLES, PRICES, PDF_KEYS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS
+from config import TITLES, PRICES, PDF_KEYS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, ADMIN_ID
 from ai import ask_ai
 from pdf import generate_pdf
 from numerology import (
@@ -48,7 +48,6 @@ if not any([os.getenv("CEREBRAS_API_KEY"), os.getenv("GROQ_API_KEY"), os.getenv(
 
 CHANNEL         = "@eva_numerologg"
 REVIEWS_CHANNEL = "@eva_numerolog_otz"
-ADMIN_ID        = 5854618444
 
 logging.basicConfig(level=logging.INFO)
 # fontTools.subset выводит десятки строк уровня INFO на каждую вставку шрифта
@@ -374,6 +373,10 @@ async def handle_name(message: Message, state: FSMContext):
 
 @dp.message(StateFilter(Form.waiting_birth_date))
 async def handle_birth_date(message: Message, state: FSMContext):
+    """Запасной хендлер — сохраняет дату и ведёт в меню.
+    В основном флоу дата вводится уже в _ask_date/_process_date,
+    этот стейт может остаться только если пользователь добрался
+    сюда нестандартным путём."""
     text = message.text.strip()
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
@@ -382,23 +385,9 @@ async def handle_birth_date(message: Message, state: FSMContext):
     number = calculate_destiny(text)
     user["birth_date"]     = text
     user["destiny_number"] = number
-    user["free_used"]      = True
-    user["waiting"]        = None
     await db.save_user(message.from_user.id, user)
-    name = user.get("first_name") or "дорогая"
-    await message.answer(f"⏳ Составляю твой разбор, {name}... Подожди немного ✨")
-    try:
-        template = MATRIX_LITE.get(number, MATRIX_LITE.get(9, ""))
-        answer   = template.format(name=name)
-        await send_long(message.chat.id, f"💫 Матрица судьбы\nЧисло судьбы: {number}\n\n{answer}")
-        await message.answer(
-            "✨ Это был бесплатный разбор!\n\nВыбери полный разбор и узнай всё о своей судьбе 🔮",
-            reply_markup=main_menu(user)
-        )
-    except Exception as e:
-        logging.error(f"Onboarding error: {e}", exc_info=True)
-        await message.answer("❌ Произошла ошибка, попробуй ещё раз /start")
     await state.clear()
+    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
 
 # ─── КОМАНДЫ ─────────────────────────────────────────────────────────────────
 @dp.message(Command("menu"), StateFilter("*"))
@@ -647,7 +636,8 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
     if key in PAID_RAZBORY:
         price = PRICES.get(key, 49)
         title = PAID_RAZBORY[key]
-        await send_invoice(callback.message.chat.id, title, TITLES.get(key, title), key, price)
+        desc  = RAZBOR_DESCRIPTIONS.get(key, title)
+        await send_invoice(callback.message.chat.id, title, desc, key, price)
     await callback.answer()
 
 @dp.pre_checkout_query()
@@ -720,7 +710,13 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             except Exception as pdf_err:
                 logging.warning(f"PDF generation failed for {waiting}: {pdf_err}")
 
-        await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu(waiting, user))
+        kb = upsell_menu(waiting, user)
+        has_upsells = any(
+            btn.callback_data and btn.callback_data.startswith("buy_")
+            for row in kb.inline_keyboard for btn in row
+        )
+        upsell_text = "✨ Тебе также может подойти 👇" if has_upsells else "🔮 Хочешь ещё разбор?"
+        await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
     except Exception as e:
         intermediate_task.cancel()
@@ -776,7 +772,13 @@ async def handle_two_dates(message: Message, state: FSMContext):
         except Exception as pdf_err:
             logging.warning(f"PDF compat error: {pdf_err}")
 
-        await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("compat", user))
+        kb = upsell_menu("compat", user)
+        has_upsells = any(
+            btn.callback_data and btn.callback_data.startswith("buy_")
+            for row in kb.inline_keyboard for btn in row
+        )
+        upsell_text = "✨ Тебе также может подойти 👇" if has_upsells else "🔮 Хочешь ещё разбор?"
+        await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
     except Exception as e:
         intermediate_task.cancel()
@@ -929,4 +931,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
- 
