@@ -193,27 +193,26 @@ def _dedupe_sections(text: str) -> str:
     _strip_preamble не лечит это: он ищет повтор структуры В НАЧАЛЕ текста
     (план перед ответом), а это повтор В СЕРЕДИНЕ/КОНЦЕ уже сданного
     содержательного ответа. Оставляем только ПЕРВОЕ появление каждого
-    emoji-раздела — от его заголовка до начала следующего заголовка
-    (любого) — и отбрасываем повторные появления того же раздела целиком."""
+    раздела — сравниваем по полному заголовку (strip), не только по emoji,
+    чтобы два разных блока с одним emoji (💔 у unlucky и ex) не склеивались."""
     lines = text.split('\n')
     n     = len(lines)
 
     section_starts = []
     for i, line in enumerate(lines):
-        emoji = _header_emoji_of(line.strip())
-        if emoji:
-            section_starts.append((i, emoji))
+        if _header_emoji_of(line.strip()):
+            section_starts.append((i, line.strip()))   # полный заголовок
 
     if not section_starts:
         return text
 
-    seen_emoji  = set()
-    keep_ranges = []
-    for idx, (start_line, emoji) in enumerate(section_starts):
+    seen_headings = set()
+    keep_ranges   = []
+    for idx, (start_line, heading) in enumerate(section_starts):
         end_line = section_starts[idx + 1][0] if idx + 1 < len(section_starts) else n
-        if emoji in seen_emoji:
+        if heading in seen_headings:
             continue
-        seen_emoji.add(emoji)
+        seen_headings.add(heading)
         keep_ranges.append((start_line, end_line))
 
     result_lines = lines[:section_starts[0][0]]
