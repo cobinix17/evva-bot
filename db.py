@@ -161,3 +161,4 @@ async def coupon_remaining(code: str) -> int:
     if not row:
         return 0
     return max(0, row['max_uses'] - row['uses_count'])
+ 
