@@ -346,9 +346,8 @@ async def _try_cerebras(prompt: str) -> str | None:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": prompt},
         ],
-        "max_tokens":       8000,
-        "temperature":      1.0,
-        "reasoning_effort": "high",
+        "max_tokens":  8000,
+        "temperature": 0.8,
     }
     try:
         async with httpx.AsyncClient() as client:
@@ -356,7 +355,10 @@ async def _try_cerebras(prompt: str) -> str | None:
             if r.status_code == 429:
                 logging.warning("Cerebras 429 rate limit"); return None
             r.raise_for_status()
-            raw    = r.json()["choices"][0]["message"]["content"]
+            msg    = r.json()["choices"][0]["message"]
+            raw    = msg.get("content") or ""
+            if not raw:
+                logging.warning("Cerebras — пустой content в ответе"); return None
             result = _finalize(raw, "Cerebras")
             if result: logging.info("Cerebras ответил успешно")
             return result
@@ -379,7 +381,7 @@ async def _try_groq(prompt: str) -> str | None:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
                     ],
-                    "max_tokens": 8000,
+                    "max_tokens": 4096,
                 }
                 async with httpx.AsyncClient() as client:
                     r = await client.post(url, headers=headers, json=data, timeout=45)
@@ -418,7 +420,7 @@ async def _try_openrouter(prompt: str) -> str | None:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": prompt},
         ],
-        "max_tokens":  8000,
+        "max_tokens":  6000,
         "temperature": 0.7,
     }
     try:
