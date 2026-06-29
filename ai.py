@@ -1,4 +1,4 @@
-# ai.py — ИИ-провайдеры: Cerebras → Groq → OpenRouter
+# ai.py — ИИ-провайдеры: OpenRouter → Cerebras → Groq
 # Синхронизировано с актуальным bot.py. Самодостаточный модуль: не импортирует
 # ничего из bot.py/config.py, держит свои копии HEADER_EMOJI и хелперов
 # постобработки текста — так модуль можно использовать независимо.
@@ -61,9 +61,9 @@ SYSTEM_PROMPT = (
 )
 
 # ── ПРОВАЙДЕРЫ ────────────────────────────────────────────────────────────────
-# Cerebras — основной, быстрый бесплатный тир, отлично держит русский язык
-# Groq — резерв, бесплатный но с жёсткими rate limits
-# OpenRouter — последний рубеж, платный по токенам но с авто-роутингом
+# OpenRouter — основной, платный, лучшее качество, Claude Haiku приоритет
+# Cerebras — резерв, быстрый бесплатный тир
+# Groq — последний рубеж, бесплатный но с жёсткими rate limits
 
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 CEREBRAS_MODEL   = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
@@ -77,13 +77,11 @@ GROQ_MODELS  = [
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODELS  = [
-    "meta-llama/llama-3.3-70b-instruct",
-    "google/gemini-flash-1.5",
+    "anthropic/claude-haiku-4-5",
     "deepseek/deepseek-chat",
+    "meta-llama/llama-3.3-70b-instruct",
     "mistralai/mistral-small-3.1-24b-instruct",
     "qwen/qwen-2.5-72b-instruct",
-    "microsoft/phi-4",
-    "google/gemini-flash-1.5-8b",
 ]
 
 MAX_FOREIGN_RATIO = 0.03
@@ -451,9 +449,9 @@ async def ask_ai(prompt: str) -> str:
     структура получается полной. Если все варианты неполные — отдаётся
     лучший доступный результат, а не отказ."""
     providers = [
+        ("OpenRouter", _try_openrouter),
         ("Cerebras",   _try_cerebras),
         ("Groq",       _try_groq),
-        ("OpenRouter", _try_openrouter),
     ]
     last_incomplete: str | None = None
 
