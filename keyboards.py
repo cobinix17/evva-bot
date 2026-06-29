@@ -53,6 +53,10 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="🌙 Здоровье и энергия",   callback_data="section_health")])
     buttons.append([InlineKeyboardButton(text="✨ Прошлое и будущее",    callback_data="section_past")])
     buttons.append([InlineKeyboardButton(
+        text="👥 Пригласи подругу — получи ⭐",
+        callback_data="ref_promo"
+    )])
+    buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы (за рубли)",
         url=CONTACT_URL
     )])

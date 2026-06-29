@@ -30,7 +30,27 @@ async def init_db(database_url: str):
             waiting            TEXT,
             review_left        BOOLEAN DEFAULT FALSE,
             notifications      BOOLEAN DEFAULT TRUE,
-            reviews_left       TEXT DEFAULT '[]'
+            reviews_left       TEXT DEFAULT '[]',
+            ref_balance        INTEGER DEFAULT 0,
+            referred_by        BIGINT
+        )
+    ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS referrals (
+            id          SERIAL PRIMARY KEY,
+            referrer_id BIGINT NOT NULL,
+            referred_id BIGINT NOT NULL UNIQUE,
+            joined_at   TIMESTAMP DEFAULT NOW()
+        )
+    ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS ref_bonuses (
+            id          SERIAL PRIMARY KEY,
+            user_id     BIGINT NOT NULL,
+            from_user   BIGINT NOT NULL,
+            amount      INTEGER NOT NULL,
+            razbor_key  TEXT,
+            created_at  TIMESTAMP DEFAULT NOW()
         )
     ''')
     await db_pool.execute('''
@@ -54,6 +74,8 @@ async def init_db(database_url: str):
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
         ("reviews_left",  "TEXT DEFAULT '[]'"),
+        ("ref_balance",   "INTEGER DEFAULT 0"),
+        ("referred_by",   "BIGINT"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -103,8 +125,10 @@ async def save_user(user_id: int, user: dict):
             waiting             = $7,
             review_left         = $8,
             notifications       = $9,
-            reviews_left        = $10
-        WHERE user_id = $11
+            reviews_left        = $10,
+            ref_balance         = $11,
+            referred_by         = $12
+        WHERE user_id = $13
     ''',
         user.get('first_name'),
         user['free_used'],
@@ -116,6 +140,8 @@ async def save_user(user_id: int, user: dict):
         user.get('review_left', False),
         user.get('notifications', True),
         json.dumps(user.get('reviews_left', [])),
+        user.get('ref_balance', 0),
+        user.get('referred_by'),
         user_id
     )
 
@@ -155,6 +181,58 @@ async def use_coupon(code: str, user_id: int) -> str:
         code.upper(), user_id
     )
     return 'ok'
+
+# ─── РЕФЕРАЛЫ ────────────────────────────────────────────────────────────────
+async def register_referral(referrer_id: int, referred_id: int):
+    """Записывает реферальную связь если её ещё нет."""
+    try:
+        await db_pool.execute(
+            'INSERT INTO referrals (referrer_id, referred_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            referrer_id, referred_id
+        )
+        await db_pool.execute(
+            'UPDATE users SET referred_by = $1 WHERE user_id = $2 AND referred_by IS NULL',
+            referrer_id, referred_id
+        )
+    except Exception as e:
+        logging.error(f"register_referral error: {e}")
+
+async def add_ref_bonus(referrer_id: int, from_user_id: int, amount: int, razbor_key: str):
+    """Начисляет виртуальные звёзды рефереру и записывает в историю."""
+    await db_pool.execute(
+        'UPDATE users SET ref_balance = ref_balance + $1 WHERE user_id = $2',
+        amount, referrer_id
+    )
+    await db_pool.execute(
+        'INSERT INTO ref_bonuses (user_id, from_user, amount, razbor_key) VALUES ($1, $2, $3, $4)',
+        referrer_id, from_user_id, amount, razbor_key
+    )
+
+async def get_referral_stats(user_id: int) -> dict:
+    """Статистика по рефералам: количество приглашённых, суммарно заработано."""
+    count = await db_pool.fetchval(
+        'SELECT COUNT(*) FROM referrals WHERE referrer_id = $1', user_id
+    )
+    earned = await db_pool.fetchval(
+        'SELECT COALESCE(SUM(amount), 0) FROM ref_bonuses WHERE user_id = $1', user_id
+    )
+    balance = await db_pool.fetchval(
+        'SELECT ref_balance FROM users WHERE user_id = $1', user_id
+    )
+    bonuses = await db_pool.fetch(
+        '''SELECT rb.amount, rb.razbor_key, rb.created_at, u.first_name
+           FROM ref_bonuses rb
+           LEFT JOIN users u ON u.user_id = rb.from_user
+           WHERE rb.user_id = $1
+           ORDER BY rb.created_at DESC LIMIT 10''',
+        user_id
+    )
+    return {
+        'count':   count or 0,
+        'earned':  earned or 0,
+        'balance': balance or 0,
+        'bonuses': bonuses,
+    }
 
 async def coupon_remaining(code: str) -> int:
     row = await db_pool.fetchrow('SELECT max_uses, uses_count FROM coupons WHERE code = $1', code.upper())

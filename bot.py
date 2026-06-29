@@ -22,7 +22,7 @@ from readings import PROMPTS
 from broadcasts import MORNING
 
 import db
-from config import TITLES, PRICES, PDF_KEYS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, ADMIN_ID
+from config import TITLES, PRICES, PDF_KEYS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, ADMIN_ID, REF_BONUS_PERCENT
 from ai import ask_ai
 from pdf import generate_pdf
 from numerology import (
@@ -315,6 +315,18 @@ async def handle_free_date(message: Message, state: FSMContext):
 async def start(message: Message, state: FSMContext):
     await state.clear()
     user = await db.get_user(message.from_user.id)
+
+    # Реферальный payload: /start ref_12345678
+    args = message.text.strip().split()
+    if len(args) > 1 and args[1].startswith("ref_"):
+        try:
+            referrer_id = int(args[1][4:])
+            if referrer_id != message.from_user.id and not user.get("referred_by"):
+                await db.register_referral(referrer_id, message.from_user.id)
+                user["referred_by"] = referrer_id
+        except (ValueError, TypeError):
+            pass
+
     if not user.get("first_name") and message.from_user.first_name:
         tg_name = sanitize_name(message.from_user.first_name)
         if len(tg_name) >= 2:
@@ -675,10 +687,29 @@ async def pre_checkout(query: PreCheckoutQuery):
 async def successful_payment(message: Message, state: FSMContext):
     user    = await db.get_user(message.from_user.id)
     payload = message.successful_payment.invoice_payload
+    amount  = message.successful_payment.total_amount  # в Stars (XTR) это целое число
     if payload not in user["purchased"]:
         user["purchased"].append(payload)
     user["waiting"] = payload
     await db.save_user(message.from_user.id, user)
+
+    # Начисляем реферальный бонус пригласившему
+    referrer_id = user.get("referred_by")
+    if referrer_id:
+        bonus = max(1, round(amount * REF_BONUS_PERCENT / 100))
+        try:
+            await db.add_ref_bonus(referrer_id, message.from_user.id, bonus, payload)
+            buyer_name = user.get("first_name") or "Подруга"
+            title      = TITLES.get(payload, "разбор")
+            await bot.send_message(
+                referrer_id,
+                f"🎉 +{bonus} ⭐ на твой баланс!\n\n"
+                f"{buyer_name} купила «{title}» по твоей реферальной ссылке.\n"
+                f"Проверить баланс: /balance"
+            )
+        except Exception as e:
+            logging.warning(f"Ref bonus error for referrer {referrer_id}: {e}")
+
     if payload == "compat":
         await message.answer("✅ Оплата прошла! Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
         await state.set_state(Form.waiting_second_date)
@@ -906,6 +937,87 @@ async def show_menu(callback: CallbackQuery):
     user = await db.get_user(callback.from_user.id)
     await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
     await callback.answer()
+
+# ─── РЕФЕРАЛЬНАЯ СИСТЕМА ─────────────────────────────────────────────────────
+@dp.callback_query(F.data == "ref_promo")
+async def ref_promo_callback(callback: CallbackQuery):
+    user_id  = callback.from_user.id
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+    stats    = await db.get_referral_stats(user_id)
+    user     = await db.get_user(user_id)
+    balance  = user.get("ref_balance", 0)
+    text = (
+        f"👥 Реферальная программа\n\n"
+        f"Приглашай подруг — получай {REF_BONUS_PERCENT}% звёздами с каждой их покупки!\n\n"
+        f"🔗 Твоя ссылка:\n{ref_link}\n\n"
+        f"📊 Статистика:\n"
+        f"• Приглашено: {stats['count']} чел.\n"
+        f"• Заработано всего: {stats['earned']} ⭐\n"
+        f"• Баланс сейчас: {balance} ⭐\n\n"
+        f"💡 {REF_BONUS_PERCENT}% от суммы каждой покупки подруги — автоматически на твой баланс ⭐\n"
+        f"Использовать баланс: /balance"
+    )
+    await callback.message.answer(text)
+    await callback.answer()
+
+@dp.message(Command("ref"), StateFilter("*"))
+async def ref_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user_id  = message.from_user.id
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+    stats    = await db.get_referral_stats(user_id)
+    user     = await db.get_user(user_id)
+    balance  = user.get("ref_balance", 0)
+
+    text = (
+        f"👥 Реферальная программа\n\n"
+        f"Приглашай подруг — получай {REF_BONUS_PERCENT}% звёздами с каждой их покупки!\n\n"
+        f"🔗 Твоя ссылка:\n{ref_link}\n\n"
+        f"📊 Статистика:\n"
+        f"• Приглашено: {stats['count']} чел.\n"
+        f"• Заработано всего: {stats['earned']} ⭐\n"
+        f"• Баланс сейчас: {balance} ⭐\n\n"
+        f"💡 Как это работает:\n"
+        f"Подруга переходит по твоей ссылке и покупает любой разбор — "
+        f"ты автоматически получаешь {REF_BONUS_PERCENT}% от суммы её покупки "
+        f"на свой баланс виртуальных звёзд.\n\n"
+        f"Баланс можно использовать для оплаты своих разборов — команда /balance"
+    )
+    await message.answer(text)
+
+@dp.message(Command("balance"), StateFilter("*"))
+async def balance_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    user    = await db.get_user(user_id)
+    balance = user.get("ref_balance", 0)
+    stats   = await db.get_referral_stats(user_id)
+
+    lines = [
+        f"⭐ Твой баланс: {balance} звёзд",
+        f"",
+        f"👥 Приглашено подруг: {stats['count']}",
+        f"💰 Заработано за всё время: {stats['earned']} ⭐",
+    ]
+
+    if stats['bonuses']:
+        lines.append("\n📋 Последние начисления:")
+        for b in stats['bonuses']:
+            name     = b['first_name'] or "Подруга"
+            title    = TITLES.get(b['razbor_key'], b['razbor_key'] or "разбор")
+            dt       = b['created_at'].strftime("%d.%m %H:%M")
+            lines.append(f"  +{b['amount']} ⭐ от {name} за «{title}» — {dt}")
+
+    if balance > 0:
+        lines.append(f"\n💡 Используй звёзды при покупке разбора — выбери разбор и нажми «Оплатить балансом»")
+    else:
+        bot_info = await bot.get_me()
+        ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+        lines.append(f"\n🔗 Пригласи подругу и начни зарабатывать:\n{ref_link}")
+
+    await message.answer("\n".join(lines))
 
 # ─── РАССЫЛКИ ────────────────────────────────────────────────────────────────
 async def send_daily_horoscope():
