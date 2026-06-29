@@ -77,8 +77,8 @@ GROQ_MODELS  = [
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODELS  = [
-    "anthropic/claude-haiku-4-5-20251001",
-    "anthropic/claude-haiku-3-5",
+    "anthropic/claude-haiku-4-5",
+    "anthropic/claude-3-5-haiku",
     "deepseek/deepseek-chat",
 ]
 
