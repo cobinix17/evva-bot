@@ -77,11 +77,11 @@ GROQ_MODELS  = [
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODELS  = [
-    "anthropic/claude-haiku-4-5",
+    "anthropic/claude-haiku-4-5-20251001",
+    "anthropic/claude-haiku-3-5",
     "deepseek/deepseek-chat",
     "meta-llama/llama-3.3-70b-instruct",
     "mistralai/mistral-small-3.1-24b-instruct",
-    "qwen/qwen-2.5-72b-instruct",
 ]
 
 MAX_FOREIGN_RATIO = 0.03
@@ -426,6 +426,8 @@ async def _try_openrouter(prompt: str) -> str | None:
             r = await client.post(url, headers=headers, json=data, timeout=60)
             if r.status_code == 429:
                 logging.warning("OpenRouter 429 rate limit"); return None
+            if r.status_code == 400:
+                logging.warning(f"OpenRouter 400: {r.text[:500]}"); return None
             r.raise_for_status()
             body       = r.json()
             raw        = body["choices"][0]["message"]["content"]
