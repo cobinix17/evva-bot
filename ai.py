@@ -80,8 +80,6 @@ OPENROUTER_MODELS  = [
     "anthropic/claude-haiku-4-5-20251001",
     "anthropic/claude-haiku-3-5",
     "deepseek/deepseek-chat",
-    "meta-llama/llama-3.3-70b-instruct",
-    "mistralai/mistral-small-3.1-24b-instruct",
 ]
 
 MAX_FOREIGN_RATIO = 0.03
