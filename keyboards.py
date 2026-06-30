@@ -29,7 +29,7 @@ def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
         ])
 
-def main_menu(user=None) -> InlineKeyboardMarkup:
+def main_menu(user=None, is_admin=False) -> InlineKeyboardMarkup:
     buttons = []
 
     if user and not user.get("free_used"):
@@ -60,7 +60,21 @@ def main_menu(user=None) -> InlineKeyboardMarkup:
         text="🌸 Личный разбор от Евы (за рубли)",
         url=CONTACT_URL
     )])
+    if is_admin:
+        buttons.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def admin_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика",        callback_data="admin_stats")],
+        [InlineKeyboardButton(text="📨 Рассылка",          callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="🎟 Создать купон",     callback_data="admin_coupon_create")],
+        [InlineKeyboardButton(text="📋 Список купонов",    callback_data="admin_coupon_list")],
+        [InlineKeyboardButton(text="👥 Рефералы",          callback_data="admin_refs")],
+        [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="admin_find_user")],
+        [InlineKeyboardButton(text="⬅️ Главное меню",      callback_data="show_menu")],
+    ])
 
 def free_choose_menu() -> InlineKeyboardMarkup:
     buttons = []

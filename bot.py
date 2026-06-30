@@ -34,7 +34,7 @@ from keyboards import (
     free_choose_menu, section_destiny_menu, section_money_menu,
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
-    notif_off_menu,
+    notif_off_menu, admin_menu,
 )
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
@@ -120,6 +120,8 @@ class Form(StatesGroup):
     waiting_review      = State()
     waiting_free_date   = State()
     waiting_broadcast   = State()
+    waiting_coupon      = State()
+    waiting_user_search = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -141,6 +143,9 @@ async def check_subscription(user_id: int) -> bool:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+def main_menu_for(user_id: int, user: dict) -> InlineKeyboardMarkup:
+    return main_menu(user, is_admin=(user_id == ADMIN_ID))
 
 def build_prompt(key: str, **kwargs) -> str:
     """Собирает промпт по ключу. Бросает ValueError если ключ не найден."""
@@ -362,7 +367,7 @@ async def start(message: Message, state: FSMContext):
         )
         await state.set_state(Form.waiting_name)
         return
-    await message.answer("🔮 Выбери свой разбор 👇", reply_markup=main_menu(user))
+    await message.answer("🔮 Выбери свой разбор 👇", reply_markup=main_menu_for(message.from_user.id, user))
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, state: FSMContext):
@@ -375,7 +380,7 @@ async def check_sub(callback: CallbackQuery, state: FSMContext):
     await db.save_user(callback.from_user.id, user)
     await callback.answer()
     if user["free_used"]:
-        await callback.message.answer("✅ Подписка подтверждена!", reply_markup=main_menu(user))
+        await callback.message.answer("✅ Подписка подтверждена!", reply_markup=main_menu_for(callback.from_user.id, user))
         return
     await callback.message.answer("✅ Отлично! Как мне тебя называть? Введи своё имя 👇")
     await state.set_state(Form.waiting_name)
@@ -422,14 +427,14 @@ async def handle_birth_date(message: Message, state: FSMContext):
     user["destiny_number"] = number
     await db.save_user(message.from_user.id, user)
     await state.clear()
-    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
+    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu_for(message.from_user.id, user))
 
 # ─── КОМАНДЫ ─────────────────────────────────────────────────────────────────
 @dp.message(Command("menu"), StateFilter("*"))
 async def menu_cmd(message: Message, state: FSMContext):
     await state.clear()
     user = await db.get_user(message.from_user.id)
-    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
+    await message.answer("🔮 Выбери разбор:", reply_markup=main_menu_for(message.from_user.id, user))
 
 @dp.message(Command("promo"), StateFilter("*"))
 async def promo_cmd(message: Message, state: FSMContext):
@@ -530,8 +535,23 @@ async def coupon_stat_cmd(message: Message, state: FSMContext):
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 @dp.message(Command("admin"), StateFilter("*"))
-async def admin_panel(message: Message, state: FSMContext):
+async def admin_cmd(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await message.answer("⚙️ Админ-панель", reply_markup=admin_menu())
+
+@dp.callback_query(F.data == "admin_panel")
+async def admin_panel_cb(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await callback.message.answer("⚙️ Админ-панель", reply_markup=admin_menu())
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
         return
     total         = await db.db_pool.fetchval('SELECT COUNT(*) FROM users')
     free_used     = await db.db_pool.fetchval('SELECT COUNT(*) FROM users WHERE free_used = TRUE')
@@ -539,6 +559,14 @@ async def admin_panel(message: Message, state: FSMContext):
     notif_on      = await db.db_pool.fetchval('SELECT COUNT(*) FROM users WHERE notifications = TRUE')
     coupons_total = await db.db_pool.fetchval('SELECT COUNT(*) FROM coupons')
     coupons_used  = await db.db_pool.fetchval('SELECT COUNT(*) FROM coupon_uses')
+    today         = utc_now().date()
+    week_ago      = today - timedelta(days=7)
+    new_today     = await db.db_pool.fetchval(
+        "SELECT COUNT(*) FROM users WHERE DATE(created_at) = $1", today
+    ) if await _column_exists('users', 'created_at') else '—'
+    new_week      = await db.db_pool.fetchval(
+        "SELECT COUNT(*) FROM users WHERE created_at >= $1", week_ago
+    ) if await _column_exists('users', 'created_at') else '—'
     rows = await db.db_pool.fetch('SELECT purchased FROM users WHERE user_id != $1', ADMIN_ID)
     total_purch = 0
     razbory_cnt = {}
@@ -554,9 +582,11 @@ async def admin_panel(message: Message, state: FSMContext):
                 stars_total   += PRICES.get(r, 49)
     top      = sorted(razbory_cnt.items(), key=lambda x: x[1], reverse=True)
     top_text = "\n".join([f"  {TITLES.get(k,k)}: {v}" for k, v in top[:5]]) if top else "  нет"
-    await message.answer(
+    await callback.message.answer(
         f"📊 Статистика бота Ева\n\n"
         f"👥 Всего пользователей: {total}\n"
+        f"🆕 Новых сегодня: {new_today}\n"
+        f"📅 Новых за неделю: {new_week}\n"
         f"💫 Прошли онбординг: {free_used}\n"
         f"💳 Купили хотя бы раз: {bought}\n"
         f"🛒 Всего покупок: {total_purch}\n"
@@ -564,7 +594,183 @@ async def admin_panel(message: Message, state: FSMContext):
         f"🔔 Уведомления включены: {notif_on}\n"
         f"🎟 Купонов: создано {coupons_total} / активаций {coupons_used}\n"
         f"📝 Оставили отзывы: {reviews}\n\n"
-        f"🏆 Топ разборов:\n{top_text}"
+        f"🏆 Топ разборов:\n{top_text}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
+        ])
+    )
+    await callback.answer()
+
+async def _column_exists(table: str, column: str) -> bool:
+    try:
+        result = await db.db_pool.fetchval(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_name=$1 AND column_name=$2",
+            table, column
+        )
+        return result > 0
+    except Exception:
+        return False
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast_cb(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(Form.waiting_broadcast)
+    await callback.message.answer(
+        "✍️ Напиши текст для рассылки.\n\nМожно использовать эмодзи, переносы строк.\nДля отмены — /cancel"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_coupon_create")
+async def admin_coupon_create_cb(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(Form.waiting_coupon)
+    await callback.message.answer(
+        "🎟 Создание купона\n\n"
+        "Напиши код и количество использований через пробел:\n"
+        "Пример: FRIEND20 10\n\n"
+        "Если без числа — создам на 1 использование.\nДля отмены — /cancel"
+    )
+    await callback.answer()
+
+@dp.message(StateFilter(Form.waiting_coupon))
+async def handle_coupon_input(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.strip().split()
+    if not parts:
+        await message.answer("❌ Введи код купона.")
+        return
+    code     = parts[0].upper()
+    max_uses = 1
+    if len(parts) >= 2:
+        try:
+            max_uses = max(1, int(parts[1]))
+        except ValueError:
+            await message.answer("❌ Второй параметр должен быть числом. Пример: FRIEND20 10")
+            return
+    result = await db.create_coupon(code, max_uses)
+    await state.clear()
+    if result == 'ok':
+        expires  = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
+        uses_str = f"{max_uses} раз" if max_uses > 1 else "1 раз"
+        await message.answer(
+            f"✅ Купон создан!\n\nКод: {code}\nЛимит: {uses_str}\nДействует до: {expires}\n\n"
+            f"Пользователь вводит: /promo {code}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="admin_panel")]
+            ])
+        )
+    elif result == 'exists':
+        await message.answer("❌ Такой купон уже существует.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="admin_panel")]
+        ]))
+    else:
+        await message.answer("❌ Ошибка создания купона.")
+
+@dp.callback_query(F.data == "admin_coupon_list")
+async def admin_coupon_list_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    rows = await db.db_pool.fetch(
+        'SELECT code, uses_count, max_uses, expires_at FROM coupons ORDER BY expires_at DESC LIMIT 20'
+    )
+    if not rows:
+        await callback.message.answer("Купонов пока нет.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
+        ]))
+        await callback.answer()
+        return
+    lines = ["📋 Активные купоны:\n"]
+    for r in rows:
+        exp = r['expires_at'].strftime("%d.%m %H:%M") if r['expires_at'] else "∞"
+        status = "✅" if r['uses_count'] < r['max_uses'] else "❌"
+        lines.append(f"{status} {r['code']} — {r['uses_count']}/{r['max_uses']} исп. до {exp}")
+    await callback.message.answer(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
+        ])
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_refs")
+async def admin_refs_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    try:
+        total_refs   = await db.db_pool.fetchval('SELECT COUNT(*) FROM referrals')
+        total_bonus  = await db.db_pool.fetchval('SELECT COALESCE(SUM(amount), 0) FROM ref_bonuses')
+        users_w_refs = await db.db_pool.fetchval('SELECT COUNT(DISTINCT referrer_id) FROM referrals')
+        top_rows     = await db.db_pool.fetch(
+            'SELECT referrer_id, COUNT(*) as cnt FROM referrals GROUP BY referrer_id ORDER BY cnt DESC LIMIT 5'
+        )
+        lines = [
+            f"👥 Реферальная статистика\n",
+            f"Всего приглашений: {total_refs}",
+            f"Пользователей-рефереров: {users_w_refs}",
+            f"Начислено бонусов: ~{total_bonus} ⭐\n",
+        ]
+        if top_rows:
+            lines.append("🏆 Топ рефереров:")
+            for r in top_rows:
+                lines.append(f"  user_id {r['referrer_id']} — {r['cnt']} приглашений")
+        await callback.message.answer(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
+            ])
+        )
+    except Exception as e:
+        await callback.message.answer(f"❌ Ошибка: {e}")
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_find_user")
+async def admin_find_user_cb(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(Form.waiting_user_search)
+    await callback.message.answer(
+        "🔍 Введи user_id или имя пользователя для поиска:\nДля отмены — /cancel"
+    )
+    await callback.answer()
+
+@dp.message(StateFilter(Form.waiting_user_search))
+async def handle_user_search(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    query = message.text.strip()
+    await state.clear()
+    row = None
+    if query.isdigit():
+        row = await db.db_pool.fetchrow('SELECT * FROM users WHERE user_id = $1', int(query))
+    if not row:
+        row = await db.db_pool.fetchrow(
+            "SELECT * FROM users WHERE first_name ILIKE $1 LIMIT 1", f"%{query}%"
+        )
+    if not row:
+        await message.answer("❌ Пользователь не найден.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="admin_panel")]
+        ]))
+        return
+    purchased = json.loads(row['purchased']) if row['purchased'] else []
+    purch_list = "\n".join([f"  • {TITLES.get(k, k)}" for k in purchased]) if purchased else "  нет"
+    ref_balance = row.get('ref_balance', 0) or 0
+    await message.answer(
+        f"👤 Пользователь найден\n\n"
+        f"ID: {row['user_id']}\n"
+        f"Имя: {row.get('first_name') or '—'}\n"
+        f"Дата рождения: {row.get('birth_date') or '—'}\n"
+        f"Число судьбы: {row.get('destiny_number') or '—'}\n"
+        f"Подписан на канал: {'✅' if row.get('subscribed_channel') else '❌'}\n"
+        f"Онбординг пройден: {'✅' if row.get('free_used') else '❌'}\n"
+        f"Уведомления: {'🔔' if row.get('notifications', True) else '🔕'}\n"
+        f"Реф. баланс: {ref_balance} ⭐\n"
+        f"Куплено разборов: {len(purchased)}\n{purch_list}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="admin_panel")]
+        ])
     )
 
 # ─── РАССЫЛКА (/post) ────────────────────────────────────────────────────────
@@ -798,7 +1004,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     waiting = user.get("waiting")
     name    = user.get("first_name") or "дорогая"
     if not waiting:
-        await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu(user))
+        await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu_for(message.from_user.id, user))
         await state.clear()
         return
 
@@ -1009,7 +1215,7 @@ async def handle_review(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "show_menu")
 async def show_menu(callback: CallbackQuery):
     user = await db.get_user(callback.from_user.id)
-    await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu(user))
+    await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu_for(callback.from_user.id, user))
     await callback.answer()
 
 # ─── РЕФЕРАЛЬНАЯ СИСТЕМА ─────────────────────────────────────────────────────
