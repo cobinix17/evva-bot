@@ -10,7 +10,8 @@ from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     Message, CallbackQuery, LabeledPrice, PreCheckoutQuery,
-    TelegramObject, BufferedInputFile
+    TelegramObject, BufferedInputFile,
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
