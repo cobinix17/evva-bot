@@ -11,7 +11,8 @@ from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     Message, CallbackQuery, LabeledPrice, PreCheckoutQuery,
     TelegramObject, BufferedInputFile,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 )
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -1432,9 +1433,30 @@ async def run_web():
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
 
+# ─── МЕНЮ КОМАНД (синяя кнопка слева) ────────────────────────────────────────
+async def setup_bot_commands():
+    """Команды в меню Telegram. Обычным пользователям — базовый набор,
+    админу дополнительно /admin через персональный scope."""
+    user_commands = [
+        BotCommand(command="menu",          description="🔮 Меню разборов"),
+        BotCommand(command="ref",           description="👥 Пригласить подругу — получить ⭐"),
+        BotCommand(command="balance",       description="⭐ Мой бонусный баланс"),
+        BotCommand(command="promo",         description="🎁 Ввести промокод"),
+        BotCommand(command="notifications", description="🔔 Утренние уведомления"),
+    ]
+    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+    try:
+        admin_commands = user_commands + [
+            BotCommand(command="admin", description="⚙️ Админ-панель"),
+        ]
+        await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
+    except Exception as e:
+        logging.warning(f"Не удалось установить команды админа: {e}")
+
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 async def main():
     await db.init_db(DATABASE_URL)
+    await setup_bot_commands()
     asyncio.create_task(run_web())
     asyncio.create_task(send_daily_horoscope())
     asyncio.create_task(send_daily_channel_post())
