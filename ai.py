@@ -6,7 +6,26 @@ import os
 import re
 import logging
 import asyncio
+from datetime import datetime
 import httpx
+
+_RU_MONTHS = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+def _today_note() -> str:
+    """Текущая дата для модели — иначе она советует месяцы, которые уже
+    прошли (например 'действуй в апреле', когда на дворе июнь). Считается
+    в момент запроса, чтобы прогнозы всегда смотрели в будущее."""
+    now = datetime.now()
+    return (
+        f"СЕГОДНЯШНЯЯ ДАТА: {now.day} {_RU_MONTHS[now.month - 1]} {now.year} года. "
+        f"Это важно: когда советуешь месяцы для действий, прогнозируешь события "
+        f"или называешь лучшее время — учитывай что текущий месяц это "
+        f"{_RU_MONTHS[now.month - 1]} {now.year}. Не советуй месяцы которые уже "
+        f"прошли в этом году. Говори про оставшиеся месяцы этого года и следующий год.\n\n"
+    )
 
 # ── СИСТЕМНЫЙ ПРОМПТ ─────────────────────────────────────────────────────────
 # Сохраняем конкретность и запрет "воды", но требования к объёму смягчены
@@ -348,7 +367,7 @@ async def _try_cerebras(prompt: str) -> str | None:
     data    = {
         "model": CEREBRAS_MODEL,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _today_note() + SYSTEM_PROMPT},
             {"role": "user",   "content": prompt},
         ],
         "max_tokens":  8000,
@@ -383,7 +402,7 @@ async def _try_groq(prompt: str) -> str | None:
                 data = {
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": _today_note() + SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
                     ],
                     "max_tokens": 4096,
@@ -422,7 +441,7 @@ async def _try_openrouter(prompt: str) -> str | None:
     data = {
         "models": OPENROUTER_MODELS,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _today_note() + SYSTEM_PROMPT},
             {"role": "user",   "content": prompt},
         ],
         "max_tokens":  6000,
