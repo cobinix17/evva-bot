@@ -119,6 +119,7 @@ class Form(StatesGroup):
     waiting_second_date = State()
     waiting_review      = State()
     waiting_free_date   = State()
+    waiting_broadcast   = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -565,6 +566,79 @@ async def admin_panel(message: Message, state: FSMContext):
         f"📝 Оставили отзывы: {reviews}\n\n"
         f"🏆 Топ разборов:\n{top_text}"
     )
+
+# ─── РАССЫЛКА (/post) ────────────────────────────────────────────────────────
+@dp.message(Command("post"), StateFilter("*"))
+async def post_cmd(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(Form.waiting_broadcast)
+    await message.answer(
+        "✍️ Напиши текст для рассылки.\n\n"
+        "Можно использовать эмодзи, переносы строк, ссылки.\n"
+        "Для отмены — /cancel"
+    )
+
+@dp.message(StateFilter(Form.waiting_broadcast))
+async def post_text_received(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text or message.caption or ""
+    if not text.strip():
+        await message.answer("Текст пустой, попробуй ещё раз.")
+        return
+    await state.update_data(broadcast_text=text)
+    await message.answer(
+        f"📋 Превью рассылки:\n\n{text}\n\n"
+        f"Отправить всем пользователям?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Отправить", callback_data="broadcast_confirm"),
+                InlineKeyboardButton(text="❌ Отмена",    callback_data="broadcast_cancel"),
+            ]
+        ])
+    )
+
+@dp.callback_query(F.data == "broadcast_confirm")
+async def broadcast_confirm(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    text = data.get("broadcast_text", "")
+    await state.clear()
+    await callback.message.edit_text("📤 Начинаю рассылку...")
+
+    user_ids = await db.db_pool.fetch(
+        'SELECT user_id FROM users WHERE user_id != $1', ADMIN_ID
+    )
+    total = len(user_ids)
+    sent = 0
+    blocked = 0
+
+    for row in user_ids:
+        uid = row["user_id"]
+        try:
+            await callback.bot.send_message(uid, text)
+            sent += 1
+        except TelegramForbiddenError:
+            blocked += 1
+        except Exception:
+            blocked += 1
+        await asyncio.sleep(0.05)  # 20 сообщений/сек — в пределах лимита Telegram
+
+    await callback.message.answer(
+        f"✅ Рассылка завершена\n\n"
+        f"👥 Всего: {total}\n"
+        f"📨 Отправлено: {sent}\n"
+        f"🚫 Не доставлено: {blocked}"
+    )
+
+@dp.callback_query(F.data == "broadcast_cancel")
+async def broadcast_cancel(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await callback.message.edit_text("❌ Рассылка отменена.")
 
 # ─── КУПОН — ВЫБОР РАЗБОРА ───────────────────────────────────────────────────
 @dp.callback_query(F.data.startswith("coupon::"))
