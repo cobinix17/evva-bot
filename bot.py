@@ -144,7 +144,7 @@ async def check_subscription(user_id: int) -> bool:
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-def main_menu_for(user_id: int, user: dict) -> InlineKeyboardMarkup:
+def main_menu_for(user_id: int, user: dict):
     return main_menu(user, is_admin=(user_id == ADMIN_ID))
 
 def build_prompt(key: str, **kwargs) -> str:
@@ -1300,8 +1300,51 @@ async def balance_cmd(message: Message, state: FSMContext):
     await message.answer("\n".join(lines))
 
 # ─── РАССЫЛКИ ────────────────────────────────────────────────────────────────
+_DAY_ENERGY = {
+    1: ("энергия начала и лидерства", "день для смелых решений и новых стартов — действуй первой"),
+    2: ("энергия интуиции и партнёрства", "день для диалога и прислушивания к себе — доверяй ощущениям"),
+    3: ("энергия творчества и общения", "день для самовыражения и радости — позволь себе быть яркой"),
+    4: ("энергия порядка и созидания", "день для планирования и дел — всё что начнёшь сегодня будет устойчивым"),
+    5: ("энергия перемен и свободы", "день для нового опыта — будь открыта к неожиданному"),
+    6: ("энергия любви и гармонии", "день для близких и заботы о себе — это твоя главная задача сегодня"),
+    7: ("энергия мудрости и глубины", "день для размышлений и тишины — ответы уже внутри тебя"),
+    8: ("энергия силы и изобилия", "день для финансовых решений и амбиций — действуй уверенно"),
+    9: ("энергия завершения и мудрости", "день для отпускания старого — освободи место для нового"),
+    11: ("энергия вдохновения и интуиции", "особый день — твоё чутьё работает на максимуме"),
+    22: ("энергия мастера-строителя", "день для масштабных шагов — делай то что останется надолго"),
+    33: ("энергия высшей любви", "день для сострадания и помощи — твои слова сегодня целительны"),
+}
+
+def _day_message(name: str, destiny_number: int, day_number: int) -> str:
+    day_info = _DAY_ENERGY.get(day_number, _DAY_ENERGY[9])
+    day_energy, day_advice = day_info
+
+    destiny_notes = {
+        1:  "Для твоей единицы этот день особенно важен — не упусти момент для инициативы.",
+        2:  "Твоя двойка сегодня чувствует людей особенно тонко — используй это.",
+        3:  "Твоя тройка расцветает в такие дни — выражай себя смело.",
+        4:  "Твоя четвёрка найдёт опору в энергии этого дня — строй и создавай.",
+        5:  "Твоя пятёрка обожает такие дни — следуй за интересом.",
+        6:  "Твоя шестёрка сегодня особенно нужна близким — подари им своё внимание.",
+        7:  "Твоя семёрка углубляется в этот день — дай себе время побыть наедине с мыслями.",
+        8:  "Твоя восьмёрка усиливается сегодня — смело берись за важные дела.",
+        9:  "Твоя девятка видит дальше других — доверяй этому взгляду сегодня.",
+        11: "Твоё мастер-число 11 резонирует с этим днём — будь внимательна к знакам.",
+        22: "Твоё мастер-число 22 даёт тебе сегодня особую практическую силу.",
+        33: "Твоё мастер-число 33 сегодня светит ярче — позволь себе быть тем светом.",
+    }
+    personal = destiny_notes.get(destiny_number, destiny_notes[9])
+
+    return (
+        f"🌅 Доброе утро, {name}!\n\n"
+        f"Сегодня {day_number}-й день по нумерологии — {day_energy}.\n\n"
+        f"✨ {day_advice.capitalize()}.\n\n"
+        f"{personal}\n\n"
+        f"🔮 /menu"
+    )
+
 async def send_daily_horoscope():
-    """UTC 8:00 = Москва 11:00 — утренняя рассылка из статичных шаблонов."""
+    """UTC 8:00 = Москва 11:00 — утренняя рассылка с нумерологией дня."""
     while True:
         now    = utc_now()
         target = now.replace(hour=8, minute=0, second=0, microsecond=0)
@@ -1309,6 +1352,8 @@ async def send_daily_horoscope():
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
         try:
+            today      = date.today()
+            day_number = calculate_day_number(today)
             rows = await db.db_pool.fetch(
                 'SELECT user_id, first_name, destiny_number FROM users '
                 'WHERE birth_date IS NOT NULL AND destiny_number IS NOT NULL '
@@ -1316,10 +1361,9 @@ async def send_daily_horoscope():
             )
             for row in rows:
                 try:
-                    number   = row['destiny_number']
-                    name     = row['first_name'] or "дорогая"
-                    variants = MORNING.get(number, MORNING.get(9, []))
-                    text     = random.choice(variants).format(name=name)
+                    name   = row['first_name'] or "дорогая"
+                    number = row['destiny_number']
+                    text   = _day_message(name, number, day_number)
                     await bot.send_message(row['user_id'], text, reply_markup=notif_off_menu())
                     await asyncio.sleep(0.05)
                 except TelegramForbiddenError:
