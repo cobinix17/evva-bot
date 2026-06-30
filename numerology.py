@@ -35,6 +35,13 @@ def _reduce_to_single(n: int) -> int:
         n = _digit_sum(n)
     return n
 
+def _reduce_keep_master(n: int) -> int:
+    """Сводит к однозначному, но сохраняет мастер-числа 11, 22, 33 —
+    для тех чисел где они нумерологически значимы (душа, личность, зрелость)."""
+    while n > 9 and n not in (11, 22, 33):
+        n = _digit_sum(n)
+    return n
+
 def calculate_destiny(date_str: str) -> int:
     """Число судьбы (число жизненного пути) из даты ДД.ММ.ГГГГ.
     Алгоритм: складываем все цифры даты и сводим к 1–9."""
@@ -93,6 +100,71 @@ def calculate_name_number(name: str) -> int:
         return 1
     return _reduce_to_single(total)
 
+_RU_VOWELS = set("аеёиоуыэюя")
+
+def calculate_soul_number(name: str) -> int:
+    """Число души — сумма ГЛАСНЫХ имени. Отражает внутренние желания,
+    то что движет человеком изнутри. Мастер-числа сохраняются."""
+    name = name.lower().strip()
+    total = sum(_PYTHAGOREAN_RU.get(ch, 0) for ch in name if ch in _RU_VOWELS)
+    if total == 0:
+        return 1
+    return _reduce_keep_master(total)
+
+def calculate_personality_number(name: str) -> int:
+    """Число личности — сумма СОГЛАСНЫХ имени. Отражает то как человека
+    видят окружающие, внешнюю маску. Мастер-числа сохраняются."""
+    name = name.lower().strip()
+    total = sum(
+        _PYTHAGOREAN_RU.get(ch, 0)
+        for ch in name
+        if ch.isalpha() and ch not in _RU_VOWELS
+    )
+    if total == 0:
+        return 1
+    return _reduce_keep_master(total)
+
+def calculate_maturity_number(date_str: str, name: str) -> int:
+    """Число зрелости — судьба + имя. Раскрывается во второй половине жизни
+    (после ~35 лет), показывает к чему человек приходит."""
+    base = calculate_destiny(date_str) + calculate_name_number(name)
+    return _reduce_keep_master(base)
+
+def calculate_personal_month(date_str: str, year: int | None = None,
+                             month: int | None = None) -> int:
+    """Число личного месяца = личный год + номер месяца. Даёт реальную
+    помесячную динамику, а не выдуманные моделью месяцы."""
+    now = datetime.now()
+    if year is None:
+        year = now.year
+    if month is None:
+        month = now.month
+    py = calculate_personal_year(date_str, year)
+    return _reduce_to_single(py + _digit_sum(month))
+
+def calculate_pinnacles(date_str: str) -> list[int]:
+    """4 пика (вершины) жизни — классический расчёт. Каждый пик это
+    энергия определённого жизненного периода."""
+    parts = date_str.strip().split(".")
+    d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+    rd, rm, ry = _reduce_to_single(d), _reduce_to_single(m), _reduce_to_single(_digit_sum(y))
+    p1 = _reduce_to_single(rm + rd)
+    p2 = _reduce_to_single(rd + ry)
+    p3 = _reduce_to_single(p1 + p2)
+    p4 = _reduce_to_single(rm + ry)
+    return [p1, p2, p3, p4]
+
+def calculate_challenges(date_str: str) -> list[int]:
+    """3 главных вызова (испытания) — препятствия которые нужно преодолеть.
+    Считаются как разности приведённых частей даты."""
+    parts = date_str.strip().split(".")
+    d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+    rd, rm, ry = _reduce_to_single(d), _reduce_to_single(m), _reduce_to_single(_digit_sum(y))
+    c1 = abs(rm - rd)
+    c2 = abs(rd - ry)
+    c3 = abs(c1 - c2)
+    return [c1, c2, c3]
+
 # ─── ПОЗИЦИИ В МАТРИЦЕ (упрощённая схема для контекста) ──────────────────────
 
 def _matrix_positions(date_str: str) -> dict:
@@ -137,13 +209,51 @@ _KARMIC_MEANING = {
     9: "отпустить прошлое и служить другим",
 }
 
+_SOUL_MEANING = {
+    1: "жажда независимости и признания",
+    2: "потребность в любви, гармонии и близости",
+    3: "желание самовыражения и радости",
+    4: "стремление к порядку и надёжности",
+    5: "тяга к свободе и новым впечатлениям",
+    6: "потребность заботиться и быть нужной",
+    7: "поиск глубины, истины и уединения",
+    8: "желание достигать и влиять",
+    9: "стремление помогать и отдавать миру",
+    11: "потребность вдохновлять и чувствовать тонкое",
+    22: "желание построить что-то великое",
+    33: "стремление исцелять и любить безусловно",
+}
+
+_PERSONALITY_MEANING = {
+    1: "сильная, уверенная, лидерская",
+    2: "мягкая, тактичная, располагающая",
+    3: "яркая, обаятельная, лёгкая",
+    4: "надёжная, серьёзная, основательная",
+    5: "живая, динамичная, притягательная",
+    6: "тёплая, заботливая, домашняя",
+    7: "загадочная, сдержанная, глубокая",
+    8: "статусная, влиятельная, деловая",
+    9: "благородная, мудрая, открытая",
+    11: "особенная, харизматичная, чувствующая",
+    22: "масштабная, внушающая доверие",
+    33: "тёплая, исцеляющая, вдохновляющая",
+}
+
 def build_numerology_context(name: str, date_str: str) -> str:
     """Строит текстовый контекст для промпта — числа и их значения.
     Этот текст вставляется в начало каждого промпта через {context}."""
     pos  = _matrix_positions(date_str)
-    year = datetime.now().year
+    now  = datetime.now()
+    year = now.year
 
-    name_num = calculate_name_number(name) if name and name not in ("дорогая", "") else None
+    has_name   = bool(name and name not in ("дорогая", ""))
+    name_num   = calculate_name_number(name) if has_name else None
+    soul_num   = calculate_soul_number(name) if has_name else None
+    pers_num   = calculate_personality_number(name) if has_name else None
+    maturity   = calculate_maturity_number(date_str, name) if has_name else None
+    pmonth     = calculate_personal_month(date_str)
+    pinnacles  = calculate_pinnacles(date_str)
+    challenges = calculate_challenges(date_str)
 
     lines = [
         f"Имя: {name}",
@@ -154,8 +264,22 @@ def build_numerology_context(name: str, date_str: str) -> str:
         f"Число месяца: {pos['month']}",
         f"Кармическое число: {pos['karmic']} — {_KARMIC_MEANING.get(pos['karmic'], '')}",
         f"Число личного года ({year}): {pos['personal_year']}",
+        f"Число личного месяца (сейчас): {pmonth}",
     ]
     if name_num:
         lines.append(f"Число имени '{name}': {name_num}")
+    if soul_num:
+        lines.append(f"Число души (по гласным): {soul_num} — {_SOUL_MEANING.get(soul_num, '')}")
+    if pers_num:
+        lines.append(f"Число личности (по согласным): {pers_num} — {_PERSONALITY_MEANING.get(pers_num, '')}")
+    if maturity:
+        lines.append(f"Число зрелости (вторая половина жизни): {maturity}")
+
+    lines.append(
+        f"Пики жизни (4 периода): {pinnacles[0]}, {pinnacles[1]}, {pinnacles[2]}, {pinnacles[3]}"
+    )
+    lines.append(
+        f"Главные вызовы (испытания): {challenges[0]}, {challenges[1]}, {challenges[2]}"
+    )
 
     return "\n".join(lines)
