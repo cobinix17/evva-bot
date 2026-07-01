@@ -12,7 +12,8 @@ from aiogram.types import (
     Message, CallbackQuery, LabeledPrice, PreCheckoutQuery,
     TelegramObject, BufferedInputFile,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    BotCommand, BotCommandScopeDefault, BotCommandScopeChat
+    BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
+    ErrorEvent,
 )
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -36,7 +37,7 @@ from keyboards import (
     free_choose_menu, section_destiny_menu, section_money_menu,
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
-    notif_off_menu, admin_menu,
+    notif_off_menu, admin_menu, balance_pay_menu,
 )
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
@@ -94,6 +95,23 @@ class AntiFloodMiddleware(BaseMiddleware):
 dp.message.middleware(AntiFloodMiddleware(3.0))
 dp.callback_query.middleware(AntiFloodMiddleware(1.0))
 
+# ─── ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ОШИБОК ────────────────────────────────────────────
+# Без него необработанное исключение в хендлере (например message.text is
+# None когда юзер прислал фото вместо даты) просто уходит в лог, а сам
+# пользователь не получает ответа и виснет в незакрытом FSM-состоянии.
+@dp.errors()
+async def global_error_handler(event: ErrorEvent):
+    logging.error(f"Unhandled error: {event.exception}", exc_info=event.exception)
+    update = event.update
+    try:
+        if update.message:
+            await update.message.answer("❌ Что-то пошло не так. Попробуй /menu или /cancel.")
+        elif update.callback_query:
+            await update.callback_query.answer("❌ Что-то пошло не так.", show_alert=True)
+    except Exception:
+        pass
+    return True
+
 # ─── РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ ──────────────────────────────────────────────
 async def send_long(chat_id, text: str):
     limit = 4000
@@ -115,15 +133,16 @@ async def send_long(chat_id, text: str):
 
 # ─── FSM ─────────────────────────────────────────────────────────────────────
 class Form(StatesGroup):
-    waiting_name        = State()
-    waiting_birth_date  = State()
-    waiting_date        = State()
-    waiting_second_date = State()
-    waiting_review      = State()
-    waiting_free_date   = State()
-    waiting_broadcast   = State()
-    waiting_coupon      = State()
-    waiting_user_search = State()
+    waiting_name             = State()
+    waiting_birth_date       = State()
+    waiting_date             = State()
+    waiting_second_date      = State()
+    waiting_free_second_date = State()
+    waiting_review           = State()
+    waiting_free_date        = State()
+    waiting_broadcast        = State()
+    waiting_coupon           = State()
+    waiting_user_search      = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -309,36 +328,34 @@ async def free_pick_handler(callback: CallbackQuery, state: FSMContext):
     user["waiting"] = key
     await db.save_user(callback.from_user.id, user)
     await callback.answer()
-
-    if key == "compat":
-        await callback.message.answer(
-            "💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
-        )
-        await state.set_state(Form.waiting_second_date)
-    else:
-        await _ask_date(callback.message, user, key=key)
-        await state.set_state(Form.waiting_free_date)
+    await _start_date_flow(callback.message, state, user, key, is_free=True)
 
 @dp.message(StateFilter(Form.waiting_free_date))
 async def handle_free_date(message: Message, state: FSMContext):
     user = await db.get_user(message.from_user.id)
-    text = message.text.strip()
+    text = (message.text or "").strip()
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
-    user["free_used"] = True
-    await db.save_user(message.from_user.id, user)
+    # free_used выставляется внутри _process_date только при УСПЕШНОЙ генерации —
+    # если все провайдеры ИИ недоступны, бесплатная попытка не сгорает и
+    # ретрай снова бесплатный, а не платный счёт.
     await _process_date(message, message.from_user.id, user, text, state, is_free=True)
 
 # ─── ОНБОРДИНГ ───────────────────────────────────────────────────────────────
 @dp.message(Command("start"), StateFilter("*"))
 async def start(message: Message, state: FSMContext):
     await state.clear()
+    # Проверяем ДО get_user (который автосоздаёт строку) — реферала можно
+    # засчитать только по-настоящему новому пользователю, иначе давний
+    # юзер может задним числом "стать рефералом" и отдать 25% с будущих
+    # покупок тому, кто его на самом деле не приводил.
+    is_new_user = not await db.user_exists(message.from_user.id)
     user = await db.get_user(message.from_user.id)
 
     # Реферальный payload: /start ref_12345678
     args = message.text.strip().split()
-    if len(args) > 1 and args[1].startswith("ref_"):
+    if is_new_user and len(args) > 1 and args[1].startswith("ref_"):
         try:
             referrer_id = int(args[1][4:])
             if referrer_id != message.from_user.id and not user.get("referred_by"):
@@ -431,7 +448,7 @@ async def handle_birth_date(message: Message, state: FSMContext):
     В основном флоу дата вводится уже в _ask_date/_process_date,
     этот стейт может остаться только если пользователь добрался
     сюда нестандартным путём."""
-    text = message.text.strip()
+    text = (message.text or "").strip()
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
@@ -449,6 +466,19 @@ async def menu_cmd(message: Message, state: FSMContext):
     await state.clear()
     user = await db.get_user(message.from_user.id)
     await message.answer("🔮 Выбери разбор:", reply_markup=main_menu_for(message.from_user.id, user))
+
+@dp.message(Command("cancel"), StateFilter("*"))
+async def cancel_cmd(message: Message, state: FSMContext):
+    current = await state.get_state()
+    if current is None:
+        await message.answer("Нечего отменять — ты не в процессе ввода 🙂")
+        return
+    await state.clear()
+    if message.from_user.id == ADMIN_ID:
+        await message.answer("❌ Отменено.", reply_markup=admin_menu())
+    else:
+        user = await db.get_user(message.from_user.id)
+        await message.answer("❌ Отменено.", reply_markup=main_menu_for(message.from_user.id, user))
 
 @dp.message(Command("promo"), StateFilter("*"))
 async def promo_cmd(message: Message, state: FSMContext):
@@ -652,7 +682,7 @@ async def admin_coupon_create_cb(callback: CallbackQuery, state: FSMContext):
 async def handle_coupon_input(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    parts = message.text.strip().split()
+    parts = (message.text or "").strip().split()
     if not parts:
         await message.answer("❌ Введи код купона.")
         return
@@ -754,7 +784,10 @@ async def admin_find_user_cb(callback: CallbackQuery, state: FSMContext):
 async def handle_user_search(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    query = message.text.strip()
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("❌ Введи user_id или имя текстом.")
+        return
     await state.clear()
     row = None
     if query.isdigit():
@@ -892,14 +925,7 @@ async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
         remaining = await db.coupon_remaining(code)
         await callback.answer(f"✅ Добавлено! Осталось использований промокода: {remaining}")
 
-    if key == "compat":
-        await callback.message.answer(
-            "💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
-        )
-        await state.set_state(Form.waiting_second_date)
-    else:
-        await _ask_date(callback.message, user, key=key)
-        await state.set_state(Form.waiting_date)
+    await _start_date_flow(callback.message, state, user, key)
 
 # ─── УМНАЯ ДАТА ──────────────────────────────────────────────────────────────
 async def _ask_date(message: Message, user: dict, key: str | None = None):
@@ -924,9 +950,6 @@ async def use_my_date(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     current_state = await state.get_state()
     is_free = (current_state == Form.waiting_free_date.state)
-    if is_free and not user["free_used"]:
-        user["free_used"] = True
-        await db.save_user(callback.from_user.id, user)
     await _process_date(callback.message, callback.from_user.id, user, user["birth_date"], state, is_free=is_free)
 
 @dp.callback_query(F.data == "use_new_date")
@@ -951,20 +974,55 @@ async def send_invoice(chat_id, title, description, payload, amount):
         prices=[LabeledPrice(label=title, amount=amount)],
     )
 
+async def _start_date_flow(message: Message, state: FSMContext, user: dict, key: str, is_free: bool = False):
+    """Общий переход к вводу даты(-ат) после того как разбор уже точно
+    доступен пользователю (куплен, оплачен балансом, взят по купону/бесплатно).
+    is_free переключает на free_-состояния, чтобы неудачная генерация не
+    сжигала платный счёт за бесплатную попытку (см. _process_date/_process_two_dates)."""
+    if key == "compat":
+        await message.answer("💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
+        await state.set_state(Form.waiting_free_second_date if is_free else Form.waiting_second_date)
+    else:
+        await _ask_date(message, user, key=key)
+        await state.set_state(Form.waiting_free_date if is_free else Form.waiting_date)
+
+async def _resume_already_purchased(callback: CallbackQuery, state: FSMContext, user: dict, key: str):
+    user["waiting"] = key
+    await db.save_user(callback.from_user.id, user)
+    await callback.answer()
+    await _start_date_flow(callback.message, state, user, key)
+
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_handler(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("buy_", "")
     user = await db.get_user(callback.from_user.id)
     if key in user["purchased"]:
-        user["waiting"] = key
-        await db.save_user(callback.from_user.id, user)
-        await callback.answer()
-        if key == "compat":
-            await callback.message.answer("💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
-            await state.set_state(Form.waiting_second_date)
+        await _resume_already_purchased(callback, state, user, key)
+        return
+    if key in PAID_RAZBORY:
+        price   = PRICES.get(key, 49)
+        title   = PAID_RAZBORY[key]
+        balance = user.get("ref_balance", 0)
+        if balance >= price:
+            await callback.message.answer(
+                f"У тебя {balance} ⭐ на бонусном балансе — хватает на «{title}» ({price} ⭐).\n\n"
+                f"Как оплатить?",
+                reply_markup=balance_pay_menu(key, price)
+            )
         else:
-            await _ask_date(callback.message, user, key=key)
-            await state.set_state(Form.waiting_date)
+            desc = RAZBOR_DESCRIPTIONS.get(key, title)
+            await send_invoice(callback.message.chat.id, title, desc, key, price)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("stars_buy_"))
+async def stars_buy_handler(callback: CallbackQuery, state: FSMContext):
+    """Явный выбор оплаты звёздами Telegram вместо бонусного баланса —
+    показывается когда баланса хватало бы на разбор, но юзер всё равно
+    хочет заплатить обычным способом."""
+    key  = callback.data.replace("stars_buy_", "")
+    user = await db.get_user(callback.from_user.id)
+    if key in user["purchased"]:
+        await _resume_already_purchased(callback, state, user, key)
         return
     if key in PAID_RAZBORY:
         price = PRICES.get(key, 49)
@@ -972,6 +1030,30 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
         desc  = RAZBOR_DESCRIPTIONS.get(key, title)
         await send_invoice(callback.message.chat.id, title, desc, key, price)
     await callback.answer()
+
+@dp.callback_query(F.data.startswith("balance_buy_"))
+async def balance_buy_handler(callback: CallbackQuery, state: FSMContext):
+    key  = callback.data.replace("balance_buy_", "")
+    user = await db.get_user(callback.from_user.id)
+    if key not in PAID_RAZBORY:
+        await callback.answer()
+        return
+    if key in user["purchased"]:
+        await _resume_already_purchased(callback, state, user, key)
+        return
+
+    price = PRICES.get(key, 49)
+    spent = await db.spend_balance(callback.from_user.id, price)
+    if not spent:
+        await callback.answer("❌ На балансе уже не хватает звёзд — обнови баланс командой /balance.", show_alert=True)
+        return
+
+    user = await db.get_user(callback.from_user.id)  # перечитываем — баланс уже списан
+    user["purchased"].append(key)
+    user["waiting"] = key
+    await db.save_user(callback.from_user.id, user)
+    await callback.answer(f"✅ Оплачено балансом! Списано {price} ⭐")
+    await _start_date_flow(callback.message, state, user, key)
 
 @dp.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
@@ -1005,11 +1087,8 @@ async def successful_payment(message: Message, state: FSMContext):
             logging.warning(f"Ref bonus error for referrer {referrer_id}: {e}")
 
     if payload == "compat":
-        await message.answer("✅ Оплата прошла! Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
-        await state.set_state(Form.waiting_second_date)
-    else:
-        await _ask_date(message, user, key=payload)
-        await state.set_state(Form.waiting_date)
+        await message.answer("✅ Оплата прошла!")
+    await _start_date_flow(message, state, user, payload)
 
 # ─── ОБРАБОТКА ДАТ ───────────────────────────────────────────────────────────
 async def _process_date(message: Message, user_id: int, user: dict, date_str: str,
@@ -1087,33 +1166,57 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         upsell_text = "✨ Тебе также может подойти 👇" if has_upsells else "🔮 Хочешь ещё разбор?"
         # сбрасываем waiting чтобы повторный use_my_date не запустил этот же разбор
         user["waiting"] = None
+        if is_free:
+            user["free_used"] = True
         await db.save_user(user_id, user)
         await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
     except Exception as e:
         await stop_intermediate()
         logging.error(f"Date handler error [{waiting}]: {e}", exc_info=True)
-        await message.answer(
-            "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
-            reply_markup=retry_menu(waiting)
+        retry_text = (
+            "❌ Что-то пошло не так. Твоя бесплатная попытка не сгорела — "
+            "нажми кнопку и попробуй снова 👇" if is_free else
+            "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇"
         )
+        await message.answer(retry_text, reply_markup=retry_menu(waiting, is_free=is_free))
         await state.clear()
     finally:
         _generating.discard(user_id)
 
+def _parse_two_dates(text: str) -> list[str] | None:
+    if "," not in text:
+        return None
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 2 or not all(is_valid_date(p) for p in parts):
+        return None
+    return parts
+
 @dp.message(StateFilter(Form.waiting_second_date))
 async def handle_two_dates(message: Message, state: FSMContext):
     user  = await db.get_user(message.from_user.id)
-    text  = message.text.strip()
-    if "," not in text:
+    text  = (message.text or "").strip()
+    parts = _parse_two_dates(text)
+    if parts is None:
         await message.answer("❌ Введи две даты через запятую.\nНапример: 15.03.1995, 22.07.1998")
         return
-    parts = [p.strip() for p in text.split(",")]
-    if len(parts) != 2 or not all(is_valid_date(p) for p in parts):
-        await message.answer("❌ Неверный формат. Используй ДД.ММ.ГГГГ, ДД.ММ.ГГГГ")
+    await _process_two_dates(message, message.from_user.id, user, parts, state, is_free=False)
+
+@dp.message(StateFilter(Form.waiting_free_second_date))
+async def handle_free_two_dates(message: Message, state: FSMContext):
+    user  = await db.get_user(message.from_user.id)
+    text  = (message.text or "").strip()
+    parts = _parse_two_dates(text)
+    if parts is None:
+        await message.answer("❌ Введи две даты через запятую.\nНапример: 15.03.1995, 22.07.1998")
         return
+    # free_used выставляется в _process_two_dates только при успехе —
+    # тот же принцип, что и в одиночном бесплатном флоу (см. _process_date).
+    await _process_two_dates(message, message.from_user.id, user, parts, state, is_free=True)
+
+async def _process_two_dates(message: Message, user_id: int, user: dict, parts: list[str],
+                              state: FSMContext, is_free: bool = False):
     name    = user.get("first_name") or "дорогая"
-    user_id = message.from_user.id
 
     if user_id in _generating:
         await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
@@ -1167,16 +1270,20 @@ async def handle_two_dates(message: Message, state: FSMContext):
         )
         upsell_text = "✨ Тебе также может подойти 👇" if has_upsells else "🔮 Хочешь ещё разбор?"
         user["waiting"] = None
+        if is_free:
+            user["free_used"] = True
         await db.save_user(user_id, user)
         await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
     except Exception as e:
         await stop_intermediate()
         logging.error(f"Compat error: {e}", exc_info=True)
-        await message.answer(
-            "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
-            reply_markup=retry_menu("compat")
+        retry_text = (
+            "❌ Что-то пошло не так. Твоя бесплатная попытка не сгорела — "
+            "нажми кнопку и попробуй снова 👇" if is_free else
+            "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇"
         )
+        await message.answer(retry_text, reply_markup=retry_menu("compat", is_free=is_free))
         await state.clear()
     finally:
         _generating.discard(user_id)
@@ -1184,7 +1291,7 @@ async def handle_two_dates(message: Message, state: FSMContext):
 @dp.message(StateFilter(Form.waiting_date))
 async def handle_date(message: Message, state: FSMContext):
     user = await db.get_user(message.from_user.id)
-    text = message.text.strip()
+    text = (message.text or "").strip()
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
@@ -1206,14 +1313,26 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
     await state.set_state(Form.waiting_review)
     await callback.answer()
 
+REVIEW_MAX_LEN = 600
+
 @dp.message(StateFilter(Form.waiting_review))
 async def handle_review(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if len(text) < 3:
+        await message.answer("Напиши отзыв текстом, хотя бы пару слов 🙂")
+        return
+    if len(text) > REVIEW_MAX_LEN:
+        await message.answer(
+            f"Отзыв слишком длинный ({len(text)} символов) — максимум {REVIEW_MAX_LEN}. "
+            f"Сократи, пожалуйста, и отправь ещё раз."
+        )
+        return
     user        = await db.get_user(message.from_user.id)
     name        = user.get("first_name") or "Аноним"
     data        = await state.get_data()
     review_key  = data.get("review_key", "")
     title       = TITLES.get(review_key, "разбор")
-    review_text = f"⭐ Отзыв о боте @nnumerology_bot\n👤 {name}\n💫 Разбор: {title}\n\n{message.text}"
+    review_text = f"⭐ Отзыв о боте @nnumerology_bot\n👤 {name}\n💫 Разбор: {title}\n\n{text}"
     reviews_left = user.get("reviews_left", [])
     if review_key and review_key not in reviews_left:
         reviews_left.append(review_key)

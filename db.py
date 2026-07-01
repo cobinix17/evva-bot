@@ -97,6 +97,13 @@ async def init_db(database_url: str):
         pass
 
 # ─── ПОЛЬЗОВАТЕЛИ ────────────────────────────────────────────────────────────
+async def user_exists(user_id: int) -> bool:
+    """Существует ли пользователь в БД ДО автосоздания строки в get_user.
+    Нужно чтобы отличить первый /start от повторного — реферала можно
+    засчитать только по-настоящему новому пользователю."""
+    row = await db_pool.fetchval('SELECT 1 FROM users WHERE user_id = $1', user_id)
+    return row is not None
+
 async def get_user(user_id: int) -> dict:
     row = await db_pool.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
     if not row:
@@ -198,6 +205,18 @@ async def register_referral(referrer_id: int, referred_id: int):
         )
     except Exception as e:
         logging.error(f"register_referral error: {e}")
+
+async def spend_balance(user_id: int, amount: int) -> bool:
+    """Атомарно списывает бонусные звёзды с баланса, если их хватает.
+    Условие ref_balance >= amount проверяется прямо в WHERE, поэтому
+    два параллельных списания не могут увести баланс в минус."""
+    result = await db_pool.fetchval(
+        '''UPDATE users SET ref_balance = ref_balance - $1
+           WHERE user_id = $2 AND ref_balance >= $1
+           RETURNING ref_balance''',
+        amount, user_id
+    )
+    return result is not None
 
 async def add_ref_bonus(referrer_id: int, from_user_id: int, amount: int, razbor_key: str):
     """Начисляет виртуальные звёзды рефереру и записывает в историю."""

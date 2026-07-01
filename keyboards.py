@@ -88,94 +88,80 @@ def free_choose_menu() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def section_destiny_menu(user=None) -> InlineKeyboardMarkup:
+def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None) -> InlineKeyboardMarkup:
+    """Строит меню раздела из (ключ, 'эмодзи Название'), а цену берёт
+    ЖИВЬЁМ из config.PRICES — раньше цена дублировалась текстом в каждом
+    пункте вручную и могла разъехаться с той, что реально списывается."""
     purchased = user.get("purchased", []) if user else []
-    buttons = []
-    items = [
-        ("matrix_full",   "🔮 Матрица судьбы — 149 ⭐"),
-        ("mission",       "🌟 Предназначение и миссия — 99 ⭐"),
-        ("hidden_talents","✨ Скрытые таланты — 79 ⭐"),
-        ("strong_weak",   "⚖️ Сильная/слабая сторона — 49 ⭐"),
-        ("main_fear",     "😨 Главный страх — 49 ⭐"),
-        ("karma",         "🔴 Кармический долг — 99 ⭐"),
-        ("forecast_2026", "🗓 Прогноз на 2026 год — 149 ⭐"),
-    ]
-    for key, label in items:
+    buttons   = []
+    for key, emoji_title in keys_with_emoji:
         prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
+        price  = PRICES.get(key, 49)
+        buttons.append([InlineKeyboardButton(
+            text=f"{prefix}{emoji_title} — {price} ⭐",
+            callback_data=f"buy_{key}"
+        )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def section_destiny_menu(user=None) -> InlineKeyboardMarkup:
+    items = [
+        ("matrix_full",    "🔮 Матрица судьбы"),
+        ("mission",        "🌟 Предназначение и миссия"),
+        ("hidden_talents", "✨ Скрытые таланты"),
+        ("strong_weak",    "⚖️ Сильная/слабая сторона"),
+        ("main_fear",      "😨 Главный страх"),
+        ("karma",          "🔴 Кармический долг"),
+        ("forecast_2026",  "🗓 Прогноз на 2026 год"),
+    ]
+    return _section_menu(items, user)
 
 def section_money_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
     items = [
-        ("finance",       "💹 Финансовый прогноз — 99 ⭐"),
-        ("wealth_blocks", "🚧 Блоки богатства — 149 ⭐"),
-        ("freedom_path",  "🗺 Путь к финансовой свободе — 149 ⭐"),
-        ("calling",       "🌠 Призвание — 79 ⭐"),
-        ("promotion",     "📈 Повышение — 99 ⭐"),
-        ("own_business",  "🏢 Свой бизнес — 99 ⭐"),
-        ("career",        "💼 Карьерный путь — 79 ⭐"),
-        ("money",         "💰 Денежный код — 79 ⭐"),
-        ("days",          "🌙 Сильные и слабые дни — 79 ⭐"),
+        ("finance",       "💹 Финансовый прогноз"),
+        ("wealth_blocks", "🚧 Блоки богатства"),
+        ("freedom_path",  "🗺 Путь к финансовой свободе"),
+        ("calling",       "🌠 Призвание"),
+        ("promotion",     "📈 Повышение"),
+        ("own_business",  "🏢 Свой бизнес"),
+        ("career",        "💼 Карьерный путь"),
+        ("money",         "💰 Денежный код"),
+        ("days",          "🌙 Сильные и слабые дни"),
     ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return _section_menu(items, user)
 
 def section_love_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
     items = [
-        ("compat",   "💑 Совместимость двух людей — 99 ⭐"),
-        ("when",     "💘 Когда встретишь того самого — 79 ⭐"),
-        ("portrait", "💍 Портрет идеального партнёра — 79 ⭐"),
-        ("unlucky",  "💔 Почему не везёт в любви — 49 ⭐"),
-        ("ex",       "💔 Вернётся ли бывший — 49 ⭐"),
-        ("cold",     "❄️ Почему он охладел — 49 ⭐"),
-        ("toxic",    "☠️ Токсичная связь — 79 ⭐"),
-        ("lonely",   "😔 Почему ты одинока — 49 ⭐"),
-        ("breakup",  "💔 Разбор после расставания — 79 ⭐"),
+        ("compat",   "💑 Совместимость двух людей"),
+        ("when",     "💘 Когда встретишь того самого"),
+        ("portrait", "💍 Портрет идеального партнёра"),
+        ("unlucky",  "💔 Почему не везёт в любви"),
+        ("ex",       "💔 Вернётся ли бывший"),
+        ("cold",     "❄️ Почему он охладел"),
+        ("toxic",    "☠️ Токсичная связь"),
+        ("lonely",   "😔 Почему ты одинока"),
+        ("breakup",  "💔 Разбор после расставания"),
     ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return _section_menu(items, user)
 
 def section_health_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
     items = [
-        ("health_code",   "💚 Код здоровья — 79 ⭐"),
-        ("energy_drain",  "⚡ Что крадёт энергию — 49 ⭐"),
-        ("body_message",  "🫀 Послания тела — 49 ⭐"),
-        ("stress_number", "😤 Число стресса — 49 ⭐"),
-        ("intuition",     "🔮 Интуиция и внутренний голос — 79 ⭐"),
+        ("health_code",   "💚 Код здоровья"),
+        ("energy_drain",  "⚡ Что крадёт энергию"),
+        ("body_message",  "🫀 Послания тела"),
+        ("stress_number", "😤 Число стресса"),
+        ("intuition",     "🔮 Интуиция и внутренний голос"),
     ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return _section_menu(items, user)
 
 def section_past_menu(user=None) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", []) if user else []
-    buttons = []
     items = [
-        ("past_life",     "📜 Прошлые жизни — 99 ⭐"),
-        ("future_portal", "🌟 Прогноз на 3 года — 149 ⭐"),
-        ("turning_point", "🔄 Поворотные точки судьбы — 79 ⭐"),
-        ("ancestor_code", "🌳 Родовой код — 99 ⭐"),
+        ("past_life",     "📜 Прошлые жизни"),
+        ("future_portal", "🌟 Прогноз на 3 года"),
+        ("turning_point", "🔄 Поворотные точки судьбы"),
+        ("ancestor_code", "🌳 Родовой код"),
     ]
-    for key, label in items:
-        prefix = "✅ " if key in purchased else ""
-        buttons.append([InlineKeyboardButton(text=prefix + label, callback_data=f"buy_{key}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return _section_menu(items, user)
 
 def my_readings_menu(user: dict) -> InlineKeyboardMarkup:
     purchased = user.get("purchased", [])
@@ -209,10 +195,17 @@ def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="🔮 Все разборы", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def retry_menu(key: str) -> InlineKeyboardMarkup:
+def retry_menu(key: str, is_free: bool = False) -> InlineKeyboardMarkup:
+    retry_callback = f"free_pick_{key}" if is_free else f"buy_{key}"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Попробовать ещё раз", callback_data=f"buy_{key}")],
+        [InlineKeyboardButton(text="🔄 Попробовать ещё раз", callback_data=retry_callback)],
         [InlineKeyboardButton(text="🔮 Меню", callback_data="show_menu")],
+    ])
+
+def balance_pay_menu(key: str, price: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"⭐ Оплатить балансом ({price} ⭐)", callback_data=f"balance_buy_{key}")],
+        [InlineKeyboardButton(text="💳 Оплатить звёздами Telegram", callback_data=f"stars_buy_{key}")],
     ])
 
 def coupon_razboy_menu(code: str, user: dict = None) -> InlineKeyboardMarkup:

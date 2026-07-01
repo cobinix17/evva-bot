@@ -1,6 +1,6 @@
-aiogram
-httpx
-aiohttp
-asyncpg
-fpdf2
-pyenchant
+aiogram>=3.4,<4.0
+httpx>=0.25,<1.0
+aiohttp>=3.9,<4.0
+asyncpg>=0.29,<0.32
+fpdf2>=2.7,<3.0
+pyenchant>=3.2,<4.0
