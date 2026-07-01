@@ -1,5 +1,12 @@
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
 .env
 *.log
+.DS_Store
+*.pdf
