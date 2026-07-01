@@ -277,7 +277,7 @@ def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int
         if not line:
             pdf.ln(4)
             continue
-        clean_line = re.sub(r"[^\w\s\(\)\-—.,!?:;]", "", line, flags=re.UNICODE).strip()
+        clean_line = re.sub(r"[^\w\s\(\)\-—.,!?:;%№]", "", line, flags=re.UNICODE).strip()
         is_header  = _is_header_line(paragraph)
         if is_header and clean_line:
             _draw_header_band(pdf, clean_line, font_name)

@@ -174,7 +174,7 @@ def _clean_text(text: str) -> str:
         if (0x0400 <= cp <= 0x04FF or 0x2000 <= cp <= 0x206F or
             0x2600 <= cp <= 0x27FF or 0x1F300 <= cp <= 0x1FFFF or
             0x2700 <= cp <= 0x27BF or
-            char in '0123456789.,!?:;-—()«»"\'\n\r\t ⭐'):
+            char in '0123456789.,!?:;-—()«»"\'\n\r\t ⭐%№'):
             result.append(char)
     return ''.join(result)
 
