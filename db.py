@@ -17,7 +17,9 @@ def utc_now() -> datetime:
 # ─── ИНИЦИАЛИЗАЦИЯ ───────────────────────────────────────────────────────────
 async def init_db(database_url: str):
     global db_pool
-    db_pool = await asyncpg.create_pool(database_url)
+    # min_size=5 держит соединения тёплыми, max_size=20 даёт запас на всплески
+    # (дефолт asyncpg — всего 10). Пул переиспользуется, лишние закрываются.
+    db_pool = await asyncpg.create_pool(database_url, min_size=5, max_size=20)
     await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id            BIGINT PRIMARY KEY,

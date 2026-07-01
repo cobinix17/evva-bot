@@ -133,6 +133,18 @@ class Form(StatesGroup):
 # поэтому простого set достаточно — внешний стор (Redis) не нужен.
 _generating: set[int] = set()
 
+# Глобальный лимит одновременных генераций разборов. Защищает от всплеска
+# (сотни человек нажали «купить» в одну секунду → сотни параллельных запросов
+# к OpenRouter): лишние ждут своей очереди, а не бьют по rate-лимитам и бюджету.
+_gen_semaphore = asyncio.Semaphore(8)
+
+async def _generate_pdf_async(*args, **kwargs) -> bytes:
+    """Сборка PDF (fontTools) — тяжёлая по CPU и СИНХРОННАЯ: при прямом вызове
+    она блокирует весь event loop, и на эти секунды бот «подвисает» для всех
+    остальных пользователей. Выносим в отдельный поток через executor."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: generate_pdf(*args, **kwargs))
+
 # ─── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────────────────────────────────────
 async def check_subscription(user_id: int) -> bool:
     if user_id == ADMIN_ID:
@@ -1048,7 +1060,8 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     try:
         context = build_numerology_context(name, date_str)
         prompt  = build_prompt(waiting, name=name, context=context, date=date_str)
-        answer  = await ask_ai(prompt)
+        async with _gen_semaphore:
+            answer = await ask_ai(prompt)
         await stop_intermediate()
 
         title = TITLES.get(waiting, "🔮 Разбор")
@@ -1056,7 +1069,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
 
         if waiting in PDF_KEYS:
             try:
-                pdf_bytes = generate_pdf(title, answer, user_name=name, destiny_number=number)
+                pdf_bytes = await _generate_pdf_async(title, answer, user_name=name, destiny_number=number)
                 pdf_file  = BufferedInputFile(pdf_bytes, filename=f"{title}.pdf")
                 await bot.send_document(
                     message.chat.id,
@@ -1134,13 +1147,14 @@ async def handle_two_dates(message: Message, state: FSMContext):
         n2      = calculate_destiny(parts[1])
         context = build_numerology_context(name, parts[0])
         prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
-        answer  = await ask_ai(prompt)
+        async with _gen_semaphore:
+            answer = await ask_ai(prompt)
         await stop_intermediate()
 
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
 
         try:
-            pdf_bytes = generate_pdf("💑 Совместимость", answer, user_name=name, destiny_number=n1)
+            pdf_bytes = await _generate_pdf_async("💑 Совместимость", answer, user_name=name, destiny_number=n1)
             pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
             await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
         except Exception as pdf_err:
