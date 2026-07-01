@@ -300,22 +300,45 @@ def _get_spell_dict():
         _SPELL_DICT = None; _SPELL_READY = False
     return _SPELL_DICT
 
+def _edit_distance(a: str, b: str) -> int:
+    """Классическое расстояние Левенштейна между двумя словами."""
+    a, b = a.lower(), b.lower()
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost))
+        prev = cur
+    return prev[-1]
+
 def _similar_enough(a, b):
-    if abs(len(a) - len(b)) > max(2, len(a) // 3):
+    """Слово исправляем ТОЛЬКО если это явная опечатка — одна правка
+    (вставка/удаление/замена буквы) и та же первая буква. Раньше проверка
+    была слишком слабой (совпадение половины букв в любом порядке) — из-за
+    этого спеллчекер подменял верные слова похожими по буквам ('идут' →
+    'дитя', 'кончина' → 'кончин'). Claude Haiku почти не делает орфографических
+    ошибок, поэтому здесь лучше перестраховаться и не трогать слово."""
+    if a.lower() == b.lower():
         return False
-    common = sum(1 for ch in set(a.lower()) if ch in b.lower())
-    return common >= max(1, len(set(a.lower())) // 2)
+    if a[:1].lower() != b[:1].lower():
+        return False
+    if abs(len(a) - len(b)) > 1:
+        return False
+    return _edit_distance(a, b) == 1
 
 def _fix_spelling(text: str) -> str:
-    """Проверяет каждое кириллическое слово длиннее 3 букв через hunspell;
-    если слово отсутствует в словаре и первый вариант исправления похож по
-    написанию — тихо заменяет."""
+    """Проверяет каждое кириллическое слово длиннее 4 букв через hunspell;
+    если слово отсутствует в словаре и первый вариант исправления отличается
+    ровно на одну опечатку — тихо заменяет. Иначе оставляет как есть."""
     spell = _get_spell_dict()
     if spell is None:
         return text
     def _replace(match):
         word = match.group(0)
-        if len(word) <= 3: return word
+        if len(word) <= 4: return word
         try:
             if spell.check(word): return word
             suggestions = spell.suggest(word)
