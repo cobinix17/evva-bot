@@ -90,6 +90,9 @@ C_BADGE_FILL  = (234, 224, 248)
 C_BADGE_TEXT  = (104, 64, 148)
 C_ACCENT      = (172, 130, 212)
 C_GOLD        = (193, 154, 76)   # золото для нумерологических символов
+C_WATERMARK   = (241, 235, 249)  # едва заметная октаграмма на фоне страницы
+C_HEAD_BAND   = (238, 229, 249)  # плашка под заголовком темы
+C_SUBTITLE    = (150, 120, 186)  # подзаголовок под названием разбора
 
 # ── ДЕКОРАТИВНЫЕ ЭЛЕМЕНТЫ ────────────────────────────────────────────────────
 def _draw_star_polygon(pdf: FPDF, cx: float, cy: float, r_outer: float, r_inner: float,
@@ -171,6 +174,13 @@ class NumerologyPDF(FPDF):
         _draw_corner_ornament(self, 14, H - 15, corner_size, C_GOLD, flip_x=False, flip_y=True)
         _draw_corner_ornament(self, W - 14, H - 15, corner_size, C_GOLD, flip_x=True, flip_y=True)
 
+        # едва заметная октаграмма-водяной знак по центру страницы —
+        # рисуется тонкими линиями почти в цвет фона, не мешает чтению
+        _draw_star_polygon(self, W / 2, H / 2, r_outer=62, r_inner=27,
+                           points=8, color=C_WATERMARK, line_width=0.3)
+        _draw_star_polygon(self, W / 2, H / 2, r_outer=40, r_inner=17,
+                           points=8, color=C_WATERMARK, rotate_deg=-67.5, line_width=0.3)
+
         self.set_font(self.font_name, style="B", size=9)
         self.set_text_color(255, 255, 255)
         self.set_xy(0, 2)
@@ -212,7 +222,12 @@ def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int
     pdf.set_font(font_name, style="B", size=18)
     pdf.set_text_color(*C_TITLE)
     pdf.multi_cell(0, 9, clean_title.upper(), align="C")
-    pdf.ln(2)
+    pdf.ln(0.5)
+
+    pdf.set_font(font_name, size=9)
+    pdf.set_text_color(*C_SUBTITLE)
+    pdf.cell(0, 5, "✦  Н У М Е Р О Л О Г И Ч Е С К И Й   Р А З Б О Р  ✦", align="C")
+    pdf.ln(6)
 
     y   = pdf.get_y()
     mid = W / 2
@@ -264,17 +279,53 @@ def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int
         clean_line = re.sub(r"[^\w\s\(\)\-—.,!?:;]", "", line, flags=re.UNICODE).strip()
         is_header  = _is_header_line(paragraph)
         if is_header and clean_line:
-            pdf.ln(1)
-            pdf.set_x(pdf.l_margin)
-            pdf.set_font(font_name, style="B", size=12.5)
-            pdf.set_text_color(*C_HEADER)
-            pdf.multi_cell(0, 8, clean_line)
-            pdf.set_font(font_name, size=11.5)
-            pdf.set_text_color(*C_BODY)
-            pdf.ln(1)
+            _draw_header_band(pdf, clean_line, font_name)
         elif clean_line:
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(0, 7, clean_line)
-            pdf.ln(1)
+            pdf.ln(1.5)
 
     return bytes(pdf.output())
+
+
+def _draw_header_band(pdf: FPDF, text: str, font_name: str):
+    """Заголовок темы на лавандовой плашке: золотая полоса слева, векторная
+    4-лучевая звёздочка-маркер (вместо вырезанного эмодзи) и жирный текст.
+    Высота плашки считается по числу строк, чтобы длинные заголовки не
+    обрезались, и плашка не разрывалась переносом страницы."""
+    pdf.ln(2.5)
+    text_indent = 9.0
+    band_x = pdf.l_margin
+    band_w = pdf.w - pdf.l_margin - pdf.r_margin
+    avail  = band_w - text_indent - 3
+
+    pdf.set_font(font_name, style="B", size=12.5)
+    try:
+        lines = pdf.multi_cell(avail, 7, text, dry_run=True, output="LINES")
+        n_lines = max(1, len(lines))
+    except Exception:
+        approx = pdf.get_string_width(text)
+        n_lines = max(1, int(approx / avail) + 1)
+
+    band_h = n_lines * 7 + 3.5
+    band_y = pdf.get_y()
+
+    # чтобы плашка не оказалась разорванной внизу страницы
+    if band_y + band_h > pdf.h - pdf.b_margin:
+        pdf.add_page()
+        band_y = pdf.get_y()
+
+    pdf.set_fill_color(*C_HEAD_BAND)
+    pdf.rect(band_x, band_y, band_w, band_h, style="F")
+    pdf.set_fill_color(*C_GOLD)
+    pdf.rect(band_x, band_y, 1.6, band_h, style="F")
+    _draw_star_polygon(pdf, band_x + 5.2, band_y + band_h / 2,
+                       r_outer=2.3, r_inner=1.0, points=4, color=C_GOLD, line_width=0.5)
+
+    pdf.set_xy(band_x + text_indent, band_y + 1.75)
+    pdf.set_text_color(*C_HEADER)
+    pdf.multi_cell(avail, 7, text)
+
+    pdf.set_y(band_y + band_h + 2.5)
+    pdf.set_font(font_name, size=11.5)
+    pdf.set_text_color(*C_BODY)
