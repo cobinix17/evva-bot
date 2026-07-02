@@ -164,6 +164,19 @@ def _foreign_ratio(text: str) -> float:
         return 0.0
     return len(_FOREIGN_RE.findall(text)) / len(stripped)
 
+def _cleanup_orphan_punctuation(text: str) -> str:
+    """_clean_text вырезает недопустимые символы (латиницу и т.п.)
+    ПОСИМВОЛЬНО, а не целыми словами. Если модель нарушила запрет на
+    латиницу внутри перечисления в скобках — например 'документ (Word,
+    Google Docs, любой)' — после вырезания букв остаются осиротевшие
+    запятые и пробелы: 'документ (,  , любой)'. Подчищаем такие следы."""
+    text = re.sub(r'(,\s*){2,}', ', ', text)   # несколько запятых подряд -> одна
+    text = re.sub(r'\(\s*,\s*', '(', text)     # запятая сразу после "("
+    text = re.sub(r'\s*,\s*\)', ')', text)     # запятая сразу перед ")"
+    text = re.sub(r'\(\s*\)', '', text)        # опустевшие скобки целиком
+    text = re.sub(r' {2,}', ' ', text)         # пробелы, оставшиеся от слов
+    return text
+
 def _clean_text(text: str) -> str:
     """Сначала восстанавливаем 'лангсвопы', и только потом отбрасываем
     оставшиеся недопустимые символы."""
@@ -176,7 +189,7 @@ def _clean_text(text: str) -> str:
             0x2700 <= cp <= 0x27BF or
             char in '0123456789.,!?:;-—()«»"\'\n\r\t ⭐%№'):
             result.append(char)
-    return ''.join(result)
+    return _cleanup_orphan_punctuation(''.join(result))
 
 def _strip_preamble(text: str) -> str:
     """Любой из ИИ-провайдеров может изредка 'проговорить' структуру ответа
