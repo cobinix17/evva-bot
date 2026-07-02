@@ -32,8 +32,14 @@ HEADER_EMOJI = (
     "📚","🔍","💹","🌊","⭐","🌙","👤","🌿","🔋","🕳","👥","💬","📡",
 )
 
+_VS16 = '️'  # невидимый модификатор "emoji-стиль" — модель иногда его не ставит
+
+def _strip_vs16(s: str) -> str:
+    return s.replace(_VS16, '')
+
 def _is_header_line(s: str) -> bool:
-    return any(s.startswith(e) for e in HEADER_EMOJI)
+    s = _strip_vs16(s)
+    return any(s.startswith(_strip_vs16(e)) for e in HEADER_EMOJI)
 
 _TITLE_STRIP_RE = re.compile(r'^[^\w]+')
 

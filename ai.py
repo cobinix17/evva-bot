@@ -133,12 +133,19 @@ _FOREIGN_RE = re.compile(
     r'\u0250-\u02AF\u0E00-\u0E7F\uAC00-\uD7AF\u4E00-\u9FFF]'
 )
 
+_VS16 = '️'  # невидимый модификатор "emoji-стиль" — модель иногда его не ставит
+
+def _strip_vs16(s: str) -> str:
+    return s.replace(_VS16, '')
+
 def _is_header(s: str) -> bool:
-    return any(s.startswith(e) for e in _HEADER_EMOJI)
+    s = _strip_vs16(s)
+    return any(s.startswith(_strip_vs16(e)) for e in _HEADER_EMOJI)
 
 def _header_emoji_of(s: str) -> str | None:
+    s = _strip_vs16(s)
     for e in _HEADER_EMOJI:
-        if s.startswith(e):
+        if s.startswith(_strip_vs16(e)):
             return e
     return None
 
