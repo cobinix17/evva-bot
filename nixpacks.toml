@@ -1,0 +1,7 @@
+# Системные библиотеки для WeasyPrint (генерация PDF через HTML/CSS, см. pdf.py).
+# Без них pip install weasyprint отработает, но рендер PDF будет падать в
+# рантайме — тогда pdf.py автоматически откатится на резервный fpdf-рендер
+# (см. generate_pdf() в pdf.py), так что бот не останется совсем без PDF,
+# но и премиального оформления не будет, пока эти пакеты не подтянутся.
+[phases.setup]
+nixPkgs = ["pango", "cairo", "gdk-pixbuf", "libffi", "fontconfig"]

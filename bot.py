@@ -25,7 +25,7 @@ from readings import PROMPTS
 from broadcasts import MORNING
 
 import db
-from config import TITLES, PRICES, PDF_KEYS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, ADMIN_ID, REF_BONUS_PERCENT
+from config import TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, ADMIN_ID, REF_BONUS_PERCENT
 from ai import ask_ai
 from pdf import generate_pdf
 from numerology import (
@@ -927,6 +927,21 @@ async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
 
     await _start_date_flow(callback.message, state, user, key)
 
+def _build_upsells(key: str, user: dict) -> list[dict]:
+    """Список апселлов для страницы CTA в PDF — те же кандидаты, что и в
+    upsell_menu(), но простыми dict без объектов aiogram (pdf.py не зависит
+    от aiogram/config — принимает только голые данные)."""
+    purchased = user.get("purchased", [])
+    result = []
+    for s in UPSELLS.get(key, ()):
+        if s not in purchased:
+            result.append({
+                "title": TITLES.get(s, s),
+                "desc":  RAZBOR_DESCRIPTIONS.get(s, ""),
+                "price": PRICES.get(s, 49),
+            })
+    return result
+
 # ─── УМНАЯ ДАТА ──────────────────────────────────────────────────────────────
 async def _ask_date(message: Message, user: dict, key: str | None = None):
     """key — какой разбор выбран. Если есть короткое описание для него,
@@ -1146,17 +1161,19 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         title = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
 
-        if waiting in PDF_KEYS:
-            try:
-                pdf_bytes = await _generate_pdf_async(title, answer, user_name=name, destiny_number=number)
-                pdf_file  = BufferedInputFile(pdf_bytes, filename=f"{title}.pdf")
-                await bot.send_document(
-                    message.chat.id,
-                    pdf_file,
-                    caption="📄 Твой разбор в PDF — сохрани себе!"
-                )
-            except Exception as pdf_err:
-                logging.warning(f"PDF generation failed for {waiting}: {pdf_err}")
+        try:
+            pdf_bytes = await _generate_pdf_async(
+                title, answer, user_name=name, destiny_number=number,
+                birth_date=date_str, upsells=_build_upsells(waiting, user),
+            )
+            pdf_file = BufferedInputFile(pdf_bytes, filename=f"{title}.pdf")
+            await bot.send_document(
+                message.chat.id,
+                pdf_file,
+                caption="📄 Твой разбор в PDF — сохрани себе!"
+            )
+        except Exception as pdf_err:
+            logging.warning(f"PDF generation failed for {waiting}: {pdf_err}")
 
         kb = upsell_menu(waiting, user)
         has_upsells = any(
@@ -1257,7 +1274,10 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
 
         try:
-            pdf_bytes = await _generate_pdf_async("💑 Совместимость", answer, user_name=name, destiny_number=n1)
+            pdf_bytes = await _generate_pdf_async(
+                "💑 Совместимость", answer, user_name=name, destiny_number=n1,
+                birth_date=parts[0], upsells=_build_upsells("compat", user),
+            )
             pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
             await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
         except Exception as pdf_err:

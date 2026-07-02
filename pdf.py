@@ -1,6 +1,17 @@
-# pdf.py — генерация PDF-разборов с нумерологической символикой.
-# Самодостаточный модуль: своя копия HEADER_EMOJI/_is_header_line (как в ai.py),
-# не зависит от bot.py/config.py/ai.py.
+# pdf.py — генерация PDF-разборов.
+#
+# Основной рендер — WeasyPrint + Jinja2 (pdf_template.html): полноценная HTML/CSS
+# вёрстка A4 (обложка, карта чисел, авто-разбивка текста по секциям, апселлы),
+# работает одинаково для любого из 34 разборов.
+#
+# Резервный рендер — старый fpdf2 (рисование примитивами). Используется
+# автоматически, если WeasyPrint недоступен в окружении (не хватает системных
+# библиотек pango/cairo/gdk-pixbuf — см. nixpacks.toml) или упал по любой
+# другой причине: пользователь должен получить PDF в любом случае, пусть и в
+# более простом оформлении, а не остаться совсем без него.
+#
+# Зависимость внутри проекта — только numerology.py (структурированные числа
+# для карты чисел), сам он не тянет ничего из bot.py/config.py/ai.py.
 import os
 import re
 import io
@@ -9,7 +20,10 @@ import logging
 from datetime import datetime
 from fpdf import FPDF
 
-# Эмодзи-маркеры подзаголовков внутри текста разбора — единый источник правды.
+from numerology import numerology_summary
+
+# Эмодзи-маркеры подзаголовков внутри текста разбора — единый источник правды,
+# используется и для авто-разбивки на секции (WeasyPrint), и для fpdf-fallback.
 HEADER_EMOJI = (
     "🔮","✨","💎","💰","💕","🔴","🌟","📅","🎯","💡","🚧",
     "💪","⚠️","🌱","🎭","💼","🤝","📈","⏰","🗺","🌍","🏆",
@@ -21,7 +35,76 @@ HEADER_EMOJI = (
 def _is_header_line(s: str) -> bool:
     return any(s.startswith(e) for e in HEADER_EMOJI)
 
-# ── ШРИФТЫ ────────────────────────────────────────────────────────────────────
+_TITLE_STRIP_RE = re.compile(r'^[^\w]+')
+
+def _clean_reading_title(title: str) -> str:
+    """Убирает ведущий эмодзи-маркер из заголовка. Шрифты Cormorant/Spectral
+    не содержат emoji-глифов — оставленный эмодзи показался бы пустым
+    квадратом, поэтому в PDF название разбора идёт чистым текстом, а эмодзи
+    остаётся только в тексте сообщения в Telegram."""
+    return _TITLE_STRIP_RE.sub('', title).strip()
+
+_ROMAN = ["I","II","III","IV","V","VI","VII","VIII","IX","X","XI","XII","XIII","XIV"]
+
+def _split_sections(text: str) -> list[dict]:
+    """Режет текст разбора на блоки по строкам-заголовкам (эмодзи-маркер в
+    начале строки). Если заголовков нет вообще (нестандартный текст) —
+    весь текст идёт одним блоком, чтобы страница не осталась пустой."""
+    sections = []
+    cur = None
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _is_header_line(line):
+            cur = {"title": _clean_reading_title(line), "body": ""}
+            sections.append(cur)
+        elif cur is not None:
+            cur["body"] = f"{cur['body']} {line}".strip() if cur["body"] else line
+    if not sections:
+        sections = [{"title": "Разбор", "body": text.strip()}]
+    for i, s in enumerate(sections):
+        s["rn"] = _ROMAN[i] if i < len(_ROMAN) else str(i + 1)
+    return sections
+
+def _paginate(sections: list[dict], per_page: int = 3) -> list[list[dict]]:
+    return [sections[i:i + per_page] for i in range(0, len(sections), per_page)]
+
+# ── WEASYPRINT (основной рендер) ──────────────────────────────────────────────
+_TEMPLATE_DIR  = os.path.dirname(__file__)
+_TEMPLATE_NAME = "pdf_template.html"
+
+def _generate_pdf_weasy(title: str, text: str, user_name: str, destiny_number: int | None,
+                         birth_date: str | None, upsells: list[dict] | None) -> bytes:
+    from jinja2 import Environment, FileSystemLoader
+    from weasyprint import HTML
+
+    numbers = None
+    if birth_date:
+        try:
+            numbers = numerology_summary(user_name, birth_date)
+        except Exception as e:
+            logging.warning(f"numerology_summary failed for PDF card page: {e}")
+
+    clean_upsells = [
+        {**u, "title": _clean_reading_title(u["title"])} for u in (upsells or [])
+    ]
+
+    env      = Environment(loader=FileSystemLoader(_TEMPLATE_DIR), autoescape=True)
+    template = env.get_template(_TEMPLATE_NAME)
+    html_str = template.render(
+        reading_title  = _clean_reading_title(title),
+        name           = user_name or None,
+        birthdate      = birth_date,
+        destiny_number = destiny_number,
+        numbers        = numbers,
+        section_pages  = _paginate(_split_sections(text)),
+        upsells        = clean_upsells,
+        bot_handle     = "@nnumerology_bot",
+    )
+    return HTML(string=html_str, base_url=_TEMPLATE_DIR).write_pdf()
+
+# ── FPDF (резервный рендер) ───────────────────────────────────────────────────
 # Шрифт должен лежать в репо как DejaVuSans.ttf / DejaVuSans-Bold.ttf,
 # рядом с этим файлом. При отсутствии/повреждении — скачивается автоматически.
 FONT_PATH      = os.path.join(os.path.dirname(__file__), "DejaVuSans.ttf")
@@ -194,9 +277,8 @@ class NumerologyPDF(FPDF):
         self.set_text_color(255, 255, 255)
         self.cell(0, 5.5, f"Telegram: @nnumerology_bot   •   стр. {self.page_no()}", align="C")
 
-# ── ГЕНЕРАЦИЯ PDF ─────────────────────────────────────────────────────────────
-def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int | None = None) -> bytes:
-    """Красивый PDF для женской аудитории, с нумерологической символикой:
+def _generate_pdf_fpdf(title: str, text: str, user_name: str = "", destiny_number: int | None = None) -> bytes:
+    """Резервный рендер (см. docstring модуля): рисование примитивами через fpdf2 —
     восьмиконечная звезда-октаграмма в разделителе, орнаментальные уголки
     страницы и медальон с числом судьбы рядом с именем (если оно известно)."""
     font_path = _ensure_font()
@@ -288,7 +370,6 @@ def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int
 
     return bytes(pdf.output())
 
-
 def _draw_header_band(pdf: FPDF, text: str, font_name: str):
     """Заголовок темы на лавандовой плашке: золотая полоса слева, векторная
     4-лучевая звёздочка-маркер (вместо вырезанного эмодзи) и жирный текст.
@@ -330,3 +411,16 @@ def _draw_header_band(pdf: FPDF, text: str, font_name: str):
     pdf.set_y(band_y + band_h + 2.5)
     pdf.set_font(font_name, size=11.5)
     pdf.set_text_color(*C_BODY)
+
+# ── ТОЧКА ВХОДА ────────────────────────────────────────────────────────────────
+def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int | None = None,
+                  birth_date: str | None = None, upsells: list[dict] | None = None) -> bytes:
+    """Генерирует PDF разбора. birth_date и upsells — необязательные: если дата
+    рождения передана, на второй странице появляется карта чисел; если передан
+    список апселлов ([{'title','desc','price'}, ...]) — добавляется страница CTA.
+    См. docstring модуля про основной/резервный рендер."""
+    try:
+        return _generate_pdf_weasy(title, text, user_name, destiny_number, birth_date, upsells)
+    except Exception as e:
+        logging.warning(f"WeasyPrint PDF failed ({e}), falling back to fpdf")
+        return _generate_pdf_fpdf(title, text, user_name=user_name, destiny_number=destiny_number)

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ru">
+<!--
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  EVA · PDF-шаблон разбора (Jinja2 + WeasyPrint)                      │
+  │  Универсальный: обложка + опциональная карта чисел +                │
+  │  авто-разбивка текста по секциям + опциональные апселлы.            │
+  │  Рендерится из pdf.py через generate_pdf().                         │
+  └─────────────────────────────────────────────────────────────────────┘
+-->
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family:'Head'; src:url('CormorantGaramond-SemiBold.ttf'); font-weight:600; }
+  @font-face { font-family:'Head'; src:url('CormorantGaramond-Medium.ttf');   font-weight:500; }
+  @font-face { font-family:'Body'; src:url('Spectral-Regular.ttf'); font-weight:400; }
+  @font-face { font-family:'Body'; src:url('Spectral-Medium.ttf');  font-weight:500; }
+  @font-face { font-family:'Body'; src:url('Spectral-Italic.ttf');  font-weight:400; font-style:italic; }
+
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family:'Body', serif; color:#3E2F58; }
+
+  .page { position: relative; width: 210mm; height: 297mm;
+    background: #FBF8FE; overflow: hidden; page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+
+  .bar { position:absolute; left:0; right:0; height:26px;
+    background:linear-gradient(90deg,#5E3A85,#7E52A8,#5E3A85);
+    display:flex; align-items:center; justify-content:center; }
+  .bar span { font-family:'Body',serif; font-size:9px; letter-spacing:.4em; color:#F3EBFB; }
+  .bar-top { top:0; } .bar-bot { bottom:0; }
+  .bar-bot span { font-size:8.5px; letter-spacing:.26em; color:#EFE6F9; }
+
+  .frame { position:absolute; top:32px; right:26px; bottom:32px; left:26px;
+    border:1px solid rgba(138,92,180,.4); }
+  .pad { position:absolute; top:32px; right:26px; bottom:32px; left:26px; }
+
+  h1 { font-family:'Head',serif; font-weight:600; color:#4A2E6B; }
+  h2 { font-family:'Head',serif; font-weight:600; color:#4A2E6B; }
+  .eyebrow { font-family:'Body',serif; letter-spacing:.46em; color:#A594BE; text-transform:uppercase; }
+  .accent { color:{{ accent | default('#B08A3E') }}; }
+  .star { width:14px; height:14px; display:inline-block; vertical-align:middle; }
+
+  .medal { position:relative; display:flex; align-items:center; justify-content:center; }
+  .medal svg { position:absolute; inset:0; width:100%; height:100%; }
+  .medal .num { font-family:'Head',serif; font-weight:600; color:#4A2E6B; font-variant-numeric:lining-nums; }
+  .figures { font-variant-numeric:lining-nums; }
+
+  .numgrid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
+  .numcard { padding:16px; background:#F6F0FC; border:1px solid #E7DBF3; text-align:center; }
+  .numcard .big { font-family:'Head',serif; font-weight:600; font-size:38px; line-height:1; font-variant-numeric:lining-nums; }
+  .numcard .lbl { font-family:'Body',serif; font-size:9.5px; letter-spacing:.16em;
+    color:#8A5CB4; text-transform:uppercase; margin:7px 0 5px; }
+  .numcard .desc { font-family:'Body',serif; font-size:11px; line-height:1.4; color:#6B5A88; }
+
+  .sec { margin-bottom:22px; }
+  .sec-h { display:flex; align-items:center; gap:11px; margin-bottom:9px; }
+  .sec-rn { font-family:'Head',serif; font-weight:600; font-size:13px; letter-spacing:.14em; min-width:26px; }
+  .sec-t  { font-family:'Head',serif; font-weight:600; font-size:18px; letter-spacing:.05em;
+    color:#4A2E6B; text-transform:uppercase; }
+  .sec-rule { flex:1; height:1px; background:linear-gradient(90deg,#D8BC77,transparent); }
+  .sec-p  { font-family:'Body',serif; font-size:13px; line-height:1.62; color:#3E2F58; }
+
+  .upsell { display:flex; align-items:center; justify-content:space-between;
+    padding:16px 22px; background:#F6F0FC; border:1px solid #E7DBF3; margin-bottom:12px; }
+  .upsell .t { font-family:'Head',serif; font-weight:600; font-size:19px; color:#4A2E6B; }
+  .upsell .d { font-family:'Body',serif; font-size:11px; color:#8272A0; margin-top:2px; }
+  .upsell .p { font-family:'Head',serif; font-weight:600; font-size:18px; white-space:nowrap; font-variant-numeric:lining-nums; }
+</style>
+</head>
+<body>
+
+{% set total_pages = 1 + (1 if numbers else 0) + (section_pages | length) + (1 if upsells else 0) %}
+{% set page_after_numbers = 2 + (1 if numbers else 0) %}
+{#- ни один из подключённых шрифтов (Cormorant/Spectral) не содержит символ ✦ —
+   он рисуется той же векторной иконкой-звёздочкой, что и остальной декор,
+   чтобы не зависеть от того, какие шрифты случайно найдутся в fallback-цепочке
+   окружения. #}
+{% macro spark(color='#F3EBFB', size=8) -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="{{ color }}" stroke-width="1.6" style="width:{{ size }}px;height:{{ size }}px;display:inline-block;vertical-align:middle;"><rect x="5.5" y="5.5" width="13" height="13"/><rect x="5.5" y="5.5" width="13" height="13" transform="rotate(45 12 12)"/></svg>
+{%- endmacro %}
+
+<!-- ══════════ 1 · ОБЛОЖКА ══════════ -->
+<div class="page">
+  <div class="bar bar-top"><span>{{ spark() }}&nbsp;&nbsp;E V A&nbsp;&nbsp;·&nbsp;&nbsp;N U M E R O L O G&nbsp;&nbsp;{{ spark() }}</span></div>
+  <div class="bar bar-bot"><span>Telegram&nbsp;&nbsp;{{ bot_handle | default('@nnumerology_bot') }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ reading_title | upper }}</span></div>
+  <div class="frame"></div>
+  <div class="pad" style="padding:64px 52px 58px; display:flex; flex-direction:column; align-items:center; text-align:center;">
+    <div class="eyebrow" style="font-size:10.5px;">Персональный нумерологический разбор</div>
+
+    <svg viewBox="0 0 120 120" fill="none" stroke="{{ accent | default('#B08A3E') }}" style="width:118px;height:118px;margin:34px 0 26px;">
+      <circle cx="60" cy="60" r="53" stroke-width="0.8"/><circle cx="60" cy="60" r="45" stroke-width="1"/>
+      <rect x="27" y="27" width="66" height="66" stroke-width="1"/>
+      <rect x="27" y="27" width="66" height="66" transform="rotate(45 60 60)" stroke-width="1"/>
+      <circle cx="60" cy="60" r="8" stroke-width="1.1"/>
+    </svg>
+
+    <h1 style="font-size:38px; line-height:1.18; letter-spacing:.02em; max-width:420px;">{{ reading_title }}</h1>
+
+    <div style="margin:22px 0 0;">
+      <span style="display:inline-block; width:56px; height:1px; background:{{ accent | default('#B08A3E') }}; vertical-align:middle;"></span>
+      <svg class="star accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" style="margin:0 12px;"><rect x="5.5" y="5.5" width="13" height="13"/><rect x="5.5" y="5.5" width="13" height="13" transform="rotate(45 12 12)"/></svg>
+      <span style="display:inline-block; width:56px; height:1px; background:{{ accent | default('#B08A3E') }}; vertical-align:middle;"></span>
+    </div>
+
+    <p style="margin:18px 0 0; font-style:italic; font-size:15px; line-height:1.55; color:#6E5C8C; max-width:340px;">Твой персональный разбор, прочитанный по дате рождения</p>
+
+    <div style="flex:1;"></div>
+
+    {% if name %}
+    <div class="eyebrow" style="font-size:10px; margin-bottom:12px;">Подготовлено для</div>
+    <div style="font-family:'Head',serif; font-weight:600; font-size:38px; color:#4A2E6B; line-height:1;">{{ name }}</div>
+    {% endif %}
+    {% if birthdate %}<div style="font-size:13px; color:#7B6997; letter-spacing:.06em; margin-top:6px;">{{ birthdate }}</div>{% endif %}
+
+    {% if destiny_number is not none %}
+    <div class="medal" style="width:132px; height:132px; margin-top:30px;">
+      <svg viewBox="0 0 120 120" fill="none" stroke="{{ accent | default('#B08A3E') }}"><circle cx="60" cy="60" r="57" stroke-width="1.1"/><circle cx="60" cy="60" r="50" stroke-width="0.6"/></svg>
+      <span class="num" style="font-size:66px;">{{ destiny_number }}</span>
+    </div>
+    <div class="eyebrow" style="font-size:10px; color:#8A5CB4; margin-top:14px;">Число судьбы</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ══════════ 2 · КАРТА ЧИСЕЛ (опционально) ══════════ -->
+{% if numbers %}
+<div class="page">
+  <div class="bar bar-top"><span>{{ spark() }}&nbsp;&nbsp;E V A&nbsp;&nbsp;·&nbsp;&nbsp;N U M E R O L O G&nbsp;&nbsp;{{ spark() }}</span></div>
+  <div class="bar bar-bot"><span>{{ bot_handle | default('@nnumerology_bot') }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ reading_title }}&nbsp;&nbsp;·&nbsp;&nbsp;2</span></div>
+  <div class="frame"></div>
+  <div class="pad" style="padding:40px 44px;">
+    <div style="text-align:center;">
+      <div class="eyebrow" style="font-size:10px;">Раздел первый</div>
+      <h2 style="margin-top:8px; font-size:34px;">Карта твоих чисел</h2>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:26px; margin-top:28px; padding:22px 26px; background:#F3EBFB; border:1px solid #E1D2F0;">
+      <div class="medal" style="width:96px; height:96px; flex:none;">
+        <svg viewBox="0 0 120 120" fill="none" stroke="{{ accent | default('#B08A3E') }}"><circle cx="60" cy="60" r="57" stroke-width="1.1"/><circle cx="60" cy="60" r="50" stroke-width="0.6"/></svg>
+        <span class="num" style="font-size:50px;">{{ numbers.destiny }}</span>
+      </div>
+      <div style="text-align:left;">
+        <div style="font-family:'Body',serif; font-size:10px; letter-spacing:.34em; color:#8A5CB4; text-transform:uppercase;">Число судьбы · жизненный путь</div>
+        <div style="font-family:'Head',serif; font-weight:600; font-size:24px; color:#4A2E6B; margin:3px 0 5px;">{{ numbers.destiny_title }}</div>
+        <p style="font-size:12.5px; line-height:1.5; color:#5A4A76; max-width:330px;">{{ numbers.destiny_desc }}</p>
+      </div>
+    </div>
+
+    <div class="numgrid" style="margin-top:16px;">
+      {% for c in numbers.cards %}
+      <div class="numcard">
+        <div class="big accent">{{ c.value }}</div>
+        <div class="lbl">{{ c.label }}</div>
+        <div class="desc">{{ c.desc }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px;">
+      <div style="padding:16px 20px; background:#F3EBFB; border:1px solid #E4D6F1;">
+        <div style="font-family:'Body',serif; font-size:9.5px; letter-spacing:.22em; color:#8A5CB4; text-transform:uppercase; margin-bottom:11px;">Пики жизни · 4 периода</div>
+        <div style="display:flex; gap:10px;">
+          {% for p in numbers.pinnacles %}<div class="figures" style="flex:1; text-align:center; font-family:'Head',serif; font-weight:600; font-size:28px; color:#4A2E6B;">{{ p }}</div>{% endfor %}
+        </div>
+      </div>
+      <div style="padding:16px 20px; background:#F3EBFB; border:1px solid #E4D6F1;">
+        <div style="font-family:'Body',serif; font-size:9.5px; letter-spacing:.22em; color:#8A5CB4; text-transform:uppercase; margin-bottom:11px;">Главные вызовы</div>
+        <div style="display:flex; gap:10px;">
+          {% for ch in numbers.challenges %}<div class="accent figures" style="flex:1; text-align:center; font-family:'Head',serif; font-weight:600; font-size:28px;">{{ ch }}</div>{% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <p style="margin-top:20px; font-style:italic; font-size:12px; line-height:1.55; color:#7B6997; text-align:center;">На следующих страницах Ева раскрывает разбор — что эти числа значат именно для тебя.</p>
+  </div>
+</div>
+{% endif %}
+
+<!-- ══════════ 3+ · РАЗБОР (авто-разбивка по страницам) ══════════ -->
+{% for pg in section_pages %}
+<div class="page">
+  <div class="bar bar-top"><span>{{ spark() }}&nbsp;&nbsp;E V A&nbsp;&nbsp;·&nbsp;&nbsp;N U M E R O L O G&nbsp;&nbsp;{{ spark() }}</span></div>
+  <div class="bar bar-bot"><span>{{ bot_handle | default('@nnumerology_bot') }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ reading_title }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ page_after_numbers + loop.index0 }}</span></div>
+  <div class="frame"></div>
+  <div class="pad" style="padding:44px 46px;">
+    {% if loop.first %}
+    <div style="text-align:center; margin-bottom:24px;">
+      <div class="eyebrow" style="font-size:10px;">{{ "Раздел второй" if numbers else "Раздел первый" }}</div>
+      <h2 style="margin-top:8px; font-size:30px;">Разбор</h2>
+    </div>
+    {% if intro %}<p style="margin-bottom:24px; font-style:italic; font-size:14.5px; line-height:1.6; color:#5A4874;">{{ intro }}</p>{% endif %}
+    {% endif %}
+
+    {% for s in pg %}
+    <div class="sec">
+      <div class="sec-h">
+        <svg class="star accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="5.5" y="5.5" width="13" height="13"/><rect x="5.5" y="5.5" width="13" height="13" transform="rotate(45 12 12)"/></svg>
+        <span class="sec-rn accent">{{ s.rn }}</span>
+        <span class="sec-t">{{ s.title }}</span>
+        <span class="sec-rule"></span>
+      </div>
+      <p class="sec-p">{{ s.body }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+<!-- ══════════ ПОСЛЕДНЯЯ · CTA / АПСЕЛЛЫ (опционально) ══════════ -->
+{% if upsells %}
+<div class="page">
+  <div class="bar bar-top"><span>{{ spark() }}&nbsp;&nbsp;E V A&nbsp;&nbsp;·&nbsp;&nbsp;N U M E R O L O G&nbsp;&nbsp;{{ spark() }}</span></div>
+  <div class="bar bar-bot"><span>{{ bot_handle | default('@nnumerology_bot') }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ reading_title }}</span></div>
+  <div class="frame"></div>
+  <div class="pad" style="padding:56px 50px; display:flex; flex-direction:column; align-items:center; text-align:center;">
+    <svg viewBox="0 0 120 120" fill="none" stroke="{{ accent | default('#B08A3E') }}" style="width:70px;height:70px;margin-bottom:22px;">
+      <circle cx="60" cy="60" r="53" stroke-width="0.8"/><circle cx="60" cy="60" r="45" stroke-width="1"/>
+      <rect x="27" y="27" width="66" height="66" stroke-width="1"/><rect x="27" y="27" width="66" height="66" transform="rotate(45 60 60)" stroke-width="1"/>
+      <circle cx="60" cy="60" r="8" stroke-width="1.1"/>
+    </svg>
+    <h2 style="font-size:34px; line-height:1.12; max-width:420px;">Это лишь одна грань<br>твоей матрицы</h2>
+    <p style="margin-top:16px; font-size:13px; line-height:1.6; color:#6E5C8C; max-width:400px;">Каждое число хранит ещё десятки страниц о тебе. Продолжи свой разбор в боте.</p>
+
+    <div style="width:100%; max-width:400px; margin-top:34px;">
+      {% for u in upsells %}
+      <div class="upsell">
+        <div style="text-align:left;"><div class="t">{{ u.title }}</div><div class="d">{{ u.desc }}</div></div>
+        <div class="p accent">{{ u.price }} <svg class="star accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="width:12px;height:12px;vertical-align:-1px;"><rect x="5.5" y="5.5" width="13" height="13"/><rect x="5.5" y="5.5" width="13" height="13" transform="rotate(45 12 12)"/></svg></div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div style="margin-top:24px; padding:14px 26px; background:#4A2E6B; max-width:400px; width:100%;">
+      <div style="font-size:12.5px; line-height:1.5; color:#EFE6F9;">Приведи подругу — и получи <span style="color:#D8BC77; font-weight:600;">+25% звёзд</span> с её первого разбора</div>
+    </div>
+
+    <div style="flex:1;"></div>
+    <div class="eyebrow" style="font-size:10px;">Найти Еву в Telegram</div>
+    <div style="font-family:'Head',serif; font-weight:600; font-size:26px; color:#4A2E6B; margin-top:6px;">{{ bot_handle | default('@nnumerology_bot') }}</div>
+  </div>
+</div>
+{% endif %}
+
+</body>
+</html>

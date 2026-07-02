@@ -283,3 +283,51 @@ def build_numerology_context(name: str, date_str: str) -> str:
     )
 
     return "\n".join(lines)
+
+# ─── СТРУКТУРИРОВАННЫЙ КОНТЕКСТ ДЛЯ PDF ──────────────────────────────────────
+# Те же данные, что и build_numerology_context, но как dict с готовыми
+# карточками — используется в pdf.py для страницы "карта твоих чисел".
+# Год ставится в заголовок карточки по умолчанию — 2026, если явный не передан
+# (совпадает с логикой build_prompt в bot.py: kwargs.setdefault("year", ...)).
+
+def numerology_summary(name: str, date_str: str) -> dict:
+    """Структурированная версия числового портрета — для PDF-карточек.
+    Возвращает число судьбы (с заголовком и описанием для обложки), список
+    карточек 'число — подпись — короткое описание' и пики/вызовы."""
+    pos  = _matrix_positions(date_str)
+    year = datetime.now().year
+
+    has_name = bool(name and name not in ("дорогая", ""))
+    name_num = calculate_name_number(name) if has_name else None
+    soul_num = calculate_soul_number(name) if has_name else None
+    pers_num = calculate_personality_number(name) if has_name else None
+    maturity = calculate_maturity_number(date_str, name) if has_name else None
+    pinnacles  = calculate_pinnacles(date_str)
+    challenges = calculate_challenges(date_str)
+
+    destiny_words = _DESTINY_MEANING.get(pos["destiny"], "")
+    destiny_title = " · ".join(w.strip().capitalize() for w in destiny_words.split(","))
+
+    cards = []
+    if soul_num is not None:
+        cards.append({"value": soul_num, "label": "Число души",
+                      "desc": _SOUL_MEANING.get(soul_num, "").capitalize()})
+    if pers_num is not None:
+        cards.append({"value": pers_num, "label": "Число личности",
+                      "desc": (_PERSONALITY_MEANING.get(pers_num, "") + " — так тебя видят окружающие").capitalize()})
+    if name_num is not None:
+        cards.append({"value": name_num, "label": "Число имени", "desc": "Энергия, заложенная в твоё имя"})
+    cards.append({"value": pos["karmic"], "label": "Кармическое",
+                  "desc": _KARMIC_MEANING.get(pos["karmic"], "").capitalize()})
+    if maturity is not None:
+        cards.append({"value": maturity, "label": "Число зрелости", "desc": "К чему приходишь после 35 лет"})
+    cards.append({"value": pos["personal_year"], "label": f"Личный год {year}", "desc": "Главная тема этого года"})
+
+    return {
+        "destiny":       pos["destiny"],
+        "destiny_title": destiny_title,
+        "destiny_desc":  f"Число судьбы — {destiny_words}. Это главное число всей твоей матрицы.",
+        "cards":         cards[:6],
+        "pinnacles":     pinnacles,
+        "challenges":    challenges,
+    }

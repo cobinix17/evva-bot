@@ -76,9 +76,6 @@ PRICES = {
     "ancestor_code": 99,
 }
 
-# Разборы для которых генерируется PDF (79⭐ и выше)
-PDF_KEYS = {k for k, v in PRICES.items() if v >= 79}
-
 PAID_RAZBORY  = {k: v for k, v in TITLES.items() if k != "free"}
 
 # Разборы которые могут быть бесплатными (до 99⭐ включительно)
