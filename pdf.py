@@ -321,9 +321,13 @@ def _generate_pdf_fpdf(title: str, text: str, user_name: str = "", destiny_numbe
     _draw_star_polygon(pdf, mid, y + 3.5, r_outer=4.2, r_inner=1.8, points=8, color=C_GOLD)
     pdf.set_y(y + 9)
 
+    # Без предлога "Для" — оно требует родительного падежа ("Для Анны", а
+    # не "Для Анна"), а склонять произвольное имя корректно без библиотеки
+    # морфологии нельзя. Голое имя рядом с датой читается однозначно и без
+    # предлога.
     info_parts = []
     if user_name:
-        info_parts.append(f"Для {user_name}")
+        info_parts.append(user_name)
     info_parts.append(datetime.now().strftime("%d.%m.%Y"))
     info_text = "   •   ".join(info_parts)
 
