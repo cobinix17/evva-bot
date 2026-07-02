@@ -182,7 +182,10 @@ def main_menu_for(user_id: int, user: dict):
 
 def build_prompt(key: str, **kwargs) -> str:
     """Собирает промпт по ключу. Бросает ValueError если ключ не найден."""
-    kwargs.setdefault("year", datetime.now().year)
+    current_year = datetime.now().year
+    kwargs.setdefault("year", current_year)
+    kwargs.setdefault("year_next", current_year + 1)
+    kwargs.setdefault("year_after_next", current_year + 2)
     template = PROMPTS.get(key)
     if not template:
         logging.error(f"build_prompt: промпт не найден для ключа '{key}'")
