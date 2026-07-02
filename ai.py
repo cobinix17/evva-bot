@@ -282,6 +282,21 @@ def is_structure_complete(prompt: str, answer: str, min_ratio: float = 0.6) -> b
     coverage = len(actual & expected) / len(expected)
     return coverage >= min_ratio
 
+_SENTENCE_END_CHARS = '.!?»"”)…'
+
+def ends_properly(answer: str) -> bool:
+    """True если ответ похож на завершённый, а не оборвался на полуслове.
+    Важно: is_structure_complete проверяет только что ВСЕ emoji-заголовки
+    успели появиться — но модель может исчерпать max_tokens прямо в теле
+    ПОСЛЕДНЕГО блока, уже после того как заголовок написан. Такой ответ
+    проходит проверку структуры (все заголовки на месте), но заканчивается
+    на полуслове без знака препинания. Это отдельная, более узкая проверка
+    именно на обрыв генерации."""
+    stripped = answer.strip()
+    if not stripped:
+        return False
+    return stripped[-1] in _SENTENCE_END_CHARS
+
 # ── ОРФОГРАФИЯ ────────────────────────────────────────────────────────────────
 _SPELL_DICT  = None
 _SPELL_READY = None
@@ -377,7 +392,7 @@ def _finalize(raw: str, source: str) -> str | None:
 
 # ── CEREBRAS ──────────────────────────────────────────────────────────────────
 async def _try_cerebras(prompt: str) -> str | None:
-    """Cerebras — основной провайдер. reasoning_effort='high' + max_tokens
+    """Cerebras — резервный провайдер. reasoning_effort='high' + max_tokens
     увеличен — даёт модели больше пространства довести структуру до конца,
     но НЕ гарантирует полноту (gpt-oss-120b всё равно может срезать путь на
     отдельных запросах) — поэтому финальная проверка полноты в ask_ai.
@@ -429,7 +444,7 @@ async def _try_groq(prompt: str) -> str | None:
                         {"role": "system", "content": _today_note() + SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
                     ],
-                    "max_tokens": 4096,
+                    "max_tokens": 6000,
                 }
                 async with httpx.AsyncClient() as client:
                     r = await client.post(url, headers=headers, json=data, timeout=45)
@@ -451,7 +466,7 @@ async def _try_groq(prompt: str) -> str | None:
 
 # ── OPENROUTER ────────────────────────────────────────────────────────────────
 async def _try_openrouter(prompt: str) -> str | None:
-    """OpenRouter — последний рубеж. Платный по токенам, но умеет
+    """OpenRouter — основной провайдер. Платный по токенам, но умеет
     автоматически роутить между моделями, перебирая список по порядку."""
     if not OPENROUTER_API_KEY:
         return None
@@ -468,7 +483,7 @@ async def _try_openrouter(prompt: str) -> str | None:
             {"role": "system", "content": _today_note() + SYSTEM_PROMPT},
             {"role": "user",   "content": prompt},
         ],
-        "max_tokens":  6000,
+        "max_tokens":  8192,
         "temperature": 0.7,
     }
     try:
@@ -490,16 +505,22 @@ async def _try_openrouter(prompt: str) -> str | None:
 
 # ── ГЛАВНАЯ ФУНКЦИЯ ───────────────────────────────────────────────────────────
 async def ask_ai(prompt: str) -> str:
-    """Cerebras → Groq → OpenRouter, с проверкой ПОЛНОТЫ структуры ответа.
+    """Cerebras → Groq → OpenRouter, с проверкой ПОЛНОТЫ структуры ответа
+    И того, что генерация не оборвалась на полуслове.
 
     Если провайдер дал ответ, но он покрывает меньше 60% ожидаемых
     emoji-разделов из промпта (как в реальном случае с 'matrix_full', когда
     gpt-oss-120b отвечал только последним блоком из восьми) — результат не
     принимается, и бот переходит к следующему провайдеру, как при полном
-    отказе. Каждый провайдер также получает одну повторную попытку САМ С
-    СОБОЙ перед тем как сдаться — иногда у той же модели со второй попытки
-    структура получается полной. Если все варианты неполные — отдаётся
-    лучший доступный результат, а не отказ."""
+    отказе. Отдельно от структуры — проверяется, что ответ не оборвался
+    ПОСЛЕ последнего заголовка (упёрся в max_tokens в середине последнего
+    блока): такой ответ формально проходит проверку структуры, все
+    заголовки на месте, но текст обрывается на полуслове без точки —
+    именно так дважды случалось с 'matrix_full' на OpenRouter. Каждый
+    провайдер также получает одну повторную попытку САМ С СОБОЙ перед тем
+    как сдаться — иногда у той же модели со второй попытки получается
+    полный ответ. Если все варианты неполные — отдаётся лучший доступный
+    результат, а не отказ."""
     providers = [
         ("OpenRouter", _try_openrouter),
         ("Cerebras",   _try_cerebras),
@@ -512,16 +533,17 @@ async def ask_ai(prompt: str) -> str:
             result = await fn(prompt)
             if not result:
                 break  # этот провайдер недоступен вовсе — переходим к следующему
-            if is_structure_complete(prompt, result):
+            if is_structure_complete(prompt, result) and ends_properly(result):
                 return result
+            reason = "оборвался на полуслове" if is_structure_complete(prompt, result) else "неполный по структуре"
             logging.warning(
-                f"{name} попытка {attempt + 1}: ответ неполный по структуре, "
+                f"{name} попытка {attempt + 1}: ответ {reason}, "
                 f"{'повторяю' if attempt == 0 else 'перехожу к следующему провайдеру'}"
             )
             last_incomplete = result
         # переходим к следующему провайдеру во внешнем цикле
 
     if last_incomplete:
-        logging.warning("Все провайдеры дали неполную структуру — отдаю последний доступный результат")
+        logging.warning("Все провайдеры дали неполный ответ — отдаю последний доступный результат")
         return last_incomplete
     raise Exception("Все провайдеры недоступны или вернули иностранные символы")
