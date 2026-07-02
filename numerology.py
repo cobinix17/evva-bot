@@ -142,6 +142,30 @@ def calculate_personal_month(date_str: str, year: int | None = None,
     py = calculate_personal_year(date_str, year)
     return _reduce_to_single(py + _digit_sum(month))
 
+_RU_MONTHS_NOM = (
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+)
+
+def personal_month_table(date_str: str, months_ahead: int = 36) -> str:
+    """Таблица чисел личного месяца на months_ahead месяцев вперёд от
+    текущего, готовыми значениями. Модель периодически ошибается,
+    досчитывая личный месяц сама для месяцев за пределами текущего —
+    особенно на стыке личных лет (например декабрь одного личного года
+    и январь следующего), когда нужно поменять базу расчёта. Отдаём
+    готовые числа, чтобы модели не приходилось считать самой."""
+    now = datetime.now()
+    year, month = now.year, now.month
+    lines = []
+    for _ in range(months_ahead):
+        pm = calculate_personal_month(date_str, year=year, month=month)
+        lines.append(f"{_RU_MONTHS_NOM[month - 1]} {year}: {pm}")
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return "\n".join(lines)
+
 def calculate_pinnacles(date_str: str) -> list[int]:
     """4 пика (вершины) жизни — классический расчёт. Каждый пик это
     энергия определённого жизненного периода."""
@@ -281,6 +305,14 @@ def build_numerology_context(name: str, date_str: str) -> str:
     lines.append(
         f"Главные вызовы (испытания): {challenges[0]}, {challenges[1]}, {challenges[2]}"
     )
+
+    lines.append("")
+    lines.append(
+        "Числа личного месяца на 3 года вперёд (готовые значения — "
+        "используй именно их для любых месяцев, которые упоминаешь, "
+        "не пересчитывай сама):"
+    )
+    lines.append(personal_month_table(date_str))
 
     return "\n".join(lines)
 
