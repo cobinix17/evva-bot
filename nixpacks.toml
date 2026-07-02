@@ -1,7 +1,21 @@
 # Системные библиотеки для WeasyPrint (генерация PDF через HTML/CSS, см. pdf.py).
-# Без них pip install weasyprint отработает, но рендер PDF будет падать в
-# рантайме — тогда pdf.py автоматически откатится на резервный fpdf-рендер
-# (см. generate_pdf() в pdf.py), так что бот не останется совсем без PDF,
-# но и премиального оформления не будет, пока эти пакеты не подтянутся.
+#
+# ВАЖНО: используем aptPkgs, а НЕ nixPkgs. Первая попытка (nixPkgs = ["pango", ...])
+# не сработала в проде: пакет собрался при билде, но в рантайме
+# ctypes.util.find_library('libpango-1.0-0') всё равно не находил библиотеку —
+# Nix-пакеты живут в /nix/store и не регистрируются в системном ldconfig,
+# через который ищет библиотеки ctypes. apt-пакеты ставятся в обычные
+# системные пути и подхватываются ldconfig автоматически.
+#
+# Если и это почему-то не заведётся — pdf.py сам откатится на резервный
+# fpdf-рендер (см. generate_pdf() в pdf.py), бот всё равно пришлёт PDF.
 [phases.setup]
-nixPkgs = ["pango", "cairo", "gdk-pixbuf", "libffi", "fontconfig"]
+aptPkgs = [
+    "libpango-1.0-0",
+    "libpangocairo-1.0-0",
+    "libpangoft2-1.0-0",
+    "libcairo2",
+    "libgdk-pixbuf2.0-0",
+    "libffi8",
+    "shared-mime-info",
+]
