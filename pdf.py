@@ -73,8 +73,31 @@ def _split_sections(text: str) -> list[dict]:
         s["rn"] = _ROMAN[i] if i < len(_ROMAN) else str(i + 1)
     return sections
 
-def _paginate(sections: list[dict], per_page: int = 3) -> list[list[dict]]:
-    return [sections[i:i + per_page] for i in range(0, len(sections), per_page)]
+def _paginate(sections: list[dict], char_budget: int = 1400) -> list[list[dict]]:
+    """Группирует секции по страницам ПО ФАКТИЧЕСКОМУ ОБЪЁМУ текста, а не по
+    фиксированному количеству. Раньше группировка была строго по 3 секции на
+    страницу независимо от их длины — на разборах с длинными подробными
+    абзацами (обычное дело для дорогих 149⭐-разборов) текст физически не
+    помещался в фиксированную высоту страницы и обрезался (см. .page в
+    pdf_template.html) — часть текста молча пропадала из PDF. Теперь секция
+    добавляется на текущую страницу пока не превышен бюджет символов; если
+    даже одна секция сама по себе больше бюджета — она всё равно кладётся
+    на свою страницу целиком (не бросаем текст), а CSS-страница ещё и не
+    обрезает лишнее (min-height + overflow:visible) на случай если оценка
+    объёма всё же ошиблась."""
+    pages: list[list[dict]] = []
+    current: list[dict] = []
+    current_len = 0
+    for s in sections:
+        s_len = len(s["title"]) + len(s["body"])
+        if current and current_len + s_len > char_budget:
+            pages.append(current)
+            current, current_len = [], 0
+        current.append(s)
+        current_len += s_len
+    if current:
+        pages.append(current)
+    return pages
 
 # ── WEASYPRINT (основной рендер) ──────────────────────────────────────────────
 _TEMPLATE_DIR  = os.path.dirname(__file__)

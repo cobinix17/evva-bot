@@ -21,8 +21,12 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family:'Body', serif; color:#3E2F58; }
 
-  .page { position: relative; width: 210mm; height: 297mm;
-    background: #FBF8FE; overflow: hidden; page-break-after: always; }
+  /* min-height + overflow:visible (не height + overflow:hidden) — защита от
+     потери текста: если оценка объёма в _paginate() всё же ошиблась и секции
+     не поместились в расчётный бюджет символов, лишний текст должен
+     физически перетечь на следующую страницу, а не молча обрезаться. */
+  .page { position: relative; width: 210mm; min-height: 297mm;
+    background: #FBF8FE; overflow: visible; page-break-after: always; }
   .page:last-child { page-break-after: auto; }
 
   .bar { position:absolute; left:0; right:0; height:26px;
@@ -35,6 +39,12 @@
   .frame { position:absolute; top:32px; right:26px; bottom:32px; left:26px;
     border:1px solid rgba(138,92,180,.4); }
   .pad { position:absolute; top:32px; right:26px; bottom:32px; left:26px; }
+  /* Для страниц с текстом разбора вместо .pad — абсолютное позиционирование
+     с top+bottom жёстко фиксирует высоту блока в 297мм независимо от
+     overflow на .page (см. комментарий у .page): контейнер с текстом
+     должен расти вместе с содержимым, чтобы длинные секции физически
+     перетекали на следующую страницу, а не обрезались. */
+  .pad-flow { padding: 76px 72px; }
 
   h1 { font-family:'Head',serif; font-weight:600; color:#4A2E6B; }
   h2 { font-family:'Head',serif; font-weight:600; color:#4A2E6B; }
@@ -49,23 +59,23 @@
 
   .numgrid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
   .numcard { padding:16px; background:#F6F0FC; border:1px solid #E7DBF3; text-align:center; }
-  .numcard .big { font-family:'Head',serif; font-weight:600; font-size:38px; line-height:1; font-variant-numeric:lining-nums; }
-  .numcard .lbl { font-family:'Body',serif; font-size:9.5px; letter-spacing:.16em;
-    color:#8A5CB4; text-transform:uppercase; margin:7px 0 5px; }
-  .numcard .desc { font-family:'Body',serif; font-size:11px; line-height:1.4; color:#6B5A88; }
+  .numcard .big { font-family:'Head',serif; font-weight:600; font-size:40px; line-height:1; font-variant-numeric:lining-nums; }
+  .numcard .lbl { font-family:'Body',serif; font-size:10.5px; letter-spacing:.16em;
+    color:#8A5CB4; text-transform:uppercase; margin:8px 0 6px; }
+  .numcard .desc { font-family:'Body',serif; font-size:12.5px; line-height:1.45; color:#6B5A88; }
 
-  .sec { margin-bottom:22px; }
-  .sec-h { display:flex; align-items:center; gap:11px; margin-bottom:9px; }
-  .sec-rn { font-family:'Head',serif; font-weight:600; font-size:13px; letter-spacing:.14em; min-width:26px; }
-  .sec-t  { font-family:'Head',serif; font-weight:600; font-size:18px; letter-spacing:.05em;
+  .sec { margin-bottom:24px; }
+  .sec-h { display:flex; align-items:center; gap:11px; margin-bottom:10px; }
+  .sec-rn { font-family:'Head',serif; font-weight:600; font-size:14px; letter-spacing:.14em; min-width:28px; }
+  .sec-t  { font-family:'Head',serif; font-weight:600; font-size:20px; letter-spacing:.04em;
     color:#4A2E6B; text-transform:uppercase; }
   .sec-rule { flex:1; height:1px; background:linear-gradient(90deg,#D8BC77,transparent); }
-  .sec-p  { font-family:'Body',serif; font-size:13px; line-height:1.62; color:#3E2F58; }
+  .sec-p  { font-family:'Body',serif; font-size:15px; line-height:1.68; color:#3E2F58; }
 
   .upsell { display:flex; align-items:center; justify-content:space-between;
     padding:16px 22px; background:#F6F0FC; border:1px solid #E7DBF3; margin-bottom:12px; }
   .upsell .t { font-family:'Head',serif; font-weight:600; font-size:19px; color:#4A2E6B; }
-  .upsell .d { font-family:'Body',serif; font-size:11px; color:#8272A0; margin-top:2px; }
+  .upsell .d { font-family:'Body',serif; font-size:12px; color:#8272A0; margin-top:2px; }
   .upsell .p { font-family:'Head',serif; font-weight:600; font-size:18px; white-space:nowrap; font-variant-numeric:lining-nums; }
 </style>
 </head>
@@ -144,7 +154,7 @@
       <div style="text-align:left;">
         <div style="font-family:'Body',serif; font-size:10px; letter-spacing:.34em; color:#8A5CB4; text-transform:uppercase;">Число судьбы · жизненный путь</div>
         <div style="font-family:'Head',serif; font-weight:600; font-size:24px; color:#4A2E6B; margin:3px 0 5px;">{{ numbers.destiny_title }}</div>
-        <p style="font-size:12.5px; line-height:1.5; color:#5A4A76; max-width:330px;">{{ numbers.destiny_desc }}</p>
+        <p style="font-size:13.5px; line-height:1.5; color:#5A4A76; max-width:330px;">{{ numbers.destiny_desc }}</p>
       </div>
     </div>
 
@@ -184,7 +194,7 @@
   <div class="bar bar-top"><span>{{ spark() }}&nbsp;&nbsp;E V A&nbsp;&nbsp;·&nbsp;&nbsp;N U M E R O L O G&nbsp;&nbsp;{{ spark() }}</span></div>
   <div class="bar bar-bot"><span>{{ bot_handle | default('@nnumerology_bot') }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ reading_title }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ page_after_numbers + loop.index0 }}</span></div>
   <div class="frame"></div>
-  <div class="pad" style="padding:44px 46px;">
+  <div class="pad-flow" style="padding:44px 46px;">
     {% if loop.first %}
     <div style="text-align:center; margin-bottom:24px;">
       <div class="eyebrow" style="font-size:10px;">{{ "Раздел второй" if numbers else "Раздел первый" }}</div>
@@ -221,7 +231,7 @@
       <circle cx="60" cy="60" r="8" stroke-width="1.1"/>
     </svg>
     <h2 style="font-size:34px; line-height:1.12; max-width:420px;">Это лишь одна грань<br>твоей матрицы</h2>
-    <p style="margin-top:16px; font-size:13px; line-height:1.6; color:#6E5C8C; max-width:400px;">Каждое число хранит ещё десятки страниц о тебе. Продолжи свой разбор в боте.</p>
+    <p style="margin-top:16px; font-size:14px; line-height:1.6; color:#6E5C8C; max-width:400px;">Каждое число хранит ещё десятки страниц о тебе. Продолжи свой разбор в боте.</p>
 
     <div style="width:100%; max-width:400px; margin-top:34px;">
       {% for u in upsells %}
@@ -233,7 +243,7 @@
     </div>
 
     <div style="margin-top:24px; padding:14px 26px; background:#4A2E6B; max-width:400px; width:100%;">
-      <div style="font-size:12.5px; line-height:1.5; color:#EFE6F9;">Приведи подругу — и получи <span style="color:#D8BC77; font-weight:600;">+25% звёзд</span> с её первого разбора</div>
+      <div style="font-size:13.5px; line-height:1.5; color:#EFE6F9;">Приведи подругу — и получи <span style="color:#D8BC77; font-weight:600;">+25% звёзд</span> с её первого разбора</div>
     </div>
 
     <div style="flex:1;"></div>
