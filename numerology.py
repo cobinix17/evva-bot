@@ -221,6 +221,18 @@ _DESTINY_MEANING = {
     9: "миссия, альтруизм, завершение цикла",
 }
 
+_MONTH_ENERGY = {
+    1: "начало и инициатива",
+    2: "партнёрство и чуткость",
+    3: "творчество и общение",
+    4: "порядок и труд",
+    5: "перемены и свобода",
+    6: "забота и гармония",
+    7: "анализ и уединение",
+    8: "деньги и власть",
+    9: "завершение и отдача",
+}
+
 _KARMIC_MEANING = {
     1: "научиться действовать самостоятельно, без одобрения",
     2: "научиться принимать помощь и доверять другим",
@@ -327,7 +339,11 @@ def numerology_summary(name: str, date_str: str) -> dict:
     Возвращает число судьбы (с заголовком и описанием для обложки), список
     карточек 'число — подпись — короткое описание' и пики/вызовы."""
     pos  = _matrix_positions(date_str)
-    year = datetime.now().year
+    now  = datetime.now()
+    year = now.year
+
+    pers_month = calculate_personal_month(date_str)
+    pers_month_label = f"{_RU_MONTHS_NOM[now.month - 1].capitalize()} {year}"
 
     has_name = bool(name and name not in ("дорогая", ""))
     name_num = calculate_name_number(name) if has_name else None
@@ -362,4 +378,7 @@ def numerology_summary(name: str, date_str: str) -> dict:
         "cards":         cards[:6],
         "pinnacles":     pinnacles,
         "challenges":    challenges,
+        "personal_month":      pers_month,
+        "personal_month_label": pers_month_label,
+        "personal_month_desc": _MONTH_ENERGY.get(pers_month, ""),
     }
