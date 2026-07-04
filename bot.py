@@ -1168,6 +1168,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             pdf_bytes = await _generate_pdf_async(
                 title, answer, user_name=name, destiny_number=number,
                 birth_date=date_str, upsells=_build_upsells(waiting, user),
+                ref_bonus_percent=REF_BONUS_PERCENT,
             )
             pdf_file = BufferedInputFile(pdf_bytes, filename=f"{title}.pdf")
             await bot.send_document(
@@ -1280,6 +1281,7 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
             pdf_bytes = await _generate_pdf_async(
                 "💑 Совместимость", answer, user_name=name, destiny_number=n1,
                 birth_date=parts[0], upsells=_build_upsells("compat", user),
+                ref_bonus_percent=REF_BONUS_PERCENT,
             )
             pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
             await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")

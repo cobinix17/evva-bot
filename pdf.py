@@ -78,7 +78,8 @@ _TEMPLATE_DIR  = os.path.dirname(__file__)
 _TEMPLATE_NAME = "pdf_template.html"
 
 def _generate_pdf_weasy(title: str, text: str, user_name: str, destiny_number: int | None,
-                         birth_date: str | None, upsells: list[dict] | None) -> bytes:
+                         birth_date: str | None, upsells: list[dict] | None,
+                         ref_bonus_percent: int = 25) -> bytes:
     from jinja2 import Environment, FileSystemLoader
     from weasyprint import HTML
 
@@ -104,6 +105,7 @@ def _generate_pdf_weasy(title: str, text: str, user_name: str, destiny_number: i
         sections       = _split_sections(text),
         upsells        = clean_upsells,
         bot_handle     = "@nnumerology_bot",
+        ref_bonus_percent = ref_bonus_percent,
     )
     return HTML(string=html_str, base_url=_TEMPLATE_DIR).write_pdf()
 
@@ -421,13 +423,16 @@ def _draw_header_band(pdf: FPDF, text: str, font_name: str):
 
 # ── ТОЧКА ВХОДА ────────────────────────────────────────────────────────────────
 def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int | None = None,
-                  birth_date: str | None = None, upsells: list[dict] | None = None) -> bytes:
+                  birth_date: str | None = None, upsells: list[dict] | None = None,
+                  ref_bonus_percent: int = 25) -> bytes:
     """Генерирует PDF разбора. birth_date и upsells — необязательные: если дата
     рождения передана, на второй странице появляется карта чисел; если передан
     список апселлов ([{'title','desc','price'}, ...]) — добавляется страница CTA.
-    См. docstring модуля про основной/резервный рендер."""
+    ref_bonus_percent — процент реферального бонуса для текста на CTA-странице
+    (реальное значение приходит из config.REF_BONUS_PERCENT через bot.py, чтобы
+    pdf.py не зависел от config.py). См. docstring модуля про основной/резервный рендер."""
     try:
-        return _generate_pdf_weasy(title, text, user_name, destiny_number, birth_date, upsells)
+        return _generate_pdf_weasy(title, text, user_name, destiny_number, birth_date, upsells, ref_bonus_percent)
     except Exception as e:
         logging.warning(f"WeasyPrint PDF failed ({e}), falling back to fpdf")
         return _generate_pdf_fpdf(title, text, user_name=user_name, destiny_number=destiny_number)
