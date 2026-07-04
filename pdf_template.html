@@ -29,6 +29,36 @@
     background: #FBF8FE; overflow: visible; page-break-after: always; }
   .page:last-child { page-break-after: auto; }
 
+  /* Страницы разбора (переменной длины) рендерятся не набором отдельных
+     .page-блоков с ручным подсчётом строк, а одним сплошным потоком —
+     WeasyPrint сам расставляет физические разрывы там, где реально
+     заканчивается текст. Раньше секции группировались в "страницы" по
+     ОЦЕНКЕ объёма символов (_paginate в pdf.py): если одна секция сама
+     по себе оказывалась длиннее одной физической страницы, остаток от
+     неё утекал на следующую .page-страницу почти пустым, а следующая
+     секция всё равно начиналась с чистого листа — на реальных длинных
+     разборах это давало почти пустые страницы посреди PDF. Именованная
+     @page + running()-элементы отдают пагинацию целиком движку, который
+     точно знает, где заканчивается текст на каждом листе. */
+  @page section {
+    size: A4;
+    margin: 26px 0;
+    background: #FBF8FE;
+    @top-center { content: element(secBarTop); }
+    @bottom-center { content: element(secBarBot); }
+  }
+  .sec-flow { page: section; }
+  .sec-bartop, .sec-barbot { width:100%; height:26px; display:flex;
+    align-items:center; justify-content:center;
+    background:linear-gradient(90deg,#5E3A85,#7E52A8,#5E3A85); }
+  .sec-bartop { position: running(secBarTop); }
+  .sec-barbot { position: running(secBarBot); }
+  .sec-bartop span { font-family:'Body',serif; font-size:9px; letter-spacing:.4em; color:#F3EBFB; }
+  .sec-barbot span { font-family:'Body',serif; font-size:8.5px; letter-spacing:.26em; color:#EFE6F9; }
+  .sec-frame { border:1px solid rgba(138,92,180,.4); margin:6px 26px; padding:76px 72px;
+    box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  .sec-pagenum::before { content: counter(page); }
+
   .bar { position:absolute; left:0; right:0; height:26px;
     background:linear-gradient(90deg,#5E3A85,#7E52A8,#5E3A85);
     display:flex; align-items:center; justify-content:center; }
@@ -39,12 +69,6 @@
   .frame { position:absolute; top:32px; right:26px; bottom:32px; left:26px;
     border:1px solid rgba(138,92,180,.4); }
   .pad { position:absolute; top:32px; right:26px; bottom:32px; left:26px; }
-  /* Для страниц с текстом разбора вместо .pad — абсолютное позиционирование
-     с top+bottom жёстко фиксирует высоту блока в 297мм независимо от
-     overflow на .page (см. комментарий у .page): контейнер с текстом
-     должен расти вместе с содержимым, чтобы длинные секции физически
-     перетекали на следующую страницу, а не обрезались. */
-  .pad-flow { padding: 76px 72px; }
 
   h1 { font-family:'Head',serif; font-weight:600; color:#4A2E6B; }
   h2 { font-family:'Head',serif; font-weight:600; color:#4A2E6B; }
@@ -81,8 +105,6 @@
 </head>
 <body>
 
-{% set total_pages = 1 + (1 if numbers else 0) + (section_pages | length) + (1 if upsells else 0) %}
-{% set page_after_numbers = 2 + (1 if numbers else 0) %}
 {#- ни один из подключённых шрифтов (Cormorant/Spectral) не содержит символ ✦ —
    он рисуется той же векторной иконкой-звёздочкой, что и остальной декор,
    чтобы не зависеть от того, какие шрифты случайно найдутся в fallback-цепочке
@@ -210,22 +232,19 @@
 </div>
 {% endif %}
 
-<!-- ══════════ 3+ · РАЗБОР (авто-разбивка по страницам) ══════════ -->
-{% for pg in section_pages %}
-<div class="page">
-  <div class="bar bar-top"><span>{{ spark() }}&nbsp;&nbsp;E V A&nbsp;&nbsp;·&nbsp;&nbsp;N U M E R O L O G&nbsp;&nbsp;{{ spark() }}</span></div>
-  <div class="bar bar-bot"><span>{{ bot_handle | default('@nnumerology_bot') }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ reading_title }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ page_after_numbers + loop.index0 }}</span></div>
-  <div class="frame"></div>
-  <div class="pad-flow" style="padding:44px 46px;">
-    {% if loop.first %}
+<!-- ══════════ 3+ · РАЗБОР (сплошной поток, разрывы страниц расставляет сам движок) ══════════ -->
+{% if sections %}
+<div class="sec-bartop"><span>{{ spark() }}&nbsp;&nbsp;E V A&nbsp;&nbsp;·&nbsp;&nbsp;N U M E R O L O G&nbsp;&nbsp;{{ spark() }}</span></div>
+<div class="sec-barbot"><span>{{ bot_handle | default('@nnumerology_bot') }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ reading_title }}&nbsp;&nbsp;·&nbsp;&nbsp;<span class="sec-pagenum"></span></span></div>
+<div class="sec-flow">
+  <div class="sec-frame">
     <div style="text-align:center; margin-bottom:24px;">
       <div class="eyebrow" style="font-size:10px;">{{ "Раздел второй" if numbers else "Раздел первый" }}</div>
       <h2 style="margin-top:8px; font-size:30px;">Разбор</h2>
     </div>
     {% if intro %}<p style="margin-bottom:24px; font-style:italic; font-size:14.5px; line-height:1.6; color:#5A4874;">{{ intro }}</p>{% endif %}
-    {% endif %}
 
-    {% for s in pg %}
+    {% for s in sections %}
     <div class="sec">
       <div class="sec-h">
         <svg class="star accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="5.5" y="5.5" width="13" height="13"/><rect x="5.5" y="5.5" width="13" height="13" transform="rotate(45 12 12)"/></svg>
@@ -238,11 +257,11 @@
     {% endfor %}
   </div>
 </div>
-{% endfor %}
+{% endif %}
 
 <!-- ══════════ ПОСЛЕДНЯЯ · CTA / АПСЕЛЛЫ (опционально) ══════════ -->
 {% if upsells %}
-<div class="page">
+<div class="page" style="page-break-before: always;">
   <div class="bar bar-top"><span>{{ spark() }}&nbsp;&nbsp;E V A&nbsp;&nbsp;·&nbsp;&nbsp;N U M E R O L O G&nbsp;&nbsp;{{ spark() }}</span></div>
   <div class="bar bar-bot"><span>{{ bot_handle | default('@nnumerology_bot') }}&nbsp;&nbsp;·&nbsp;&nbsp;{{ reading_title }}</span></div>
   <div class="frame"></div>
