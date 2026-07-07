@@ -203,6 +203,30 @@ def sanitize_name(raw: str) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned[:30]
 
+# ─── ФИЛЬТР ОТЗЫВОВ (мат / реклама) ──────────────────────────────────────────
+# Не блокирует отправку — только помечает отзыв флагами для админа при
+# модерации. Реальное решение публиковать или нет остаётся за человеком,
+# чтобы не резать честные отзывы ложными срабатываниями.
+_MAT_RE = re.compile(
+    r"(х[уy][йиеё]|пизд|бля[дт]|еба[тнл]|ебуч|мудак|мудил|гандон|скотин|"
+    r"сука(?!рь)|хер(?:ня|ов)|залуп|уебан|долбо[её]б|пидор|шлюх)",
+    re.IGNORECASE
+)
+_AD_RE = re.compile(
+    r"(https?://|www\.|t\.me/|@[a-zA-Z][a-zA-Z0-9_]{4,}|подпи[шс][иы]\w*\s+на|"
+    r"переходи(?:те)?\s+(?:по|на)|канал[еa]?\s+@|\+7\d{10}|\b8\d{10}\b)",
+    re.IGNORECASE
+)
+
+def _review_flags(text: str) -> list[str]:
+    """Возвращает список нарушений найденных в тексте отзыва: 'мат', 'реклама'."""
+    flags = []
+    if _MAT_RE.search(text):
+        flags.append("мат")
+    if _AD_RE.search(text):
+        flags.append("реклама/ссылка")
+    return flags
+
 # ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
 @dp.message(Command("notifications"), StateFilter("*"))
 async def notifications_cmd(message: Message, state: FSMContext):
@@ -740,6 +764,30 @@ async def admin_coupon_list_cb(callback: CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
         ])
     )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_reviews")
+async def admin_reviews_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    rows = await db.db_pool.fetch(
+        'SELECT * FROM pending_reviews ORDER BY created_at ASC LIMIT 10'
+    )
+    if not rows:
+        await callback.message.answer("✅ Очередь модерации пуста.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
+        ]))
+        await callback.answer()
+        return
+    for r in rows:
+        warn = f"\n\n⚠️ Возможные нарушения: {r['flags']}" if r['flags'] else ""
+        await callback.message.answer(
+            f"📝 Отзыв на модерации (#{r['id']}){warn}\n\n{r['review_text']}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Одобрить",  callback_data=f"revmod_ok_{r['id']}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"revmod_no_{r['id']}"),
+            ]])
+        )
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_refs")
@@ -1364,13 +1412,53 @@ async def handle_review(message: Message, state: FSMContext):
     user["reviews_left"] = reviews_left
     user["review_left"]  = True
     await db.save_user(message.from_user.id, user)
-    try:
-        await bot.send_message(REVIEWS_CHANNEL, review_text)
-        await message.answer("✅ Спасибо! Твой отзыв опубликован 💫")
-    except Exception as e:
-        logging.error(f"Review channel error: {e}")
-        await message.answer("✅ Спасибо за отзыв!")
     await state.clear()
+
+    flags = _review_flags(text)
+    review_id = await db.add_pending_review(message.from_user.id, review_text, ", ".join(flags))
+    warn = f"\n\n⚠️ Возможные нарушения: {', '.join(flags)}" if flags else ""
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"📝 Новый отзыв на модерацию (#{review_id}){warn}\n\n{review_text}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Одобрить",  callback_data=f"revmod_ok_{review_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"revmod_no_{review_id}"),
+            ]])
+        )
+    except Exception as e:
+        logging.error(f"Review moderation notify error: {e}")
+    await message.answer("✅ Спасибо! Твой отзыв отправлен на проверку и скоро появится в канале 💫")
+
+@dp.callback_query(F.data.startswith("revmod_"))
+async def review_moderation_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    action, _, review_id_str = callback.data.replace("revmod_", "").partition("_")
+    try:
+        review_id = int(review_id_str)
+    except ValueError:
+        await callback.answer("Ошибка id.", show_alert=True)
+        return
+    review = await db.get_pending_review(review_id)
+    if not review:
+        await callback.answer("Отзыв уже обработан.", show_alert=True)
+        return
+    await db.delete_pending_review(review_id)
+    if action == "ok":
+        try:
+            await bot.send_message(REVIEWS_CHANNEL, review["review_text"])
+            await bot.send_message(review["user_id"], "🎉 Твой отзыв одобрен и опубликован в канале!")
+        except Exception as e:
+            logging.error(f"Review publish error: {e}")
+        await callback.message.edit_text(callback.message.text + "\n\n✅ ОДОБРЕНО")
+    else:
+        try:
+            await bot.send_message(review["user_id"], "Твой отзыв не прошёл модерацию — проверь, нет ли в нём ссылок или нецензурной лексики, и попробуй ещё раз 🙏")
+        except Exception:
+            pass
+        await callback.message.edit_text(callback.message.text + "\n\n❌ ОТКЛОНЕНО")
+    await callback.answer()
 
 @dp.callback_query(F.data == "show_menu")
 async def show_menu(callback: CallbackQuery):
