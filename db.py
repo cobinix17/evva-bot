@@ -72,6 +72,15 @@ async def init_db(database_url: str):
             used_at    TIMESTAMP DEFAULT NOW()
         )
     ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS pending_reviews (
+            id          SERIAL PRIMARY KEY,
+            user_id     BIGINT NOT NULL,
+            review_text TEXT NOT NULL,
+            flags       TEXT DEFAULT '',
+            created_at  TIMESTAMP DEFAULT NOW()
+        )
+    ''')
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -260,4 +269,19 @@ async def coupon_remaining(code: str) -> int:
     if not row:
         return 0
     return max(0, row['max_uses'] - row['uses_count'])
- 
+
+# ─── МОДЕРАЦИЯ ОТЗЫВОВ ───────────────────────────────────────────────────────
+async def add_pending_review(user_id: int, review_text: str, flags: str = "") -> int:
+    """Кладёт отзыв в очередь на модерацию, возвращает id записи —
+    он же используется в callback_data кнопок Одобрить/Отклонить."""
+    return await db_pool.fetchval(
+        'INSERT INTO pending_reviews (user_id, review_text, flags) VALUES ($1, $2, $3) RETURNING id',
+        user_id, review_text, flags
+    )
+
+async def get_pending_review(review_id: int) -> dict | None:
+    row = await db_pool.fetchrow('SELECT * FROM pending_reviews WHERE id = $1', review_id)
+    return dict(row) if row else None
+
+async def delete_pending_review(review_id: int):
+    await db_pool.execute('DELETE FROM pending_reviews WHERE id = $1', review_id)
