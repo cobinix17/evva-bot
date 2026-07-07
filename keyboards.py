@@ -73,6 +73,7 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📋 Список купонов",    callback_data="admin_coupon_list")],
         [InlineKeyboardButton(text="👥 Рефералы",          callback_data="admin_refs")],
         [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="admin_find_user")],
+        [InlineKeyboardButton(text="📝 Отзывы на модерации", callback_data="admin_reviews")],
         [InlineKeyboardButton(text="⬅️ Главное меню",      callback_data="show_menu")],
     ])
 
