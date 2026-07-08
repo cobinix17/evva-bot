@@ -29,13 +29,24 @@ def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
         ])
 
-def main_menu(user=None, is_admin=False) -> InlineKeyboardMarkup:
+def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMarkup:
     buttons = []
 
     if user and not user.get("free_used"):
         buttons.append([InlineKeyboardButton(
             text="🎁 Бесплатный разбор на выбор",
             callback_data="free_choose"
+        )])
+
+    if is_premium:
+        buttons.append([InlineKeyboardButton(
+            text="💎 Премиум активен — все разборы открыты",
+            callback_data="premium_info"
+        )])
+    else:
+        buttons.append([InlineKeyboardButton(
+            text="💎 Ева Премиум — все разборы за 299 ⭐/мес",
+            callback_data="premium_info"
         )])
 
     purchased = user.get("purchased", []) if user else []
@@ -75,6 +86,19 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="admin_find_user")],
         [InlineKeyboardButton(text="📝 Отзывы на модерации", callback_data="admin_reviews")],
         [InlineKeyboardButton(text="⬅️ Главное меню",      callback_data="show_menu")],
+    ])
+
+def premium_subscribe_menu(invoice_url: str) -> InlineKeyboardMarkup:
+    """Кнопка оплаты подписки — ведёт на invoice-ссылку с subscription_period,
+    Telegram сам оформит рекуррентное списание раз в месяц."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 Оформить за 299 ⭐/мес", url=invoice_url)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")],
+    ])
+
+def premium_active_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 К разборам", callback_data="show_menu")],
     ])
 
 def free_choose_menu() -> InlineKeyboardMarkup:

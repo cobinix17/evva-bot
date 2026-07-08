@@ -87,6 +87,7 @@ async def init_db(database_url: str):
         ("reviews_left",  "TEXT DEFAULT '[]'"),
         ("ref_balance",   "INTEGER DEFAULT 0"),
         ("referred_by",   "BIGINT"),
+        ("premium_until", "TIMESTAMP"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -126,6 +127,7 @@ async def get_user(user_id: int) -> dict:
     if user_id == ADMIN_ID:
         user['free_used']          = True
         user['subscribed_channel'] = True
+        user['premium_until']      = utc_now() + timedelta(days=3650)
         for r in list(PAID_RAZBORY.keys()):
             if r not in user['purchased']:
                 user['purchased'].append(r)
@@ -285,3 +287,26 @@ async def get_pending_review(review_id: int) -> dict | None:
 
 async def delete_pending_review(review_id: int):
     await db_pool.execute('DELETE FROM pending_reviews WHERE id = $1', review_id)
+
+# ─── ПРЕМИУМ-ПОДПИСКА ────────────────────────────────────────────────────────
+async def set_premium(user_id: int, until: datetime):
+    """Продлевает премиум до указанной даты. Пишется отдельно от save_user,
+    чтобы обычное сохранение пользователя не могло случайно затереть подписку
+    (save_user не трогает колонку premium_until)."""
+    await db_pool.execute(
+        'UPDATE users SET premium_until = $1 WHERE user_id = $2', until, user_id
+    )
+
+def is_premium(user: dict) -> bool:
+    """Активна ли подписка. Работает с dict из get_user."""
+    pu = user.get("premium_until")
+    return pu is not None and pu > utc_now()
+
+async def premium_stats() -> dict:
+    active = await db_pool.fetchval(
+        'SELECT COUNT(*) FROM users WHERE premium_until IS NOT NULL AND premium_until > NOW()'
+    )
+    ever = await db_pool.fetchval(
+        'SELECT COUNT(*) FROM users WHERE premium_until IS NOT NULL'
+    )
+    return {"active": active or 0, "ever": ever or 0}

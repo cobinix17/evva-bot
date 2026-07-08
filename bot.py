@@ -25,12 +25,16 @@ from readings import PROMPTS
 from broadcasts import MORNING
 
 import db
-from config import TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, ADMIN_ID, REF_BONUS_PERCENT
+from config import (
+    TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS,
+    ADMIN_ID, REF_BONUS_PERCENT,
+    PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_PAYLOAD, PREMIUM_TITLE,
+)
 from ai import ask_ai
 from pdf import generate_pdf
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date,
-    build_numerology_context,
+    build_numerology_context, calculate_personal_month,
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
@@ -38,6 +42,7 @@ from keyboards import (
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
     notif_off_menu, admin_menu, balance_pay_menu,
+    premium_subscribe_menu, premium_active_menu,
 )
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
@@ -157,6 +162,36 @@ _generating: set[int] = set()
 # к OpenRouter): лишние ждут своей очереди, а не бьют по rate-лимитам и бюджету.
 _gen_semaphore = asyncio.Semaphore(8)
 
+# Отдельная полоса для премиум-подписчиков — их генерации не встают в общую
+# очередь за бесплатными пользователями, поэтому в часы пика премиум отвечает
+# быстрее. Это один из бонусов подписки («приоритет генерации»).
+_priority_semaphore = asyncio.Semaphore(4)
+
+# Fair-use для премиума: сколько НОВЫХ разборов подписчик может открыть за день.
+# Регенерация уже открытых разборов не ограничена. Храним в памяти процесса —
+# перезапуск сбрасывает счётчик, для мягкой защиты от абьюза этого достаточно.
+_premium_daily: dict[int, tuple] = {}  # user_id -> (date, count)
+
+def _premium_gen_semaphore(user: dict):
+    return _priority_semaphore if db.is_premium(user) else _gen_semaphore
+
+def _premium_fair_use_ok(user_id: int) -> bool:
+    """True если подписчик ещё не исчерпал дневной лимит новых разборов.
+    Счётчик инкрементируется отдельно (_premium_fair_use_inc) при УСПЕШНОМ
+    открытии нового разбора."""
+    today = date.today()
+    d, cnt = _premium_daily.get(user_id, (today, 0))
+    if d != today:
+        return True
+    return cnt < PREMIUM_DAILY_LIMIT
+
+def _premium_fair_use_inc(user_id: int):
+    today = date.today()
+    d, cnt = _premium_daily.get(user_id, (today, 0))
+    if d != today:
+        d, cnt = today, 0
+    _premium_daily[user_id] = (today, cnt + 1)
+
 async def _generate_pdf_async(*args, **kwargs) -> bytes:
     """Сборка PDF (fontTools) — тяжёлая по CPU и СИНХРОННАЯ: при прямом вызове
     она блокирует весь event loop, и на эти секунды бот «подвисает» для всех
@@ -178,7 +213,7 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 def main_menu_for(user_id: int, user: dict):
-    return main_menu(user, is_admin=(user_id == ADMIN_ID))
+    return main_menu(user, is_admin=(user_id == ADMIN_ID), is_premium=db.is_premium(user))
 
 def build_prompt(key: str, **kwargs) -> str:
     """Собирает промпт по ключу. Бросает ValueError если ключ не найден."""
@@ -653,6 +688,7 @@ async def admin_stats(callback: CallbackQuery):
                 stars_total   += PRICES.get(r, 49)
     top      = sorted(razbory_cnt.items(), key=lambda x: x[1], reverse=True)
     top_text = "\n".join([f"  {TITLES.get(k,k)}: {v}" for k, v in top[:5]]) if top else "  нет"
+    prem = await db.premium_stats()
     await callback.message.answer(
         f"📊 Статистика бота Ева\n\n"
         f"👥 Всего пользователей: {total}\n"
@@ -661,6 +697,7 @@ async def admin_stats(callback: CallbackQuery):
         f"💫 Прошли онбординг: {free_used}\n"
         f"💳 Купили хотя бы раз: {bought}\n"
         f"🛒 Всего покупок: {total_purch}\n"
+        f"💎 Премиум активных: {prem['active']} (всего оформляли: {prem['ever']})\n"
         f"⭐ Примерная выручка: ~{stars_total} Stars\n"
         f"🔔 Уведомления включены: {notif_on}\n"
         f"🎟 Купонов: создано {coupons_total} / активаций {coupons_used}\n"
@@ -1058,12 +1095,35 @@ async def _resume_already_purchased(callback: CallbackQuery, state: FSMContext, 
     await callback.answer()
     await _start_date_flow(callback.message, state, user, key)
 
+async def _premium_unlock(callback: CallbackQuery, state: FSMContext, user: dict, key: str) -> bool:
+    """Пытается открыть платный разбор по подписке. Возвращает True если
+    разбор открыт (или лимит исчерпан — в обоих случаях покупку показывать не
+    надо). False — подписки нет, идём обычным путём оплаты."""
+    if not db.is_premium(user) or key not in PAID_RAZBORY:
+        return False
+    if not _premium_fair_use_ok(callback.from_user.id):
+        await callback.answer(
+            f"💎 На сегодня открыто {PREMIUM_DAILY_LIMIT} новых разбора — это дневной лимит подписки. "
+            "Уже открытые разборы доступны без ограничений, а новые — завтра 🌸",
+            show_alert=True
+        )
+        return True
+    _premium_fair_use_inc(callback.from_user.id)
+    user["purchased"].append(key)
+    user["waiting"] = key
+    await db.save_user(callback.from_user.id, user)
+    await callback.answer("💎 Открыто по подписке")
+    await _start_date_flow(callback.message, state, user, key)
+    return True
+
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_handler(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("buy_", "")
     user = await db.get_user(callback.from_user.id)
     if key in user["purchased"]:
         await _resume_already_purchased(callback, state, user, key)
+        return
+    if await _premium_unlock(callback, state, user, key):
         return
     if key in PAID_RAZBORY:
         price   = PRICES.get(key, 49)
@@ -1128,8 +1188,44 @@ async def pre_checkout(query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def successful_payment(message: Message, state: FSMContext):
     user    = await db.get_user(message.from_user.id)
-    payload = message.successful_payment.invoice_payload
-    amount  = message.successful_payment.total_amount  # в Stars (XTR) это целое число
+    sp      = message.successful_payment
+    payload = sp.invoice_payload
+    amount  = sp.total_amount  # в Stars (XTR) это целое число
+
+    # ── ПРЕМИУМ-ПОДПИСКА (первая оплата и все ежемесячные продления) ──
+    # Telegram присылает successful_payment и при оформлении, и при каждом
+    # автосписании — оба раза с subscription_expiration_date. Продлеваем до
+    # этой даты; если её вдруг нет — страхуемся 31 днём от текущего момента.
+    if payload == PREMIUM_PAYLOAD:
+        until = sp.subscription_expiration_date
+        if until is not None:
+            until = until.replace(tzinfo=None)
+        else:
+            until = utc_now() + timedelta(days=31)
+        await db.set_premium(message.from_user.id, until)
+
+        # Реф-бонус начисляем только с ПЕРВОЙ оплаты подписки, не с продлений.
+        referrer_id = user.get("referred_by")
+        if referrer_id and getattr(sp, "is_first_recurring", False):
+            bonus = max(1, round(amount * REF_BONUS_PERCENT / 100))
+            try:
+                await db.add_ref_bonus(referrer_id, message.from_user.id, bonus, "premium")
+            except Exception as e:
+                logging.warning(f"Premium ref bonus error: {e}")
+
+        if getattr(sp, "is_first_recurring", False) or not getattr(sp, "is_recurring", False):
+            await message.answer(
+                f"💎 Добро пожаловать в Премиум, {user.get('first_name') or 'дорогая'}!\n\n"
+                f"Все разборы открыты до {until.strftime('%d.%m.%Y')}, каждое утро будет "
+                "приходить твой личный прогноз, а генерация идёт без очереди 🌸\n\n"
+                "Выбирай любой разбор 👇",
+                reply_markup=main_menu_for(message.from_user.id, user)
+            )
+        else:
+            await message.answer(f"💎 Премиум продлён до {until.strftime('%d.%m.%Y')} — спасибо, что со мной 🌸")
+        await state.clear()
+        return
+
     if payload not in user["purchased"]:
         user["purchased"].append(payload)
     user["waiting"] = payload
@@ -1205,7 +1301,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     try:
         context = build_numerology_context(name, date_str)
         prompt  = build_prompt(waiting, name=name, context=context, date=date_str)
-        async with _gen_semaphore:
+        async with _premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
         await stop_intermediate()
 
@@ -1319,7 +1415,7 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
         n2      = calculate_destiny(parts[1])
         context = build_numerology_context(name, parts[0])
         prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
-        async with _gen_semaphore:
+        async with _premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
         await stop_intermediate()
 
@@ -1466,6 +1562,59 @@ async def show_menu(callback: CallbackQuery):
     await callback.message.answer("🔮 Выбери разбор:", reply_markup=main_menu_for(callback.from_user.id, user))
     await callback.answer()
 
+# ─── ПРЕМИУМ-ПОДПИСКА ────────────────────────────────────────────────────────
+_PREMIUM_OFFER = (
+    "💎 Ева Премиум\n\n"
+    f"Подписка за {PREMIUM_PRICE} ⭐ в месяц — и вся моя нумерология открыта:\n\n"
+    "✨ Все 34 разбора без покупки поштучно\n"
+    f"🔮 До {PREMIUM_DAILY_LIMIT} новых разборов в день, а уже открытые — сколько угодно раз\n"
+    "🌅 Твой личный прогноз каждое утро — по твоим числам, а не общий\n"
+    "⚡ Приоритетная генерация — без очереди в часы пика\n"
+    "🎁 Новые разборы — сразу и бесплатно\n\n"
+    "Списывается раз в месяц автоматически, отменить можно в любой момент "
+    "в настройках Telegram. Оформляется звёздами 👇"
+)
+
+async def _create_premium_invoice() -> str:
+    return await bot.create_invoice_link(
+        title=PREMIUM_TITLE,
+        description="Безлимитный доступ ко всем разборам, личный прогноз каждое утро и приоритетная генерация.",
+        payload=PREMIUM_PAYLOAD,
+        currency="XTR",
+        prices=[LabeledPrice(label="Ева Премиум — месяц", amount=PREMIUM_PRICE)],
+        subscription_period=PREMIUM_PERIOD,
+    )
+
+async def _show_premium(target: Message, user: dict):
+    if db.is_premium(user):
+        until = user["premium_until"].strftime("%d.%m.%Y")
+        await target.answer(
+            f"💎 Премиум активен до {until}.\n\n"
+            "Тебе открыты все разборы, каждое утро приходит личный прогноз, "
+            "а генерация идёт без очереди. Спасибо, что со мной 🌸",
+            reply_markup=premium_active_menu()
+        )
+        return
+    try:
+        link = await _create_premium_invoice()
+    except Exception as e:
+        logging.error(f"Premium invoice error: {e}", exc_info=True)
+        await target.answer("❌ Не удалось открыть оплату — попробуй чуть позже 🙏")
+        return
+    await target.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link))
+
+@dp.callback_query(F.data == "premium_info")
+async def premium_info_cb(callback: CallbackQuery):
+    user = await db.get_user(callback.from_user.id)
+    await _show_premium(callback.message, user)
+    await callback.answer()
+
+@dp.message(Command("premium"), StateFilter("*"))
+async def premium_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(message.from_user.id)
+    await _show_premium(message, user)
+
 # ─── РЕФЕРАЛЬНАЯ СИСТЕМА ─────────────────────────────────────────────────────
 @dp.callback_query(F.data == "ref_promo")
 async def ref_promo_callback(callback: CallbackQuery):
@@ -1591,6 +1740,28 @@ def _day_message(name: str, destiny_number: int, day_number: int) -> str:
         f"🔮 /menu"
     )
 
+_PMONTH_ENERGY = {
+    1: "месяц новых начинаний — самое время закладывать то, что хочешь вырастить",
+    2: "месяц отношений и союзов — важные разговоры и партнёрства идут легче",
+    3: "месяц творчества и общения — твоя энергия притягивает людей и идеи",
+    4: "месяц труда и порядка — то что построишь сейчас, будет стоять долго",
+    5: "месяц перемен и движения — не бойся сказать да новому",
+    6: "месяц дома, любви и заботы — вкладывайся в близких и в себя",
+    7: "месяц паузы и анализа — замедлись, ответы приходят в тишине",
+    8: "месяц денег и результатов — время собирать плоды и принимать решения",
+    9: "месяц завершения — отпусти лишнее, освободи место для нового цикла",
+}
+
+def _premium_day_message(name: str, destiny_number: int, day_number: int, birth_date: str) -> str:
+    base = _day_message(name, destiny_number, day_number).replace("🌅", "💎", 1)
+    base = base.replace("\n🔮 /menu", "")
+    try:
+        pm = calculate_personal_month(birth_date)
+        pm_line = f"\n🌙 Твой личный месяц — {pm}: {_PMONTH_ENERGY.get(pm, '')}.\n"
+    except Exception:
+        pm_line = ""
+    return base + pm_line + "\n🔮 Все разборы открыты — /menu"
+
 async def send_daily_horoscope():
     """UTC 8:00 = Москва 11:00 — утренняя рассылка с нумерологией дня."""
     while True:
@@ -1603,15 +1774,20 @@ async def send_daily_horoscope():
             today      = date.today()
             day_number = calculate_day_number(today)
             rows = await db.db_pool.fetch(
-                'SELECT user_id, first_name, destiny_number FROM users '
+                'SELECT user_id, first_name, destiny_number, birth_date, premium_until FROM users '
                 'WHERE birth_date IS NOT NULL AND destiny_number IS NOT NULL '
                 'AND notifications = TRUE'
             )
+            now_naive = utc_now()
             for row in rows:
                 try:
-                    name   = row['first_name'] or "дорогая"
-                    number = row['destiny_number']
-                    text   = _day_message(name, number, day_number)
+                    name    = row['first_name'] or "дорогая"
+                    number  = row['destiny_number']
+                    premium = row['premium_until'] is not None and row['premium_until'] > now_naive
+                    if premium:
+                        text = _premium_day_message(name, number, day_number, row['birth_date'])
+                    else:
+                        text = _day_message(name, number, day_number)
                     await bot.send_message(row['user_id'], text, reply_markup=notif_off_menu())
                     await asyncio.sleep(0.05)
                 except TelegramForbiddenError:
@@ -1688,6 +1864,7 @@ async def setup_bot_commands():
     админу дополнительно /admin через персональный scope."""
     user_commands = [
         BotCommand(command="menu",          description="🔮 Меню разборов"),
+        BotCommand(command="premium",       description="💎 Ева Премиум — все разборы"),
         BotCommand(command="ref",           description="👥 Пригласить подругу — получить ⭐"),
         BotCommand(command="balance",       description="⭐ Мой бонусный баланс"),
         BotCommand(command="promo",         description="🎁 Ввести промокод"),
