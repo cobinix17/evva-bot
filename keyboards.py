@@ -45,7 +45,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         )])
     else:
         buttons.append([InlineKeyboardButton(
-            text="💎 Ева Премиум — все разборы за 299 ⭐/мес",
+            text="💎 Ева Премиум — 30 разборов за 399 ⭐/мес",
             callback_data="premium_info"
         )])
 
@@ -92,7 +92,7 @@ def premium_subscribe_menu(invoice_url: str) -> InlineKeyboardMarkup:
     """Кнопка оплаты подписки — ведёт на invoice-ссылку с subscription_period,
     Telegram сам оформит рекуррентное списание раз в месяц."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Оформить за 299 ⭐/мес", url=invoice_url)],
+        [InlineKeyboardButton(text="💎 Оформить за 399 ⭐/мес", url=invoice_url)],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")],
     ])
 

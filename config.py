@@ -134,11 +134,12 @@ REF_BONUS_PERCENT = 25  # % от суммы покупки реферала, н�
 # ─── ПРЕМИУМ-ПОДПИСКА (Telegram Stars, рекуррентная) ─────────────────────────
 # Подписка списывает звёзды раз в месяц автоматически. PREMIUM_PERIOD —
 # единственный разрешённый Telegram период для Stars-подписок (ровно 30 суток).
-PREMIUM_PRICE       = 299        # ⭐ в месяц
-PREMIUM_PERIOD      = 2592000    # 30*24*60*60 — обязательное значение для Stars
-PREMIUM_DAILY_LIMIT = 3          # fair-use: сколько НОВЫХ разборов открывать в день
-PREMIUM_PAYLOAD     = "premium_sub"
-PREMIUM_TITLE       = "💎 Ева Премиум"
+PREMIUM_PRICE         = 399        # ⭐ в месяц
+PREMIUM_PERIOD        = 2592000    # 30*24*60*60 — обязательное значение для Stars
+PREMIUM_DAILY_LIMIT   = 5          # сколько НОВЫХ разборов открывать в день
+PREMIUM_MONTHLY_LIMIT = 30         # сколько НОВЫХ разборов открывать за месяц подписки
+PREMIUM_PAYLOAD       = "premium_sub"
+PREMIUM_TITLE         = "💎 Ева Премиум"
 
 RAZBOR_DESCRIPTIONS = {
     "matrix_full":   "Полная картина личности: характер, таланты, деньги, любовь, карма и предназначение в одном разборе.",

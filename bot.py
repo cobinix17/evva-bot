@@ -28,7 +28,8 @@ import db
 from config import (
     TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS,
     ADMIN_ID, REF_BONUS_PERCENT,
-    PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_PAYLOAD, PREMIUM_TITLE,
+    PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
+    PREMIUM_PAYLOAD, PREMIUM_TITLE,
 )
 from ai import ask_ai
 from pdf import generate_pdf
@@ -167,30 +168,39 @@ _gen_semaphore = asyncio.Semaphore(8)
 # быстрее. Это один из бонусов подписки («приоритет генерации»).
 _priority_semaphore = asyncio.Semaphore(4)
 
-# Fair-use для премиума: сколько НОВЫХ разборов подписчик может открыть за день.
-# Регенерация уже открытых разборов не ограничена. Храним в памяти процесса —
-# перезапуск сбрасывает счётчик, для мягкой защиты от абьюза этого достаточно.
-_premium_daily: dict[int, tuple] = {}  # user_id -> (date, count)
+# Лимиты премиума: сколько НОВЫХ разборов подписчик может открыть в день и в
+# месяц. Регенерация уже открытых разборов не ограничена. Счётчики держим в
+# памяти процесса — перезапуск их сбрасывает, но общий потолок всё равно
+# ограничен размером каталога (34 разбора), так что риск абьюза минимален.
+_premium_daily:   dict[int, tuple] = {}  # user_id -> (date,        count)
+_premium_monthly: dict[int, tuple] = {}  # user_id -> ('YYYY-MM',   count)
 
 def _premium_gen_semaphore(user: dict):
     return _priority_semaphore if db.is_premium(user) else _gen_semaphore
 
-def _premium_fair_use_ok(user_id: int) -> bool:
-    """True если подписчик ещё не исчерпал дневной лимит новых разборов.
-    Счётчик инкрементируется отдельно (_premium_fair_use_inc) при УСПЕШНОМ
-    открытии нового разбора."""
+def _premium_limit_reason(user_id: int) -> str | None:
+    """Возвращает причину отказа ('day'/'month') если лимит исчерпан, иначе None."""
     today = date.today()
-    d, cnt = _premium_daily.get(user_id, (today, 0))
-    if d != today:
-        return True
-    return cnt < PREMIUM_DAILY_LIMIT
+    month = today.strftime("%Y-%m")
+    d, dc = _premium_daily.get(user_id, (today, 0))
+    if d == today and dc >= PREMIUM_DAILY_LIMIT:
+        return "day"
+    m, mc = _premium_monthly.get(user_id, (month, 0))
+    if m == month and mc >= PREMIUM_MONTHLY_LIMIT:
+        return "month"
+    return None
 
-def _premium_fair_use_inc(user_id: int):
+def _premium_limit_inc(user_id: int):
     today = date.today()
-    d, cnt = _premium_daily.get(user_id, (today, 0))
+    month = today.strftime("%Y-%m")
+    d, dc = _premium_daily.get(user_id, (today, 0))
     if d != today:
-        d, cnt = today, 0
-    _premium_daily[user_id] = (today, cnt + 1)
+        d, dc = today, 0
+    _premium_daily[user_id] = (today, dc + 1)
+    m, mc = _premium_monthly.get(user_id, (month, 0))
+    if m != month:
+        m, mc = month, 0
+    _premium_monthly[user_id] = (month, mc + 1)
 
 async def _generate_pdf_async(*args, **kwargs) -> bytes:
     """Сборка PDF (fontTools) — тяжёлая по CPU и СИНХРОННАЯ: при прямом вызове
@@ -1101,14 +1111,22 @@ async def _premium_unlock(callback: CallbackQuery, state: FSMContext, user: dict
     надо). False — подписки нет, идём обычным путём оплаты."""
     if not db.is_premium(user) or key not in PAID_RAZBORY:
         return False
-    if not _premium_fair_use_ok(callback.from_user.id):
+    reason = _premium_limit_reason(callback.from_user.id)
+    if reason == "day":
         await callback.answer(
             f"💎 На сегодня открыто {PREMIUM_DAILY_LIMIT} новых разбора — это дневной лимит подписки. "
             "Уже открытые разборы доступны без ограничений, а новые — завтра 🌸",
             show_alert=True
         )
         return True
-    _premium_fair_use_inc(callback.from_user.id)
+    if reason == "month":
+        await callback.answer(
+            f"💎 В этом месяце открыто {PREMIUM_MONTHLY_LIMIT} разборов — это месячный лимит подписки. "
+            "Уже открытые доступны без ограничений, а новые — со следующего месяца 🌸",
+            show_alert=True
+        )
+        return True
+    _premium_limit_inc(callback.from_user.id)
     user["purchased"].append(key)
     user["waiting"] = key
     await db.save_user(callback.from_user.id, user)
@@ -1565,8 +1583,8 @@ async def show_menu(callback: CallbackQuery):
 # ─── ПРЕМИУМ-ПОДПИСКА ────────────────────────────────────────────────────────
 _PREMIUM_OFFER = (
     "💎 Ева Премиум\n\n"
-    f"Подписка за {PREMIUM_PRICE} ⭐ в месяц — и вся моя нумерология открыта:\n\n"
-    "✨ Все 34 разбора без покупки поштучно\n"
+    f"Подписка за {PREMIUM_PRICE} ⭐ в месяц — и почти вся моя нумерология открыта:\n\n"
+    f"✨ До {PREMIUM_MONTHLY_LIMIT} разборов в месяц без покупки поштучно\n"
     f"🔮 До {PREMIUM_DAILY_LIMIT} новых разборов в день, а уже открытые — сколько угодно раз\n"
     "🌅 Твой личный прогноз каждое утро — по твоим числам, а не общий\n"
     "⚡ Приоритетная генерация — без очереди в часы пика\n"
