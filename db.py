@@ -88,6 +88,10 @@ async def init_db(database_url: str):
         ("ref_balance",   "INTEGER DEFAULT 0"),
         ("referred_by",   "BIGINT"),
         ("premium_until", "TIMESTAMP"),
+        ("prem_day",       "DATE"),
+        ("prem_day_count", "INTEGER DEFAULT 0"),
+        ("prem_month",     "TEXT"),
+        ("prem_month_count","INTEGER DEFAULT 0"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -301,6 +305,41 @@ def is_premium(user: dict) -> bool:
     """Активна ли подписка. Работает с dict из get_user."""
     pu = user.get("premium_until")
     return pu is not None and pu > utc_now()
+
+async def premium_try_consume(user_id: int, daily_limit: int, monthly_limit: int) -> str:
+    """Атомарно пытается списать один слот открытия нового разбора по подписке.
+    Счётчики хранятся в БД (переживают перезапуск бота), период сбрасывается
+    сам: новый день обнуляет дневной счётчик, новый месяц — месячный.
+    Возвращает 'ok' если слот списан, 'day' или 'month' если лимит исчерпан.
+
+    Один UPDATE с guard в WHERE делает проверку и инкремент неделимыми —
+    два быстрых нажатия не могут проскочить лимит."""
+    today = utc_now().date()
+    month = today.strftime("%Y-%m")
+    row = await db_pool.fetchrow(
+        '''
+        UPDATE users SET
+            prem_day_count   = CASE WHEN prem_day  = $2 THEN prem_day_count  + 1 ELSE 1 END,
+            prem_month_count = CASE WHEN prem_month = $3 THEN prem_month_count + 1 ELSE 1 END,
+            prem_day   = $2,
+            prem_month = $3
+        WHERE user_id = $1
+          AND NOT (prem_day  = $2 AND prem_day_count  >= $4)
+          AND NOT (prem_month = $3 AND prem_month_count >= $5)
+        RETURNING prem_day_count
+        ''',
+        user_id, today, month, daily_limit, monthly_limit
+    )
+    if row is not None:
+        return 'ok'
+    # слот не списан — выясняем, какой лимит уперся, для точного сообщения
+    cur = await db_pool.fetchrow(
+        'SELECT prem_day, prem_day_count, prem_month, prem_month_count FROM users WHERE user_id = $1',
+        user_id
+    )
+    if cur and cur['prem_day'] == today and cur['prem_day_count'] >= daily_limit:
+        return 'day'
+    return 'month'
 
 async def premium_stats() -> dict:
     active = await db_pool.fetchval(

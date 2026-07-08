@@ -168,39 +168,13 @@ _gen_semaphore = asyncio.Semaphore(8)
 # быстрее. Это один из бонусов подписки («приоритет генерации»).
 _priority_semaphore = asyncio.Semaphore(4)
 
-# Лимиты премиума: сколько НОВЫХ разборов подписчик может открыть в день и в
-# месяц. Регенерация уже открытых разборов не ограничена. Счётчики держим в
-# памяти процесса — перезапуск их сбрасывает, но общий потолок всё равно
-# ограничен размером каталога (34 разбора), так что риск абьюза минимален.
-_premium_daily:   dict[int, tuple] = {}  # user_id -> (date,        count)
-_premium_monthly: dict[int, tuple] = {}  # user_id -> ('YYYY-MM',   count)
+# Лимиты премиума (30 новых разборов в месяц, 5 в день) считаются в БД —
+# см. db.premium_try_consume. Счётчики переживают перезапуск бота и период
+# сбрасывается сам (новый день/месяц обнуляет соответствующий счётчик).
+# Регенерация уже открытых разборов слот не тратит.
 
 def _premium_gen_semaphore(user: dict):
     return _priority_semaphore if db.is_premium(user) else _gen_semaphore
-
-def _premium_limit_reason(user_id: int) -> str | None:
-    """Возвращает причину отказа ('day'/'month') если лимит исчерпан, иначе None."""
-    today = date.today()
-    month = today.strftime("%Y-%m")
-    d, dc = _premium_daily.get(user_id, (today, 0))
-    if d == today and dc >= PREMIUM_DAILY_LIMIT:
-        return "day"
-    m, mc = _premium_monthly.get(user_id, (month, 0))
-    if m == month and mc >= PREMIUM_MONTHLY_LIMIT:
-        return "month"
-    return None
-
-def _premium_limit_inc(user_id: int):
-    today = date.today()
-    month = today.strftime("%Y-%m")
-    d, dc = _premium_daily.get(user_id, (today, 0))
-    if d != today:
-        d, dc = today, 0
-    _premium_daily[user_id] = (today, dc + 1)
-    m, mc = _premium_monthly.get(user_id, (month, 0))
-    if m != month:
-        m, mc = month, 0
-    _premium_monthly[user_id] = (month, mc + 1)
 
 async def _generate_pdf_async(*args, **kwargs) -> bytes:
     """Сборка PDF (fontTools) — тяжёлая по CPU и СИНХРОННАЯ: при прямом вызове
@@ -1111,7 +1085,9 @@ async def _premium_unlock(callback: CallbackQuery, state: FSMContext, user: dict
     надо). False — подписки нет, идём обычным путём оплаты."""
     if not db.is_premium(user) or key not in PAID_RAZBORY:
         return False
-    reason = _premium_limit_reason(callback.from_user.id)
+    reason = await db.premium_try_consume(
+        callback.from_user.id, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT
+    )
     if reason == "day":
         await callback.answer(
             f"💎 На сегодня открыто {PREMIUM_DAILY_LIMIT} новых разбора — это дневной лимит подписки. "
@@ -1126,7 +1102,6 @@ async def _premium_unlock(callback: CallbackQuery, state: FSMContext, user: dict
             show_alert=True
         )
         return True
-    _premium_limit_inc(callback.from_user.id)
     user["purchased"].append(key)
     user["waiting"] = key
     await db.save_user(callback.from_user.id, user)
