@@ -1899,8 +1899,11 @@ async def setup_bot_commands():
             await bot.set_chat_menu_button(
                 menu_button=MenuButtonWebApp(text="🔮 Кабинет", web_app=WebAppInfo(url=f"{webapp_url}/app"))
             )
+            logging.info(f"Кнопка Mini App установлена: {webapp_url}/app")
         except Exception as e:
             logging.warning(f"Не удалось установить кнопку Mini App: {e}")
+    else:
+        logging.warning("WEBAPP_URL не задан — кнопка Mini App не установлена")
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 async def main():
