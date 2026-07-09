@@ -1,0 +1,201 @@
+# webapp.py — API и статика Telegram Mini App (личный кабинет Евы).
+# Отдельный модуль, подключается к общему aiohttp-серверу из bot.py (run_web).
+# Переиспользует db.py/numerology.py/config.py — платёжный поток (Stars) и
+# генерация разборов остаются в bot.py/ai.py, веб только читает/инициирует.
+import os
+import json
+import hmac
+import hashlib
+import logging
+from urllib.parse import parse_qsl
+
+from aiohttp import web
+
+import db
+from config import (
+    TITLES, PRICES, PAID_RAZBORY, RAZBOR_DESCRIPTIONS,
+    SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
+    ADMIN_ID,
+)
+from numerology import numerology_summary, is_valid_date
+
+BOT_TOKEN   = os.getenv("BOT_TOKEN", "")
+WEBAPP_DIR  = os.path.join(os.path.dirname(__file__), "webapp")
+
+# Ссылается на aiogram Bot из bot.py — присваивается в setup_webapp_routes().
+# Нужен для create_invoice_link (оплата инициируется с веба, но сам платёж и
+# доставка разбора остаются в Telegram-чате, чтобы не дублировать логику
+# генерации/семафоров/PDF в двух местах).
+_bot = None
+_bot_username: str | None = None
+
+async def _get_bot_username() -> str:
+    global _bot_username
+    if _bot_username is None:
+        me = await _bot.get_me()
+        _bot_username = me.username
+    return _bot_username
+
+# ── ВАЛИДАЦИЯ initData ────────────────────────────────────────────────────────
+# Telegram подписывает данные Mini App секретом = HMAC-SHA256(bot_token, "WebAppData").
+# Без этой проверки любой мог бы прислать чужой user_id и читать/покупать за него.
+def _check_init_data(init_data: str) -> dict | None:
+    if not init_data or not BOT_TOKEN:
+        return None
+    try:
+        pairs = dict(parse_qsl(init_data, strict_parsing=True))
+    except ValueError:
+        return None
+    received_hash = pairs.pop("hash", None)
+    if not received_hash:
+        return None
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+    calc_hash  = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calc_hash, received_hash):
+        return None
+    user_raw = pairs.get("user")
+    if not user_raw:
+        return None
+    try:
+        return json.loads(user_raw)
+    except json.JSONDecodeError:
+        return None
+
+async def _authed_user_id(request: web.Request) -> int | None:
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    tg_user = _check_init_data(init_data)
+    if not tg_user:
+        return None
+    return tg_user.get("id")
+
+def _json_error(message: str, status: int = 400) -> web.Response:
+    return web.json_response({"error": message}, status=status)
+
+# ── API ────────────────────────────────────────────────────────────────────────
+async def api_me(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user = await db.get_user(user_id)
+    matrix = None
+    if user.get("birth_date"):
+        try:
+            matrix = numerology_summary(user.get("first_name") or "дорогая", user["birth_date"])
+        except Exception as e:
+            logging.warning(f"webapp numerology_summary error: {e}")
+    return web.json_response({
+        "user_id":       user_id,
+        "bot_username":  await _get_bot_username(),
+        "first_name":    user.get("first_name"),
+        "birth_date":    user.get("birth_date"),
+        "destiny_number": user.get("destiny_number"),
+        "purchased":     user.get("purchased", []),
+        "ref_balance":   user.get("ref_balance", 0),
+        "is_premium":    db.is_premium(user),
+        "premium_until": user["premium_until"].isoformat() if user.get("premium_until") else None,
+        "is_admin":      user_id == ADMIN_ID,
+        "matrix":        matrix,
+    })
+
+async def api_set_birthdate(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    body = await request.json()
+    date_str = (body.get("birth_date") or "").strip()
+    name     = (body.get("first_name") or "").strip()
+    if not is_valid_date(date_str):
+        return _json_error("Неверная дата. Формат ДД.ММ.ГГГГ")
+    from numerology import calculate_destiny
+    user = await db.get_user(user_id)
+    user["birth_date"] = date_str
+    user["destiny_number"] = calculate_destiny(date_str)
+    if name and len(name) <= 30:
+        user["first_name"] = name
+    await db.save_user(user_id, user)
+    return web.json_response({"ok": True})
+
+_SECTIONS = [
+    ("destiny", "🔮 Судьба и личность", SECTION_DESTINY),
+    ("money",   "💰 Деньги и карьера",   SECTION_MONEY),
+    ("love",    "💑 Любовь и отношения", SECTION_LOVE),
+    ("health",  "🌙 Здоровье и энергия", SECTION_HEALTH),
+    ("past",    "✨ Прошлое и будущее",  SECTION_PAST),
+]
+
+async def api_catalog(request: web.Request) -> web.Response:
+    """Каталог разборов сгруппированный по разделам — с ценами и описаниями.
+    Не требует авторизации (используется и на превью-экране без initData)."""
+    sections = []
+    for key, title, items in _SECTIONS:
+        sections.append({
+            "key": key,
+            "title": title,
+            "items": [
+                {
+                    "key":   k,
+                    "title": TITLES.get(k, k),
+                    "price": PRICES.get(k, 49),
+                    "desc":  RAZBOR_DESCRIPTIONS.get(k, ""),
+                }
+                for k in items
+            ],
+        })
+    return web.json_response({"sections": sections})
+
+async def api_buy(request: web.Request) -> web.Response:
+    """Создаёт invoice-ссылку на разбор — фронт открывает её через
+    Telegram.WebApp.openInvoice(). Сама оплата и доставка разбора (текст +
+    PDF) идут в чат с ботом, как при покупке из главного меню."""
+    from aiogram.types import LabeledPrice
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    key = request.match_info["key"]
+    if key not in PAID_RAZBORY:
+        return _json_error("unknown reading", 404)
+    user = await db.get_user(user_id)
+    if key in user.get("purchased", []):
+        return web.json_response({"already_purchased": True})
+    price = PRICES.get(key, 49)
+    title = PAID_RAZBORY[key]
+    desc  = RAZBOR_DESCRIPTIONS.get(key, title)
+    link = await _bot.create_invoice_link(
+        title=title, description=desc, payload=key,
+        currency="XTR", prices=[LabeledPrice(label=title, amount=price)],
+    )
+    return web.json_response({"invoice_url": link})
+
+async def api_matrix(request: web.Request) -> web.Response:
+    """Публичный расчёт матрицы по дате — для гостевого превью без входа
+    (человек ещё не открывал бота, но зашёл по ссылке на веб)."""
+    date_str = request.query.get("date", "")
+    name     = request.query.get("name", "дорогая")
+    if not is_valid_date(date_str):
+        return _json_error("Неверная дата. Формат ДД.ММ.ГГГГ")
+    try:
+        return web.json_response(numerology_summary(name[:30], date_str))
+    except Exception as e:
+        logging.error(f"webapp api_matrix error: {e}", exc_info=True)
+        return _json_error("Ошибка расчёта", 500)
+
+# ── СТАТИКА ───────────────────────────────────────────────────────────────────
+async def index(request: web.Request) -> web.Response:
+    path = os.path.join(WEBAPP_DIR, "index.html")
+    if not os.path.exists(path):
+        return web.Response(text="webapp not built", status=404)
+    return web.FileResponse(path)
+
+def setup_webapp_routes(app: web.Application, bot):
+    global _bot
+    _bot = bot
+    app.router.add_get("/api/me", api_me)
+    app.router.add_post("/api/me/birthdate", api_set_birthdate)
+    app.router.add_get("/api/catalog", api_catalog)
+    app.router.add_get("/api/matrix", api_matrix)
+    app.router.add_post("/api/buy/{key}", api_buy)
+    app.router.add_get("/app", index)
+    app.router.add_get("/app/", index)
+    if os.path.isdir(WEBAPP_DIR):
+        app.router.add_static("/app/static", os.path.join(WEBAPP_DIR, "static"))

@@ -1,0 +1,85 @@
+@font-face { font-family:'Head'; src:url('/app/static/CormorantGaramond-SemiBold.ttf') format('truetype'); font-weight:600; }
+@font-face { font-family:'Head'; src:url('/app/static/CormorantGaramond-Medium.ttf')   format('truetype'); font-weight:500; }
+@font-face { font-family:'Body'; src:url('/app/static/Spectral-Regular.ttf') format('truetype'); font-weight:400; }
+@font-face { font-family:'Body'; src:url('/app/static/Spectral-Medium.ttf')  format('truetype'); font-weight:500; }
+@font-face { font-family:'Body'; src:url('/app/static/Spectral-Italic.ttf')  format('truetype'); font-weight:400; font-style:italic; }
+
+:root{
+  --bg:#FBF8FE; --bg2:#F6F0FC;
+  --ink:#3E2F58; --head:#4A2E6B; --accent:#8A5CB4;
+  --border:#E7DBF3; --gold:#B08A3E; --gold2:#C7A64E;
+  --bar1:#5E3A85; --bar2:#7E52A8;
+}
+:root[data-theme="dark"]{
+  --bg:#1B1524; --bg2:#241C30;
+  --ink:#EAE1F5; --head:#EADFF9; --accent:#B79AE0;
+  --border:#3A2E4E; --gold:#D8BC77; --gold2:#E4C98A;
+  --bar1:#3E2A5A; --bar2:#54376F;
+}
+
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink); font-family:'Body',serif; }
+h1,h2,h3{ font-family:'Head',serif; font-weight:600; color:var(--head); margin:0; }
+
+#app{ min-height:100vh; padding-bottom:76px; }
+.loading{ min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; color:var(--accent); }
+.spark-loader{ font-size:32px; animation:spin 1.8s linear infinite; }
+@keyframes spin{ to{ transform:rotate(360deg); } }
+
+/* ── шапка ── */
+.topbar{ padding:18px 18px 8px; text-align:center; }
+.eyebrow{ font-size:10.5px; letter-spacing:.3em; color:var(--accent); text-transform:uppercase; }
+.topbar h1{ font-size:30px; margin-top:6px; }
+
+/* ── матрица ── */
+.octawrap{ display:flex; justify-content:center; margin:14px 0 6px; }
+.octa{ width:min(88vw, 340px); height:min(88vw, 340px); }
+.destiny-line{ text-align:center; font-family:'Head',serif; font-weight:600; font-size:17px; color:var(--head); margin:2px 20px 18px; }
+
+.onboard{ margin:24px 18px; padding:20px; background:var(--bg2); border:1px solid var(--border); border-radius:14px; }
+.onboard p{ font-size:14px; color:var(--accent); margin:0 0 14px; line-height:1.5; }
+.onboard input{ width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--border);
+  background:var(--bg); color:var(--ink); font-family:'Body',serif; font-size:15px; margin-bottom:10px; }
+.onboard button{ width:100%; padding:13px; border:none; border-radius:10px;
+  background:linear-gradient(90deg,var(--bar1),var(--bar2)); color:#fff; font-family:'Head',serif;
+  font-weight:600; font-size:16px; letter-spacing:.02em; cursor:pointer; }
+
+.cycles{ margin:22px 18px; }
+.cyc-head{ display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+.cyc-rule{ flex:1; height:1px; background:linear-gradient(90deg,transparent,var(--gold2),transparent); }
+.cyc-t{ font-size:10px; letter-spacing:.22em; color:var(--accent); white-space:nowrap; text-transform:uppercase; }
+.pins{ display:flex; gap:8px; }
+.pin{ flex:1; padding:14px 4px; background:var(--bg2); border:1px solid var(--border); border-radius:12px; text-align:center; }
+.pin-n{ font-family:'Head',serif; font-weight:600; font-size:26px; color:var(--head); }
+.pin-a{ font-size:10px; color:var(--accent); margin-top:4px; }
+
+.cards{ margin:22px 18px; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.card{ background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:14px; text-align:center; }
+.card .big{ font-family:'Head',serif; font-weight:600; font-size:30px; color:var(--head); }
+.card .lbl{ font-size:9.5px; letter-spacing:.14em; color:var(--accent); text-transform:uppercase; margin-top:4px; }
+
+/* ── каталог ── */
+.section{ margin:20px 18px; }
+.section-t{ font-size:11px; letter-spacing:.18em; color:var(--accent); text-transform:uppercase; margin-bottom:10px; }
+.item{ display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:14px 16px; background:var(--bg2); border:1px solid var(--border); border-radius:12px; margin-bottom:8px; cursor:pointer; }
+.item-t{ font-family:'Head',serif; font-weight:600; font-size:15.5px; color:var(--head); }
+.item-d{ font-size:11.5px; color:var(--accent); margin-top:2px; line-height:1.35; }
+.item-p{ font-family:'Head',serif; font-weight:600; font-size:15px; white-space:nowrap; color:var(--gold); }
+.item.owned .item-p{ color:#7fbf7f; }
+
+.empty{ text-align:center; color:var(--accent); padding:60px 20px; font-size:14px; }
+
+/* ── таббар ── */
+.tabbar{ position:fixed; left:0; right:0; bottom:0; display:flex; background:var(--bg2);
+  border-top:1px solid var(--border); padding:8px 8px calc(8px + env(safe-area-inset-bottom)); z-index:10; }
+.tab{ flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:6px 0;
+  background:none; border:none; color:var(--accent); font-family:'Body',serif; font-size:11px; cursor:pointer; }
+.tab.active{ color:var(--head); font-weight:600; }
+.tab-ico{ font-size:18px; }
+
+.reading-view{ margin:18px; }
+.reading-view h2{ font-size:20px; margin-bottom:12px; }
+.reading-text{ font-size:14.5px; line-height:1.6; white-space:pre-wrap; }
+.back-btn{ background:none; border:none; color:var(--accent); font-family:'Body',serif; font-size:14px;
+  padding:16px 18px 0; cursor:pointer; }

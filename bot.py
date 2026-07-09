@@ -13,6 +13,7 @@ from aiogram.types import (
     TelegramObject, BufferedInputFile,
     InlineKeyboardMarkup, InlineKeyboardButton,
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
+    MenuButtonWebApp, WebAppInfo,
     ErrorEvent,
 )
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
@@ -444,7 +445,21 @@ async def start(message: Message, state: FSMContext):
         )
         await state.set_state(Form.waiting_name)
         return
+
+    # Deep link из веб-кабинета: /start open_<key> — открыть уже купленный
+    # разбор (после оплаты в Mini App пользователя возвращают в чат сюда).
+    if len(args) > 1 and args[1].startswith("open_"):
+        key = args[1][len("open_"):]
+        if key in user.get("purchased", []):
+            await _resume_purchased_from_start(message, state, user, key)
+            return
+
     await message.answer("🔮 Выбери свой разбор 👇", reply_markup=main_menu_for(message.from_user.id, user))
+
+async def _resume_purchased_from_start(message: Message, state: FSMContext, user: dict, key: str):
+    user["waiting"] = key
+    await db.save_user(message.from_user.id, user)
+    await _start_date_flow(message, state, user, key)
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, state: FSMContext):
@@ -1846,6 +1861,8 @@ async def healthcheck(request):
 async def run_web():
     app    = web.Application()
     app.router.add_get("/", healthcheck)
+    from webapp import setup_webapp_routes
+    setup_webapp_routes(app, bot)
     port   = int(os.environ.get("PORT", 8080))
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1871,6 +1888,19 @@ async def setup_bot_commands():
         await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
     except Exception as e:
         logging.warning(f"Не удалось установить команды админа: {e}")
+
+    # Кнопка меню (слева от поля ввода) открывает Mini App — личный кабинет
+    # с матрицей чисел и каталогом. WEBAPP_URL обязателен для этой кнопки:
+    # Telegram требует HTTPS, поэтому локально/без домена кнопка просто не
+    # ставится, остальной функционал бота это не затрагивает.
+    webapp_url = os.getenv("WEBAPP_URL")
+    if webapp_url:
+        try:
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="🔮 Кабинет", web_app=WebAppInfo(url=f"{webapp_url}/app"))
+            )
+        except Exception as e:
+            logging.warning(f"Не удалось установить кнопку Mini App: {e}")
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 async def main():
