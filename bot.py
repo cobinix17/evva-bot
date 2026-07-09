@@ -1339,15 +1339,25 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             pass
 
     try:
-        context = build_numerology_context(name, date_str)
-        prompt  = build_prompt(waiting, name=name, context=context, date=date_str)
-        async with _premium_gen_semaphore(user):
-            answer = await ask_ai(prompt)
-        await stop_intermediate()
-
         title = TITLES.get(waiting, "🔮 Разбор")
-        await send_long(message.chat.id, f"{title}\n\n{answer}")
-        await db.save_reading_text(user_id, waiting, title, answer)
+        cached = await db.get_reading_text(user_id, waiting)
+        if cached and cached.get("date_str") == date_str:
+            await stop_intermediate()
+            answer = cached["text"]
+            await send_long(
+                message.chat.id,
+                f"{title}\n\n{answer}\n\n"
+                f"ℹ️ Этот разбор на эту дату мы уже делали — показываю тот же текст, "
+                f"чтобы не было противоречий."
+            )
+        else:
+            context = build_numerology_context(name, date_str)
+            prompt  = build_prompt(waiting, name=name, context=context, date=date_str)
+            async with _premium_gen_semaphore(user):
+                answer = await ask_ai(prompt)
+            await stop_intermediate()
+            await send_long(message.chat.id, f"{title}\n\n{answer}")
+            await db.save_reading_text(user_id, waiting, title, answer, date_str)
 
         try:
             pdf_bytes = await _generate_pdf_async(
@@ -1457,16 +1467,27 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
             pass
 
     try:
-        n1      = calculate_destiny(parts[0])
-        n2      = calculate_destiny(parts[1])
-        context = build_numerology_context(name, parts[0])
-        prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
-        async with _premium_gen_semaphore(user):
-            answer = await ask_ai(prompt)
-        await stop_intermediate()
-
-        await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
-        await db.save_reading_text(user_id, "compat", "💑 Совместимость", answer)
+        n1 = calculate_destiny(parts[0])
+        n2 = calculate_destiny(parts[1])
+        compat_date_str = f"{parts[0]},{parts[1]}"
+        cached = await db.get_reading_text(user_id, "compat")
+        if cached and cached.get("date_str") == compat_date_str:
+            await stop_intermediate()
+            answer = cached["text"]
+            await send_long(
+                message.chat.id,
+                f"💑 Совместимость\n\n{answer}\n\n"
+                f"ℹ️ Разбор совместимости для этих дат мы уже делали — показываю тот же текст, "
+                f"чтобы не было противоречий."
+            )
+        else:
+            context = build_numerology_context(name, parts[0])
+            prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
+            async with _premium_gen_semaphore(user):
+                answer = await ask_ai(prompt)
+            await stop_intermediate()
+            await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
+            await db.save_reading_text(user_id, "compat", "💑 Совместимость", answer, compat_date_str)
 
         try:
             pdf_bytes = await _generate_pdf_async(

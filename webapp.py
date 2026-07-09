@@ -316,6 +316,39 @@ async def api_reading(request: web.Request) -> web.Response:
         "text":  reading["text"],
     })
 
+async def api_reading_regenerate(request: web.Request) -> web.Response:
+    """Повторный заказ уже купленного разбора — бесплатно, т.к. оплата уже
+    была. Саму генерацию делает бот: если дата совпадёт с прошлой, бот
+    вернёт тот же сохранённый текст (см. _process_date), а если пользователь
+    введёт новую дату — сгенерирует заново."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    key = request.match_info["key"]
+    if key not in PAID_RAZBORY:
+        return _json_error("unknown reading", 404)
+    user = await db.get_user(user_id)
+    if key not in user.get("purchased", []):
+        return _json_error("not purchased", 403)
+
+    user["waiting"] = key
+    await db.save_user(user_id, user)
+
+    if not user.get("birth_date"):
+        return web.json_response({"ok": True, "needs_birthdate": True})
+
+    title = PAID_RAZBORY[key]
+    try:
+        await _bot.send_message(
+            user_id,
+            f"🔁 «{title}» — заказываешь заново.\n\n"
+            f"Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?",
+            reply_markup=date_choice_menu()
+        )
+    except Exception as e:
+        logging.warning(f"reading regenerate notify error: {e}")
+    return web.json_response({"ok": True})
+
 async def api_premium_buy(request: web.Request) -> web.Response:
     """Invoice-ссылка на подписку с subscription_period — открывается через
     Telegram.WebApp.openInvoice(), Telegram сам оформит рекуррентное
@@ -474,6 +507,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_get("/api/matrix", api_matrix)
     app.router.add_post("/api/buy/{key}", api_buy)
     app.router.add_get("/api/reading/{key}", api_reading)
+    app.router.add_post("/api/reading/{key}/regenerate", api_reading_regenerate)
     app.router.add_post("/api/premium/buy", api_premium_buy)
     app.router.add_post("/api/ask", api_ask)
     app.router.add_get("/api/referral", api_referral)

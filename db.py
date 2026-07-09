@@ -95,9 +95,13 @@ async def init_db(database_url: str):
             razbor_key TEXT   NOT NULL,
             title      TEXT   NOT NULL,
             text       TEXT   NOT NULL,
+            date_str   TEXT,
             updated_at TIMESTAMP DEFAULT NOW(),
             PRIMARY KEY (user_id, razbor_key)
         )
+    ''')
+    await db_pool.execute('''
+        ALTER TABLE generated_readings ADD COLUMN IF NOT EXISTS date_str TEXT
     ''')
     await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS feedback (
@@ -405,22 +409,23 @@ async def followup_try_consume(user_id: int, razbor_key: str, limit: int) -> boo
     )
     return row is not None
 
-async def save_reading_text(user_id: int, razbor_key: str, title: str, text: str):
+async def save_reading_text(user_id: int, razbor_key: str, title: str, text: str, date_str: str = None):
     """Сохраняет готовый текст разбора — чтобы веб-кабинет мог показать его
-    напрямую, не отправляя пользователя каждый раз в чат с ботом. При
-    повторной генерации того же разбора (перевыпуск) текст перезаписывается —
-    хранится только последняя версия, история не нужна."""
+    напрямую, не отправляя пользователя каждый раз в чат с ботом, и чтобы
+    повторный запрос того же разбора на ТУ ЖЕ дату не порождал новый
+    (потенциально противоречивый) текст. date_str — дата(ы), с которой
+    сгенерирован текст; при генерации на другую дату запись перезаписывается."""
     await db_pool.execute(
-        '''INSERT INTO generated_readings (user_id, razbor_key, title, text)
-           VALUES ($1, $2, $3, $4)
+        '''INSERT INTO generated_readings (user_id, razbor_key, title, text, date_str)
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (user_id, razbor_key) DO UPDATE
-               SET title = $3, text = $4, updated_at = NOW()''',
-        user_id, razbor_key, title, text
+               SET title = $3, text = $4, date_str = $5, updated_at = NOW()''',
+        user_id, razbor_key, title, text, date_str
     )
 
 async def get_reading_text(user_id: int, razbor_key: str) -> dict | None:
     row = await db_pool.fetchrow(
-        'SELECT title, text, updated_at FROM generated_readings WHERE user_id = $1 AND razbor_key = $2',
+        'SELECT title, text, date_str, updated_at FROM generated_readings WHERE user_id = $1 AND razbor_key = $2',
         user_id, razbor_key
     )
     return dict(row) if row else None

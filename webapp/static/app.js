@@ -163,15 +163,30 @@ async function openReading(key) {
       <div class="reading-view">
         <h2>${escapeHtml(r.title)}</h2>
         <div class="reading-text">${escapeHtml(r.text)}</div>
+        <button id="reading-regen-btn" style="margin-top:18px">🔁 Заказать заново</button>
       </div>
     `;
     document.getElementById("reading-back").addEventListener("click", render);
+    document.getElementById("reading-regen-btn").addEventListener("click", () => regenerateReading(key));
   } catch (e) {
     app.innerHTML = `
       <button class="back-btn" id="reading-back">← Назад</button>
       <div class="empty">${e.message || "Разбор ещё готовится"}.<br>Открой его в чате с ботом 🌸</div>
     `;
     document.getElementById("reading-back").addEventListener("click", render);
+  }
+}
+
+async function regenerateReading(key) {
+  try {
+    const res = await api(`/api/reading/${key}/regenerate`, { method: "POST" });
+    if (res.needs_birthdate) {
+      tg?.showAlert("Сначала укажи дату рождения в чате с ботом 🌸");
+      return;
+    }
+    tg?.showAlert("Открой чат с ботом — там можно выбрать дату и разбор придёт заново 🌸");
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось заказать заново");
   }
 }
 
