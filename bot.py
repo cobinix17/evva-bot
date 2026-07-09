@@ -30,7 +30,7 @@ from config import (
     TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
-    PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
+    PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT,
 )
 from ai import ask_ai
 from pdf import generate_pdf
@@ -151,6 +151,7 @@ class Form(StatesGroup):
     waiting_coupon           = State()
     waiting_user_search      = State()
     waiting_ai_question      = State()
+    waiting_followup         = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1332,6 +1333,11 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         except Exception as pdf_err:
             logging.warning(f"PDF generation failed for {waiting}: {pdf_err}")
 
+        await message.answer(
+            "❓ Остались вопросы по этому разбору? Уточни у меня напрямую 👇",
+            reply_markup=_followup_menu(waiting)
+        )
+
         kb = upsell_menu(waiting, user)
         has_upsells = any(
             btn.callback_data and btn.callback_data.startswith("buy_")
@@ -1440,6 +1446,11 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
             await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
         except Exception as pdf_err:
             logging.warning(f"PDF compat error: {pdf_err}")
+
+        await message.answer(
+            "❓ Остались вопросы по этому разбору? Уточни у меня напрямую 👇",
+            reply_markup=_followup_menu("compat")
+        )
 
         kb = upsell_menu("compat", user)
         has_upsells = any(
@@ -1708,6 +1719,95 @@ async def handle_ai_question(message: Message, state: FSMContext):
     except Exception as e:
         logging.error(f"Ask Eva error: {e}", exc_info=True)
         await message.answer("❌ Что-то пошло не так — попробуй ещё раз чуть позже 🙏", reply_markup=_ask_again_menu())
+    finally:
+        _generating.discard(user_id)
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        await state.clear()
+
+# ─── УТОЧНЯЮЩИЕ ВОПРОСЫ ПО КУПЛЕННОМУ РАЗБОРУ ────────────────────────────────
+# FOLLOWUP_LIMIT бесплатных вопросов на каждый разбор — воронка в премиум:
+# после лимита предлагаем безлимитный AI-чат "Спроси Еву" из подписки.
+# Премиум сразу без ограничений (у них уже есть общий безлимитный чат).
+def _followup_menu(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❓ Задать вопрос по разбору", callback_data=f"followup_{key}")],
+    ])
+
+@dp.callback_query(F.data.startswith("followup_"))
+async def followup_cb(callback: CallbackQuery, state: FSMContext):
+    key  = callback.data.replace("followup_", "")
+    user = await db.get_user(callback.from_user.id)
+    if key not in user.get("purchased", []):
+        await callback.answer("Этот разбор больше не в списке купленных.", show_alert=True)
+        return
+    await state.update_data(followup_key=key)
+    title = TITLES.get(key, "разбор")
+    await callback.message.answer(
+        f"❓ Что уточнить по разбору «{title}»? Спрашивай прямо 👇\n\nДля отмены — /cancel"
+    )
+    await state.set_state(Form.waiting_followup)
+    await callback.answer()
+
+@dp.message(StateFilter(Form.waiting_followup))
+async def handle_followup(message: Message, state: FSMContext):
+    user_id  = message.from_user.id
+    question = (message.text or "").strip()
+    if len(question) < 3:
+        await message.answer("Напиши вопрос текстом, хотя бы пару слов 🙂")
+        return
+    if len(question) > ASK_QUESTION_MAX_LEN:
+        await message.answer(f"Вопрос слишком длинный — сократи до {ASK_QUESTION_MAX_LEN} символов, пожалуйста.")
+        return
+
+    data = await state.get_data()
+    key  = data.get("followup_key")
+    user = await db.get_user(user_id)
+    if not key or key not in user.get("purchased", []):
+        await state.clear()
+        await message.answer("Разбор не найден — выбери его заново в «Мои разборы» и нажми «Задать вопрос».")
+        return
+
+    if user_id in _generating:
+        await message.answer("⏳ Дождись, пожалуйста, пока закончится текущая генерация 🔮")
+        return
+
+    premium = db.is_premium(user)
+    if not premium:
+        allowed = await db.followup_try_consume(user_id, key, FOLLOWUP_LIMIT)
+        if not allowed:
+            await state.clear()
+            await message.answer(
+                f"💎 Бесплатные вопросы по этому разбору закончились ({FOLLOWUP_LIMIT} на разбор).\n\n"
+                "В Ева Премиум — безлимитный AI-помощник «Спроси Еву» по любому разбору и в любое время.",
+                reply_markup=premium_subscribe_menu(await _create_premium_invoice())
+            )
+            return
+
+    _generating.add(user_id)
+    wait_msg = await message.answer("⏳ Ева думает над ответом...")
+    try:
+        name    = user.get("first_name") or "дорогая"
+        title   = TITLES.get(key, "разбор")
+        context = build_numerology_context(name, user["birth_date"])
+        prompt  = (
+            f"Вот нумерологические данные {name}:\n{context}\n\n"
+            f"Она только что получила от тебя платный разбор «{title}» и теперь уточняет: «{question}»\n\n"
+            "Ответь как Ева — тепло, конкретно, опираясь на её числа и тему этого разбора. "
+            "Это часть живого диалога: не используй emoji-заголовки, не структурируй ответ на "
+            "блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
+        )
+        async with _premium_gen_semaphore(user):
+            answer = await ask_ai(prompt)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❓ Спросить ещё по этому разбору", callback_data=f"followup_{key}")],
+        ])
+        await message.answer(answer, reply_markup=kb)
+    except Exception as e:
+        logging.error(f"Followup error: {e}", exc_info=True)
+        await message.answer("❌ Что-то пошло не так — попробуй ещё раз чуть позже 🙏", reply_markup=_followup_menu(key))
     finally:
         _generating.discard(user_id)
         try:

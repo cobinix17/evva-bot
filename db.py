@@ -81,6 +81,14 @@ async def init_db(database_url: str):
             created_at  TIMESTAMP DEFAULT NOW()
         )
     ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS reading_followups (
+            user_id    BIGINT NOT NULL,
+            razbor_key TEXT   NOT NULL,
+            count      INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, razbor_key)
+        )
+    ''')
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -358,6 +366,24 @@ async def ask_try_consume(user_id: int, daily_limit: int) -> bool:
         RETURNING ask_day_count
         ''',
         user_id, today, daily_limit
+    )
+    return row is not None
+
+async def followup_try_consume(user_id: int, razbor_key: str, limit: int) -> bool:
+    """Атомарно списывает один бесплатный уточняющий вопрос по КОНКРЕТНОМУ
+    разбору. INSERT ... ON CONFLICT с guard в WHERE — та же неделимая
+    проверка-и-инкремент, что в premium_try_consume/ask_try_consume, только
+    ключ здесь составной (user_id, razbor_key), а не по дате."""
+    row = await db_pool.fetchrow(
+        '''
+        INSERT INTO reading_followups (user_id, razbor_key, count)
+        VALUES ($1, $2, 1)
+        ON CONFLICT (user_id, razbor_key) DO UPDATE
+            SET count = reading_followups.count + 1
+            WHERE reading_followups.count < $3
+        RETURNING count
+        ''',
+        user_id, razbor_key, limit
     )
     return row is not None
 
