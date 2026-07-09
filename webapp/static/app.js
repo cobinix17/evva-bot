@@ -496,7 +496,12 @@ async function boot() {
   try {
     ME = await api("/api/me");
     if (!CATALOG) CATALOG = await api("/api/catalog");
-    document.getElementById("loading").style.display = "none";
+    // #loading существует только внутри исходного #app — после первого
+    // render() он уже стёрт (render всегда перезаписывает app.innerHTML),
+    // поэтому при повторных вызовах boot() (после сохранения имени, покупки,
+    // промокода и т.п.) элемента может не быть — тогда просто пропускаем.
+    const loadingEl = document.getElementById("loading");
+    if (loadingEl) loadingEl.style.display = "none";
     tabbar.style.display = "flex";
     render();
   } catch (e) {
