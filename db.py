@@ -92,6 +92,8 @@ async def init_db(database_url: str):
         ("prem_day_count", "INTEGER DEFAULT 0"),
         ("prem_month",     "TEXT"),
         ("prem_month_count","INTEGER DEFAULT 0"),
+        ("ask_day",       "DATE"),
+        ("ask_day_count", "INTEGER DEFAULT 0"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -340,6 +342,24 @@ async def premium_try_consume(user_id: int, daily_limit: int, monthly_limit: int
     if cur and cur['prem_day'] == today and cur['prem_day_count'] >= daily_limit:
         return 'day'
     return 'month'
+
+async def ask_try_consume(user_id: int, daily_limit: int) -> bool:
+    """Атомарно списывает один вопрос из дневного лимита AI-чата «Спроси Еву».
+    Тот же паттерн неделимого UPDATE, что и в premium_try_consume — проверка
+    и инкремент одним запросом, гонка из двух быстрых сообщений исключена."""
+    today = utc_now().date()
+    row = await db_pool.fetchrow(
+        '''
+        UPDATE users SET
+            ask_day_count = CASE WHEN ask_day = $2 THEN ask_day_count + 1 ELSE 1 END,
+            ask_day       = $2
+        WHERE user_id = $1
+          AND NOT (ask_day = $2 AND ask_day_count >= $3)
+        RETURNING ask_day_count
+        ''',
+        user_id, today, daily_limit
+    )
+    return row is not None
 
 async def premium_stats() -> dict:
     active = await db_pool.fetchval(

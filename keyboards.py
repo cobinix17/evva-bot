@@ -43,6 +43,10 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
             text="💎 Премиум активен — все разборы открыты",
             callback_data="premium_info"
         )])
+        buttons.append([InlineKeyboardButton(
+            text="💬 Спросить Еву",
+            callback_data="ask_eva"
+        )])
     else:
         buttons.append([InlineKeyboardButton(
             text="💎 Ева Премиум — 30 разборов за 399 ⭐/мес",

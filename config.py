@@ -140,6 +140,7 @@ PREMIUM_DAILY_LIMIT   = 5          # сколько НОВЫХ разборов 
 PREMIUM_MONTHLY_LIMIT = 30         # сколько НОВЫХ разборов открывать за месяц подписки
 PREMIUM_PAYLOAD       = "premium_sub"
 PREMIUM_TITLE         = "💎 Ева Премиум"
+ASK_DAILY_LIMIT       = 10         # сколько вопросов Еве премиум может задать в день
 
 RAZBOR_DESCRIPTIONS = {
     "matrix_full":   "Полная картина личности: характер, таланты, деньги, любовь, карма и предназначение в одном разборе.",

@@ -30,7 +30,7 @@ from config import (
     TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
-    PREMIUM_PAYLOAD, PREMIUM_TITLE,
+    PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
 )
 from ai import ask_ai
 from pdf import generate_pdf
@@ -150,6 +150,7 @@ class Form(StatesGroup):
     waiting_broadcast        = State()
     waiting_coupon           = State()
     waiting_user_search      = State()
+    waiting_ai_question      = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1576,6 +1577,7 @@ _PREMIUM_OFFER = (
     f"Подписка за {PREMIUM_PRICE} ⭐ в месяц — и почти вся моя нумерология открыта:\n\n"
     f"✨ До {PREMIUM_MONTHLY_LIMIT} разборов в месяц без покупки поштучно\n"
     f"🔮 До {PREMIUM_DAILY_LIMIT} новых разборов в день, а уже открытые — сколько угодно раз\n"
+    f"💬 «Спроси Еву» — до {ASK_DAILY_LIMIT} личных вопросов в день по твоим числам\n"
     "🌅 Твой личный прогноз каждое утро — по твоим числам, а не общий\n"
     "⚡ Приоритетная генерация — без очереди в часы пика\n"
     "🎁 Новые разборы — сразу и бесплатно\n\n"
@@ -1622,6 +1624,97 @@ async def premium_cmd(message: Message, state: FSMContext):
     await state.clear()
     user = await db.get_user(message.from_user.id)
     await _show_premium(message, user)
+
+# ─── AI-ЧАТ «СПРОСИ ЕВУ» (премиум) ───────────────────────────────────────────
+ASK_QUESTION_MAX_LEN = 300
+
+def _ask_again_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Спросить ещё", callback_data="ask_eva")],
+        [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
+    ])
+
+async def _start_ask_eva(target: Message, state: FSMContext, user: dict):
+    if not db.is_premium(user):
+        await _show_premium(target, user)
+        return
+    if not user.get("birth_date"):
+        await target.answer("Сначала укажи дату рождения — выбери любой разбор в меню, чтобы я узнала твои числа 🔮")
+        return
+    await target.answer(
+        "💬 Спроси меня о чём угодно — по твоим числам отвечу лично.\n"
+        "Например: «что с деньгами в марте?» или «стоит ли сейчас менять работу?»\n\n"
+        "Для отмены — /cancel"
+    )
+    await state.set_state(Form.waiting_ai_question)
+
+@dp.callback_query(F.data == "ask_eva")
+async def ask_eva_cb(callback: CallbackQuery, state: FSMContext):
+    user = await db.get_user(callback.from_user.id)
+    await _start_ask_eva(callback.message, state, user)
+    await callback.answer()
+
+@dp.message(Command("ask"), StateFilter("*"))
+async def ask_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(message.from_user.id)
+    await _start_ask_eva(message, state, user)
+
+@dp.message(StateFilter(Form.waiting_ai_question))
+async def handle_ai_question(message: Message, state: FSMContext):
+    user_id  = message.from_user.id
+    question = (message.text or "").strip()
+    if len(question) < 3:
+        await message.answer("Напиши вопрос текстом, хотя бы пару слов 🙂")
+        return
+    if len(question) > ASK_QUESTION_MAX_LEN:
+        await message.answer(f"Вопрос слишком длинный — сократи до {ASK_QUESTION_MAX_LEN} символов, пожалуйста.")
+        return
+
+    user = await db.get_user(user_id)
+    if not db.is_premium(user):
+        await state.clear()
+        await _show_premium(message, user)
+        return
+
+    if user_id in _generating:
+        await message.answer("⏳ Дождись, пожалуйста, пока закончится текущая генерация 🔮")
+        return
+
+    allowed = await db.ask_try_consume(user_id, ASK_DAILY_LIMIT)
+    if not allowed:
+        await state.clear()
+        await message.answer(
+            f"💎 На сегодня использовано {ASK_DAILY_LIMIT} вопросов — это дневной лимит. "
+            "Возвращайся завтра, буду рада ответить снова 🌸"
+        )
+        return
+
+    _generating.add(user_id)
+    wait_msg = await message.answer("⏳ Ева думает над ответом...")
+    try:
+        name    = user.get("first_name") or "дорогая"
+        context = build_numerology_context(name, user["birth_date"])
+        prompt  = (
+            f"Вот нумерологические данные {name}:\n{context}\n\n"
+            f"Она задаёт тебе личный вопрос в переписке: «{question}»\n\n"
+            "Ответь как Ева — тепло, конкретно, опираясь на её числа. Это часть живого "
+            "диалога, а не отдельный разбор: не используй emoji-заголовки, не структурируй "
+            "ответ на блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
+        )
+        async with _premium_gen_semaphore(user):
+            answer = await ask_ai(prompt)
+        await message.answer(answer, reply_markup=_ask_again_menu())
+    except Exception as e:
+        logging.error(f"Ask Eva error: {e}", exc_info=True)
+        await message.answer("❌ Что-то пошло не так — попробуй ещё раз чуть позже 🙏", reply_markup=_ask_again_menu())
+    finally:
+        _generating.discard(user_id)
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        await state.clear()
 
 # ─── РЕФЕРАЛЬНАЯ СИСТЕМА ─────────────────────────────────────────────────────
 @dp.callback_query(F.data == "ref_promo")
@@ -1875,6 +1968,7 @@ async def setup_bot_commands():
     user_commands = [
         BotCommand(command="menu",          description="🔮 Меню разборов"),
         BotCommand(command="premium",       description="💎 Ева Премиум — все разборы"),
+        BotCommand(command="ask",           description="💬 Спросить Еву (премиум)"),
         BotCommand(command="ref",           description="👥 Пригласить подругу — получить ⭐"),
         BotCommand(command="balance",       description="⭐ Мой бонусный баланс"),
         BotCommand(command="promo",         description="🎁 Ввести промокод"),
