@@ -1895,11 +1895,17 @@ async def setup_bot_commands():
     # ставится, остальной функционал бота это не затрагивает.
     webapp_url = os.getenv("WEBAPP_URL")
     if webapp_url:
+        # Защита от опечатки в env-переменной: если туда случайно вписали
+        # уже с /app на конце — не дублируем его повторно.
+        base_url = webapp_url.rstrip("/")
+        if base_url.endswith("/app"):
+            base_url = base_url[:-len("/app")]
+        full_url = f"{base_url}/app"
         try:
             await bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(text="🔮 Кабинет", web_app=WebAppInfo(url=f"{webapp_url}/app"))
+                menu_button=MenuButtonWebApp(text="🔮 Кабинет", web_app=WebAppInfo(url=full_url))
             )
-            logging.info(f"Кнопка Mini App установлена: {webapp_url}/app")
+            logging.info(f"Кнопка Mini App установлена: {full_url}")
         except Exception as e:
             logging.warning(f"Не удалось установить кнопку Mini App: {e}")
     else:
