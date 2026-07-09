@@ -52,10 +52,21 @@ function octagramSVG(points, destiny) {
     spokes += `<line x1="${cx}" y1="${cy}" x2="${sx.toFixed(1)}" y2="${sy.toFixed(1)}" stroke="var(--border)" stroke-width="0.8"/>`;
     badges += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR}" fill="var(--bg)" stroke="url(#gold)" stroke-width="1.6"/>`;
     badges += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR - 4}" fill="none" stroke="var(--border)" stroke-width="1"/>`;
-    badges += `<text x="${x.toFixed(1)}" y="${(y + 11).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="30" fill="var(--head)">${num}</text>`;
-    labels += `<text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="${anchor}" font-family="Body" font-size="11" letter-spacing="1.6" fill="var(--accent)">${short.toUpperCase()}</text>`;
+    const numFontSize = String(num).length > 2 ? 20 : 30;
+    badges += `<text x="${x.toFixed(1)}" y="${(y + (numFontSize > 20 ? 11 : 8)).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="${numFontSize}" fill="var(--head)">${num}</text>`;
+    // длинные подписи (2 слова) переносим на две строки, иначе текст обрезается
+    // краем viewBox у крайних левой/правой точек октаграммы
+    const words = short.toUpperCase().split(" ");
+    if (words.length > 1 && short.length > 6) {
+      labels += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${anchor}" font-family="Body" font-size="10.5" letter-spacing="1.2" fill="var(--accent)">`
+              + `<tspan x="${lx.toFixed(1)}" dy="0">${words[0]}</tspan>`
+              + `<tspan x="${lx.toFixed(1)}" dy="12">${words.slice(1).join(" ")}</tspan>`
+              + `</text>`;
+    } else {
+      labels += `<text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="${anchor}" font-family="Body" font-size="11" letter-spacing="1.6" fill="var(--accent)">${short.toUpperCase()}</text>`;
+    }
   });
-  return `<svg viewBox="0 0 400 400" class="octa">
+  return `<svg viewBox="-65 -65 530 530" class="octa">
     <defs><linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#D8BC77"/><stop offset="0.5" stop-color="#B08A3E"/><stop offset="1" stop-color="#C7A64E"/>
     </linearGradient></defs>
@@ -74,7 +85,12 @@ const PIN_AGES = ["0–32", "32–41", "41–50", "50+"];
 
 function renderMatrix(m, birthDate) {
   const points = [];
-  (m.cards || []).slice(0, 6).forEach(c => points.push([c.value, c.label.replace("Число ", "").replace("Кармическое", "Карма")]));
+  (m.cards || []).slice(0, 6).forEach(c => points.push([
+    c.value,
+    c.label.replace("Число ", "").replace("Кармическое", "Карма").replace(/Личный год \d+/, m => "Год " + m.match(/\d+/)[0]),
+  ]));
+  if (m.life_arcana) points.push([m.life_arcana.roman, "Аркан"]);
+  if (m.year_arcana) points.push([m.year_arcana.roman, "Аркан года"]);
   while (points.length < 8) points.push([m.destiny, "—"]);
   const pins = (m.pinnacles || []).map((n, i) =>
     `<div class="pin"><div class="pin-n">${n}</div><div class="pin-a">${PIN_AGES[i] || ""} лет</div></div>`
@@ -196,6 +212,67 @@ function renderMine() {
   }</div>`;
 }
 
+// ── премиум + AI-чат «Спроси Еву» ─────────────────────────────────────────────
+function renderPremium() {
+  if (!ME.is_premium) {
+    return `
+      <div class="topbar"><div class="eyebrow">Ева Премиум</div><h1>💎 Открой всё</h1></div>
+      <div class="onboard">
+        <p>До 30 разборов в месяц без поштучной покупки, личный прогноз каждое утро,
+        приоритетная генерация и безлимитный AI-чат «Спроси Еву» по твоим числам.</p>
+        <button id="premium-buy-btn">Оформить за 399 ⭐/мес</button>
+      </div>
+    `;
+  }
+  const until = ME.premium_until ? new Date(ME.premium_until).toLocaleDateString("ru-RU") : "";
+  return `
+    <div class="topbar"><div class="eyebrow">Премиум активен${until ? " до " + until : ""}</div><h1>💬 Спроси Еву</h1></div>
+    <div class="onboard">
+      <p>Задай любой вопрос по своим числам — отвечу лично. Например:
+      «что с деньгами в марте?» или «стоит ли сейчас менять работу?»</p>
+      <div id="ask-answer"></div>
+      <input id="ask-input" placeholder="Твой вопрос..." maxlength="300">
+      <button id="ask-send-btn">Спросить</button>
+    </div>
+  `;
+}
+
+async function sendAskQuestion() {
+  const input = document.getElementById("ask-input");
+  const btn   = document.getElementById("ask-send-btn");
+  const out   = document.getElementById("ask-answer");
+  const question = input.value.trim();
+  if (question.length < 3) { tg?.showAlert("Напиши вопрос текстом, хотя бы пару слов 🙂"); return; }
+  btn.disabled = true;
+  btn.textContent = "Ева думает…";
+  out.innerHTML = "";
+  try {
+    const res = await api("/api/ask", { method: "POST", body: JSON.stringify({ question }) });
+    out.innerHTML = `<div class="ask-bubble">${escapeHtml(res.answer)}</div>`;
+    input.value = "";
+  } catch (e) {
+    out.innerHTML = `<div class="ask-bubble ask-error">${escapeHtml(e.message || "Ошибка")}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Спросить";
+  }
+}
+
+async function buyPremium() {
+  try {
+    const res = await api("/api/premium/buy", { method: "POST" });
+    if (res.already_premium) { await boot(); return; }
+    tg.openInvoice(res.invoice_url, (status) => {
+      if (status === "paid") {
+        tg?.showAlert("Добро пожаловать в Премиум! 💎");
+        boot();
+      }
+    });
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось начать оплату");
+  }
+}
+
 // ── навигация ────────────────────────────────────────────────────────────────
 let currentTab = "matrix";
 
@@ -209,6 +286,10 @@ function render() {
   } else if (currentTab === "mine") {
     app.innerHTML = renderMine();
     app.querySelectorAll(".item").forEach(el => el.addEventListener("click", () => onItemClick(el.dataset.key)));
+  } else if (currentTab === "premium") {
+    app.innerHTML = renderPremium();
+    document.getElementById("premium-buy-btn")?.addEventListener("click", buyPremium);
+    document.getElementById("ask-send-btn")?.addEventListener("click", sendAskQuestion);
   }
 }
 

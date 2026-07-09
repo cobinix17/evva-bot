@@ -6,18 +6,29 @@ import os
 import json
 import hmac
 import hashlib
+import asyncio
 import logging
 from urllib.parse import parse_qsl
 
 from aiohttp import web
+from aiogram.types import LabeledPrice
 
 import db
 from config import (
     TITLES, PRICES, PAID_RAZBORY, RAZBOR_DESCRIPTIONS,
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
-    ADMIN_ID,
+    ADMIN_ID, REF_BONUS_PERCENT,
+    PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
 )
-from numerology import numerology_summary, is_valid_date
+from numerology import numerology_summary, is_valid_date, build_numerology_context
+from ai import ask_ai
+
+ASK_QUESTION_MAX_LEN = 300
+# Отдельная, более узкая полоса генерации именно для веб-чата "Спроси Еву" —
+# не общая с ботом (там свои _gen_semaphore/_priority_semaphore), чтобы не
+# тащить циклический импорт bot.py <-> webapp.py. Небольшой размер осознанно:
+# это дополнительный канал поверх бота, а не основной.
+_web_gen_semaphore = asyncio.Semaphore(3)
 
 BOT_TOKEN   = os.getenv("BOT_TOKEN", "")
 WEBAPP_DIR  = os.path.join(os.path.dirname(__file__), "webapp")
@@ -185,6 +196,68 @@ async def api_reading(request: web.Request) -> web.Response:
         "text":  reading["text"],
     })
 
+async def api_premium_buy(request: web.Request) -> web.Response:
+    """Invoice-ссылка на подписку с subscription_period — открывается через
+    Telegram.WebApp.openInvoice(), Telegram сам оформит рекуррентное
+    списание. Обработка оплаты и продлений остаётся в bot.py
+    (successful_payment) — общая для веба и бота, не дублируется."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user = await db.get_user(user_id)
+    if db.is_premium(user):
+        return web.json_response({"already_premium": True})
+    link = await _bot.create_invoice_link(
+        title=PREMIUM_TITLE,
+        description="Безлимитный доступ ко всем разборам, личный прогноз каждое утро и приоритетная генерация.",
+        payload=PREMIUM_PAYLOAD,
+        currency="XTR",
+        prices=[LabeledPrice(label="Ева Премиум — месяц", amount=PREMIUM_PRICE)],
+        subscription_period=PREMIUM_PERIOD,
+    )
+    return web.json_response({"invoice_url": link})
+
+async def api_ask(request: web.Request) -> web.Response:
+    """AI-чат «Спроси Еву» — премиум-фича, доступна из веб-кабинета так же,
+    как /ask в боте. Тот же дневной лимит (db.ask_try_consume), та же
+    проверка подписки и наличия даты рождения."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user = await db.get_user(user_id)
+    if not db.is_premium(user):
+        return _json_error("premium_required", 403)
+    if not user.get("birth_date"):
+        return _json_error("Сначала укажи дату рождения на вкладке «Матрица»", 400)
+
+    body = await request.json()
+    question = (body.get("question") or "").strip()
+    if len(question) < 3:
+        return _json_error("Напиши вопрос текстом, хотя бы пару слов")
+    if len(question) > ASK_QUESTION_MAX_LEN:
+        return _json_error(f"Вопрос слишком длинный — сократи до {ASK_QUESTION_MAX_LEN} символов")
+
+    allowed = await db.ask_try_consume(user_id, ASK_DAILY_LIMIT)
+    if not allowed:
+        return _json_error(f"На сегодня использовано {ASK_DAILY_LIMIT} вопросов — дневной лимит. Возвращайся завтра 🌸", 429)
+
+    name    = user.get("first_name") or "дорогая"
+    context = build_numerology_context(name, user["birth_date"])
+    prompt  = (
+        f"Вот нумерологические данные {name}:\n{context}\n\n"
+        f"Она задаёт тебе личный вопрос в переписке: «{question}»\n\n"
+        "Ответь как Ева — тепло, конкретно, опираясь на её числа. Это часть живого "
+        "диалога, а не отдельный разбор: не используй emoji-заголовки, не структурируй "
+        "ответ на блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
+    )
+    try:
+        async with _web_gen_semaphore:
+            answer = await ask_ai(prompt)
+    except Exception as e:
+        logging.error(f"webapp api_ask error: {e}", exc_info=True)
+        return _json_error("Что-то пошло не так — попробуй ещё раз чуть позже", 500)
+    return web.json_response({"answer": answer})
+
 async def api_matrix(request: web.Request) -> web.Response:
     """Публичный расчёт матрицы по дате — для гостевого превью без входа
     (человек ещё не открывал бота, но зашёл по ссылке на веб)."""
@@ -214,6 +287,8 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_get("/api/matrix", api_matrix)
     app.router.add_post("/api/buy/{key}", api_buy)
     app.router.add_get("/api/reading/{key}", api_reading)
+    app.router.add_post("/api/premium/buy", api_premium_buy)
+    app.router.add_post("/api/ask", api_ask)
     app.router.add_get("/app", index)
     app.router.add_get("/app/", index)
     if os.path.isdir(WEBAPP_DIR):
