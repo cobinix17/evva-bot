@@ -21,6 +21,7 @@ from config import (
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context
+from keyboards import date_choice_menu
 from ai import ask_ai
 
 ASK_QUESTION_MAX_LEN = 300
@@ -217,6 +218,73 @@ async def api_premium_buy(request: web.Request) -> web.Response:
     )
     return web.json_response({"invoice_url": link})
 
+async def api_referral(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    username = await _get_bot_username()
+    stats = await db.get_referral_stats(user_id)
+    bonuses = [
+        {
+            "amount":     b["amount"],
+            "razbor":     TITLES.get(b["razbor_key"], b["razbor_key"] or "разбор"),
+            "from_name":  b["first_name"] or "Подруга",
+            "created_at": b["created_at"].isoformat(),
+        }
+        for b in stats["bonuses"]
+    ]
+    return web.json_response({
+        "ref_link":     f"https://t.me/{username}?start=ref_{user_id}",
+        "count":        stats["count"],
+        "earned":       stats["earned"],
+        "balance":      stats["balance"],
+        "bonus_percent": REF_BONUS_PERCENT,
+        "bonuses":      bonuses,
+    })
+
+async def api_balance_buy(request: web.Request) -> web.Response:
+    """Оплата разбора бонусным балансом. Само списание и открытие разбора
+    происходит здесь, но фактическую генерацию (ИИ + PDF) всё ещё делает
+    бот — чтобы не дублировать эту логику, после оплаты отправляем в чат
+    сообщение с кнопкой 'Для себя/другая дата' (use_my_date/use_new_date —
+    их обработчики в bot.py не привязаны к FSM-состоянию, сработают
+    независимо от того, что именно прислало эту клавиатуру)."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    key = request.match_info["key"]
+    if key not in PAID_RAZBORY:
+        return _json_error("unknown reading", 404)
+    user = await db.get_user(user_id)
+    if key in user.get("purchased", []):
+        return web.json_response({"already_purchased": True})
+    if not user.get("birth_date"):
+        return _json_error("Сначала укажи дату рождения на вкладке «Матрица»", 400)
+
+    price = PRICES.get(key, 49)
+    spent = await db.spend_balance(user_id, price)
+    if not spent:
+        return _json_error("Недостаточно звёзд на балансе", 400)
+
+    user = await db.get_user(user_id)  # перечитываем — баланс уже списан
+    user["purchased"].append(key)
+    user["waiting"] = key
+    await db.save_user(user_id, user)
+
+    title = PAID_RAZBORY[key]
+    desc  = RAZBOR_DESCRIPTIONS.get(key, "")
+    intro = f"💬 {desc}\n\n" if desc else ""
+    try:
+        await _bot.send_message(
+            user_id,
+            f"✅ «{title}» оплачен балансом ({price} ⭐)!\n\n"
+            f"{intro}Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?",
+            reply_markup=date_choice_menu()
+        )
+    except Exception as e:
+        logging.warning(f"balance buy notify error: {e}")
+    return web.json_response({"ok": True})
+
 async def api_ask(request: web.Request) -> web.Response:
     """AI-чат «Спроси Еву» — премиум-фича, доступна из веб-кабинета так же,
     как /ask в боте. Тот же дневной лимит (db.ask_try_consume), та же
@@ -289,6 +357,8 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_get("/api/reading/{key}", api_reading)
     app.router.add_post("/api/premium/buy", api_premium_buy)
     app.router.add_post("/api/ask", api_ask)
+    app.router.add_get("/api/referral", api_referral)
+    app.router.add_post("/api/balance/buy/{key}", api_balance_buy)
     app.router.add_get("/app", index)
     app.router.add_get("/app/", index)
     if os.path.isdir(WEBAPP_DIR):

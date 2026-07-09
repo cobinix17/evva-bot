@@ -175,12 +175,7 @@ async function openReading(key) {
   }
 }
 
-async function onItemClick(key) {
-  const purchased = new Set(ME.purchased || []);
-  if (purchased.has(key)) {
-    await openReading(key);
-    return;
-  }
+async function buyWithStars(key) {
   try {
     const res = await api(`/api/buy/${key}`, { method: "POST" });
     if (res.already_purchased) { await boot(); return; }
@@ -193,6 +188,52 @@ async function onItemClick(key) {
   } catch (e) {
     tg?.showAlert(e.message || "Не удалось начать оплату");
   }
+}
+
+async function buyWithBalance(key) {
+  try {
+    const res = await api(`/api/balance/buy/${key}`, { method: "POST" });
+    if (res.already_purchased) { await boot(); return; }
+    tg?.showAlert("Оплачено балансом! Открой чат с ботом — там нужно подтвердить дату рождения, и разбор будет готов 🌸");
+    await boot();
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось оплатить балансом");
+  }
+}
+
+function findCatalogItem(key) {
+  if (!CATALOG) return null;
+  for (const sec of CATALOG.sections) {
+    const it = sec.items.find(x => x.key === key);
+    if (it) return it;
+  }
+  return null;
+}
+
+async function onItemClick(key) {
+  const purchased = new Set(ME.purchased || []);
+  if (purchased.has(key)) {
+    await openReading(key);
+    return;
+  }
+  const item    = findCatalogItem(key);
+  const balance = ME.ref_balance || 0;
+  if (item && balance >= item.price && tg?.showPopup) {
+    tg.showPopup({
+      title: item.title,
+      message: `У тебя ${balance} ⭐ на бонусном балансе — хватает на этот разбор (${item.price} ⭐). Как оплатить?`,
+      buttons: [
+        { id: "balance", type: "default", text: `Балансом (${item.price} ⭐)` },
+        { id: "stars",   type: "default", text: "Звёздами Telegram" },
+        { id: "cancel",  type: "cancel" },
+      ],
+    }, (buttonId) => {
+      if (buttonId === "balance") buyWithBalance(key);
+      else if (buttonId === "stars") buyWithStars(key);
+    });
+    return;
+  }
+  await buyWithStars(key);
 }
 
 function renderMine() {
@@ -214,27 +255,55 @@ function renderMine() {
 
 // ── премиум + AI-чат «Спроси Еву» ─────────────────────────────────────────────
 function renderPremium() {
-  if (!ME.is_premium) {
-    return `
+  const premiumBlock = !ME.is_premium ? `
       <div class="topbar"><div class="eyebrow">Ева Премиум</div><h1>💎 Открой всё</h1></div>
       <div class="onboard">
         <p>До 30 разборов в месяц без поштучной покупки, личный прогноз каждое утро,
         приоритетная генерация и безлимитный AI-чат «Спроси Еву» по твоим числам.</p>
         <button id="premium-buy-btn">Оформить за 399 ⭐/мес</button>
       </div>
-    `;
-  }
-  const until = ME.premium_until ? new Date(ME.premium_until).toLocaleDateString("ru-RU") : "";
-  return `
-    <div class="topbar"><div class="eyebrow">Премиум активен${until ? " до " + until : ""}</div><h1>💬 Спроси Еву</h1></div>
-    <div class="onboard">
-      <p>Задай любой вопрос по своим числам — отвечу лично. Например:
-      «что с деньгами в марте?» или «стоит ли сейчас менять работу?»</p>
-      <div id="ask-answer"></div>
-      <input id="ask-input" placeholder="Твой вопрос..." maxlength="300">
-      <button id="ask-send-btn">Спросить</button>
+    ` : (() => {
+      const until = ME.premium_until ? new Date(ME.premium_until).toLocaleDateString("ru-RU") : "";
+      return `
+        <div class="topbar"><div class="eyebrow">Премиум активен${until ? " до " + until : ""}</div><h1>💬 Спроси Еву</h1></div>
+        <div class="onboard">
+          <p>Задай любой вопрос по своим числам — отвечу лично. Например:
+          «что с деньгами в марте?» или «стоит ли сейчас менять работу?»</p>
+          <div id="ask-answer"></div>
+          <input id="ask-input" placeholder="Твой вопрос..." maxlength="300">
+          <button id="ask-send-btn">Спросить</button>
+        </div>
+      `;
+    })();
+
+  return premiumBlock + `
+    <div class="cycles">
+      <div class="cyc-head"><span class="cyc-rule"></span><span class="cyc-t">Реферальная программа</span><span class="cyc-rule"></span></div>
     </div>
+    <div id="ref-block" class="onboard"><p>Загрузка…</p></div>
   `;
+}
+
+async function loadReferralBlock() {
+  const el = document.getElementById("ref-block");
+  if (!el) return;
+  try {
+    const r = await api("/api/referral");
+    el.innerHTML = `
+      <p>Приглашай подруг — получай ${r.bonus_percent}% звёздами с каждой их покупки.</p>
+      <div class="ref-stats">
+        <div class="ref-stat"><div class="ref-stat-n">${r.count}</div><div class="ref-stat-l">приглашено</div></div>
+        <div class="ref-stat"><div class="ref-stat-n">${r.earned}</div><div class="ref-stat-l">заработано ⭐</div></div>
+        <div class="ref-stat"><div class="ref-stat-n">${r.balance}</div><div class="ref-stat-l">баланс ⭐</div></div>
+      </div>
+      <button id="ref-copy-btn">Скопировать ссылку</button>
+    `;
+    document.getElementById("ref-copy-btn").addEventListener("click", () => {
+      navigator.clipboard?.writeText(r.ref_link).then(() => tg?.showAlert("Ссылка скопирована 🌸"));
+    });
+  } catch (e) {
+    el.innerHTML = `<p>${e.message || "Не удалось загрузить"}</p>`;
+  }
 }
 
 async function sendAskQuestion() {
@@ -290,6 +359,7 @@ function render() {
     app.innerHTML = renderPremium();
     document.getElementById("premium-buy-btn")?.addEventListener("click", buyPremium);
     document.getElementById("ask-send-btn")?.addEventListener("click", sendAskQuestion);
+    loadReferralBlock();
   }
 }
 

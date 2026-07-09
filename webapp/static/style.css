@@ -131,3 +131,8 @@ button{ font-family:'Body',serif; }
   border-radius:12px; font-size:14px; line-height:1.55; white-space:pre-wrap; box-shadow:var(--shadow); }
 .ask-bubble.ask-error{ color:#c0645f; border-color:rgba(192,100,95,.35); }
 #ask-send-btn:disabled{ opacity:.6; }
+
+.ref-stats{ display:flex; gap:8px; margin:14px 0; }
+.ref-stat{ flex:1; text-align:center; padding:12px 4px; background:var(--bg); border:1px solid var(--border); border-radius:10px; }
+.ref-stat-n{ font-family:'Head',serif; font-weight:600; font-size:22px; color:var(--head); }
+.ref-stat-l{ font-size:9.5px; color:var(--accent); letter-spacing:.06em; margin-top:3px; }
