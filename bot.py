@@ -152,6 +152,7 @@ class Form(StatesGroup):
     waiting_user_search      = State()
     waiting_ai_question      = State()
     waiting_followup         = State()
+    waiting_rename           = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -248,6 +249,33 @@ def _review_flags(text: str) -> list[str]:
     if _AD_RE.search(text):
         flags.append("реклама/ссылка")
     return flags
+
+# ─── СМЕНА ИМЕНИ ──────────────────────────────────────────────────────────────
+@dp.message(Command("name"), StateFilter("*"))
+async def name_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(message.from_user.id)
+    current = user.get("first_name") or "не указано"
+    await message.answer(
+        f"✏️ Сейчас я называю тебя «{current}».\n\n"
+        "Как называть тебя теперь? Введи новое имя 👇\n\nДля отмены — /cancel"
+    )
+    await state.set_state(Form.waiting_rename)
+
+@dp.message(StateFilter(Form.waiting_rename))
+async def handle_rename(message: Message, state: FSMContext):
+    name = sanitize_name(message.text or "")
+    if len(name) < 2 or len(name) > 30:
+        await message.answer("Введи настоящее имя — только буквы, от 2 до 30 символов 😊")
+        return
+    user = await db.get_user(message.from_user.id)
+    user["first_name"] = name
+    await db.save_user(message.from_user.id, user)
+    await state.clear()
+    await message.answer(
+        f"✅ Готово! Теперь буду называть тебя {name} 🌸",
+        reply_markup=main_menu_for(message.from_user.id, user)
+    )
 
 # ─── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────────────────
 @dp.message(Command("notifications"), StateFilter("*"))
@@ -2073,6 +2101,7 @@ async def setup_bot_commands():
         BotCommand(command="balance",       description="⭐ Мой бонусный баланс"),
         BotCommand(command="promo",         description="🎁 Ввести промокод"),
         BotCommand(command="notifications", description="🔔 Утренние уведомления"),
+        BotCommand(command="name",          description="✏️ Изменить имя"),
     ]
     await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
     try:
