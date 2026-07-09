@@ -31,6 +31,7 @@ from config import (
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT,
+    PREMIUM_PRICE_INCREASE, PREMIUM_PRICE_INCREASE_DATE,
 )
 from ai import ask_ai
 from pdf import generate_pdf
@@ -1620,6 +1621,9 @@ _PREMIUM_OFFER = (
     "🌅 Твой личный прогноз каждое утро — по твоим числам, а не общий\n"
     "⚡ Приоритетная генерация — без очереди в часы пика\n"
     "🎁 Новые разборы — сразу и бесплатно\n\n"
+    f"⏳ С {PREMIUM_PRICE_INCREASE_DATE} цена для новых подписчиков станет "
+    f"{PREMIUM_PRICE_INCREASE} ⭐/мес. Оформи сейчас за {PREMIUM_PRICE} ⭐ — и эта цена "
+    "останется твоей навсегда, даже после повышения.\n\n"
     "Списывается раз в месяц автоматически, отменить можно в любой момент "
     "в настройках Telegram. Оформляется звёздами 👇"
 )
