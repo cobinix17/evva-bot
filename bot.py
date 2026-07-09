@@ -154,6 +154,7 @@ class Form(StatesGroup):
     waiting_ai_question      = State()
     waiting_followup         = State()
     waiting_rename           = State()
+    waiting_feedback         = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1848,6 +1849,74 @@ async def handle_followup(message: Message, state: FSMContext):
             pass
         await state.clear()
 
+# ─── ОБРАТНАЯ СВЯЗЬ (приватно админу, без модерации/публикации) ──────────────
+FEEDBACK_MAX_LEN = 800
+
+@dp.callback_query(F.data == "feedback_start")
+async def feedback_start_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer(
+        "💡 Напиши, что можно улучшить в боте, или на что пожаловаться — "
+        "я лично прочитаю каждое сообщение.\n\nДля отмены — /cancel"
+    )
+    await state.set_state(Form.waiting_feedback)
+    await callback.answer()
+
+@dp.message(Command("feedback"), StateFilter("*"))
+async def feedback_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "💡 Напиши, что можно улучшить в боте, или на что пожаловаться — "
+        "я лично прочитаю каждое сообщение.\n\nДля отмены — /cancel"
+    )
+    await state.set_state(Form.waiting_feedback)
+
+@dp.message(StateFilter(Form.waiting_feedback))
+async def handle_feedback(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if len(text) < 3:
+        await message.answer("Напиши текстом, хотя бы пару слов 🙂")
+        return
+    if len(text) > FEEDBACK_MAX_LEN:
+        await message.answer(f"Слишком длинно — сократи до {FEEDBACK_MAX_LEN} символов, пожалуйста.")
+        return
+    await state.clear()
+    user_id = message.from_user.id
+    await db.add_feedback(user_id, text)
+    user = await db.get_user(user_id)
+    name = user.get("first_name") or "Аноним"
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💡 Обратная связь от {name} (id {user_id})\n\n{text}"
+        )
+    except Exception as e:
+        logging.warning(f"Feedback notify error: {e}")
+    await message.answer("✅ Спасибо! Обязательно учту это 🌸")
+
+@dp.callback_query(F.data == "admin_feedback")
+async def admin_feedback_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    items = await db.list_feedback(10)
+    if not items:
+        await callback.message.answer("Пока пусто.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
+        ]))
+        await callback.answer()
+        return
+    lines = ["💡 Последняя обратная связь:\n"]
+    for it in items:
+        name = it["first_name"] or "Аноним"
+        dt   = it["created_at"].strftime("%d.%m %H:%M")
+        lines.append(f"— {name} ({dt}): {it['text']}")
+    await callback.message.answer(
+        "\n\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
+        ])
+    )
+    await callback.answer()
+
 # ─── РЕФЕРАЛЬНАЯ СИСТЕМА ─────────────────────────────────────────────────────
 @dp.callback_query(F.data == "ref_promo")
 async def ref_promo_callback(callback: CallbackQuery):
@@ -2106,6 +2175,7 @@ async def setup_bot_commands():
         BotCommand(command="promo",         description="🎁 Ввести промокод"),
         BotCommand(command="notifications", description="🔔 Утренние уведомления"),
         BotCommand(command="name",          description="✏️ Изменить имя"),
+        BotCommand(command="feedback",      description="💡 Предложение или жалоба"),
     ]
     await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
     try:

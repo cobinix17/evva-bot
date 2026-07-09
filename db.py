@@ -89,6 +89,14 @@ async def init_db(database_url: str):
             PRIMARY KEY (user_id, razbor_key)
         )
     ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS feedback (
+            id         SERIAL PRIMARY KEY,
+            user_id    BIGINT NOT NULL,
+            text       TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    ''')
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -386,6 +394,21 @@ async def followup_try_consume(user_id: int, razbor_key: str, limit: int) -> boo
         user_id, razbor_key, limit
     )
     return row is not None
+
+async def add_feedback(user_id: int, text: str) -> int:
+    return await db_pool.fetchval(
+        'INSERT INTO feedback (user_id, text) VALUES ($1, $2) RETURNING id',
+        user_id, text
+    )
+
+async def list_feedback(limit: int = 10) -> list:
+    rows = await db_pool.fetch(
+        '''SELECT f.id, f.user_id, f.text, f.created_at, u.first_name
+           FROM feedback f LEFT JOIN users u ON u.user_id = f.user_id
+           ORDER BY f.created_at DESC LIMIT $1''',
+        limit
+    )
+    return [dict(r) for r in rows]
 
 async def premium_stats() -> dict:
     active = await db_pool.fetchval(

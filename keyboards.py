@@ -75,6 +75,10 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         text="🌸 Личный разбор от Евы (за рубли)",
         url=CONTACT_URL
     )])
+    buttons.append([InlineKeyboardButton(
+        text="💡 Предложить улучшение / сообщить о проблеме",
+        callback_data="feedback_start"
+    )])
     if is_admin:
         buttons.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -89,6 +93,7 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="👥 Рефералы",          callback_data="admin_refs")],
         [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="admin_find_user")],
         [InlineKeyboardButton(text="📝 Отзывы на модерации", callback_data="admin_reviews")],
+        [InlineKeyboardButton(text="💡 Обратная связь",     callback_data="admin_feedback")],
         [InlineKeyboardButton(text="⬅️ Главное меню",      callback_data="show_menu")],
     ])
 
