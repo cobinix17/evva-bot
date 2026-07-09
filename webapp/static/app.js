@@ -14,6 +14,12 @@ if (tg) {
 
 const initData = tg?.initData || "";
 
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
+}
+
 async function api(path, opts = {}) {
   const headers = { "X-Telegram-Init-Data": initData, ...(opts.headers || {}) };
   if (opts.body) headers["Content-Type"] = "application/json";
@@ -132,10 +138,31 @@ function renderCatalog() {
   `).join("");
 }
 
+async function openReading(key) {
+  app.innerHTML = `<div class="empty">Открываю разбор…</div>`;
+  try {
+    const r = await api(`/api/reading/${key}`);
+    app.innerHTML = `
+      <button class="back-btn" id="reading-back">← Назад</button>
+      <div class="reading-view">
+        <h2>${escapeHtml(r.title)}</h2>
+        <div class="reading-text">${escapeHtml(r.text)}</div>
+      </div>
+    `;
+    document.getElementById("reading-back").addEventListener("click", render);
+  } catch (e) {
+    app.innerHTML = `
+      <button class="back-btn" id="reading-back">← Назад</button>
+      <div class="empty">${e.message || "Разбор ещё готовится"}.<br>Открой его в чате с ботом 🌸</div>
+    `;
+    document.getElementById("reading-back").addEventListener("click", render);
+  }
+}
+
 async function onItemClick(key) {
   const purchased = new Set(ME.purchased || []);
   if (purchased.has(key)) {
-    tg?.openTelegramLink(`https://t.me/${ME.bot_username}?start=open_${key}`);
+    await openReading(key);
     return;
   }
   try {
@@ -143,7 +170,7 @@ async function onItemClick(key) {
     if (res.already_purchased) { await boot(); return; }
     tg.openInvoice(res.invoice_url, (status) => {
       if (status === "paid") {
-        tg?.showAlert("Оплата прошла! Разбор придёт в чат с ботом 🌸");
+        tg?.showAlert("Оплата прошла! Разбор готовится — через минуту откроется здесь и придёт в чат с ботом 🌸");
         boot();
       }
     });

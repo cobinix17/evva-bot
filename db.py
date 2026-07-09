@@ -90,6 +90,16 @@ async def init_db(database_url: str):
         )
     ''')
     await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS generated_readings (
+            user_id    BIGINT NOT NULL,
+            razbor_key TEXT   NOT NULL,
+            title      TEXT   NOT NULL,
+            text       TEXT   NOT NULL,
+            updated_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (user_id, razbor_key)
+        )
+    ''')
+    await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS feedback (
             id         SERIAL PRIMARY KEY,
             user_id    BIGINT NOT NULL,
@@ -394,6 +404,26 @@ async def followup_try_consume(user_id: int, razbor_key: str, limit: int) -> boo
         user_id, razbor_key, limit
     )
     return row is not None
+
+async def save_reading_text(user_id: int, razbor_key: str, title: str, text: str):
+    """Сохраняет готовый текст разбора — чтобы веб-кабинет мог показать его
+    напрямую, не отправляя пользователя каждый раз в чат с ботом. При
+    повторной генерации того же разбора (перевыпуск) текст перезаписывается —
+    хранится только последняя версия, история не нужна."""
+    await db_pool.execute(
+        '''INSERT INTO generated_readings (user_id, razbor_key, title, text)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (user_id, razbor_key) DO UPDATE
+               SET title = $3, text = $4, updated_at = NOW()''',
+        user_id, razbor_key, title, text
+    )
+
+async def get_reading_text(user_id: int, razbor_key: str) -> dict | None:
+    row = await db_pool.fetchrow(
+        'SELECT title, text, updated_at FROM generated_readings WHERE user_id = $1 AND razbor_key = $2',
+        user_id, razbor_key
+    )
+    return dict(row) if row else None
 
 async def add_feedback(user_id: int, text: str) -> int:
     return await db_pool.fetchval(

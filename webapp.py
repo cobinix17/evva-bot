@@ -167,6 +167,24 @@ async def api_buy(request: web.Request) -> web.Response:
     )
     return web.json_response({"invoice_url": link})
 
+async def api_reading(request: web.Request) -> web.Response:
+    """Отдаёт сохранённый текст уже сгенерированного разбора — открывается
+    прямо в веб-кабинете, без перехода в чат с ботом."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    key  = request.match_info["key"]
+    user = await db.get_user(user_id)
+    if key not in user.get("purchased", []):
+        return _json_error("not purchased", 403)
+    reading = await db.get_reading_text(user_id, key)
+    if not reading:
+        return _json_error("Разбор ещё готовится — открой его в чате с ботом", 404)
+    return web.json_response({
+        "title": reading["title"],
+        "text":  reading["text"],
+    })
+
 async def api_matrix(request: web.Request) -> web.Response:
     """Публичный расчёт матрицы по дате — для гостевого превью без входа
     (человек ещё не открывал бота, но зашёл по ссылке на веб)."""
@@ -195,6 +213,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_get("/api/catalog", api_catalog)
     app.router.add_get("/api/matrix", api_matrix)
     app.router.add_post("/api/buy/{key}", api_buy)
+    app.router.add_get("/api/reading/{key}", api_reading)
     app.router.add_get("/app", index)
     app.router.add_get("/app/", index)
     if os.path.isdir(WEBAPP_DIR):

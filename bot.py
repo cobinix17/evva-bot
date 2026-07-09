@@ -1347,6 +1347,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
 
         title = TITLES.get(waiting, "🔮 Разбор")
         await send_long(message.chat.id, f"{title}\n\n{answer}")
+        await db.save_reading_text(user_id, waiting, title, answer)
 
         try:
             pdf_bytes = await _generate_pdf_async(
@@ -1465,6 +1466,7 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
         await stop_intermediate()
 
         await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
+        await db.save_reading_text(user_id, "compat", "💑 Совместимость", answer)
 
         try:
             pdf_bytes = await _generate_pdf_async(
