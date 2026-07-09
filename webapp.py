@@ -4,6 +4,7 @@
 # генерация разборов остаются в bot.py/ai.py, веб только читает/инициирует.
 import os
 import re
+import time
 import json
 import hmac
 import hashlib
@@ -63,6 +64,8 @@ async def _get_bot_username() -> str:
 # ── ВАЛИДАЦИЯ initData ────────────────────────────────────────────────────────
 # Telegram подписывает данные Mini App секретом = HMAC-SHA256(bot_token, "WebAppData").
 # Без этой проверки любой мог бы прислать чужой user_id и читать/покупать за него.
+INIT_DATA_MAX_AGE = 24 * 3600  # Telegram сам обновляет initData при каждом открытии Mini App
+
 def _check_init_data(init_data: str) -> dict | None:
     if not init_data or not BOT_TOKEN:
         return None
@@ -77,6 +80,14 @@ def _check_init_data(init_data: str) -> dict | None:
     secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
     calc_hash  = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(calc_hash, received_hash):
+        return None
+    # Защита от replay: утёкшая (лог, прокси, чужое устройство) initData не
+    # должна работать вечно — Telegram выдаёт свежую строку при каждом открытии.
+    try:
+        auth_date = int(pairs.get("auth_date", "0"))
+    except ValueError:
+        return None
+    if auth_date <= 0 or time.time() - auth_date > INIT_DATA_MAX_AGE:
         return None
     user_raw = pairs.get("user")
     if not user_raw:
@@ -136,8 +147,10 @@ async def api_set_birthdate(request: web.Request) -> web.Response:
     user = await db.get_user(user_id)
     user["birth_date"] = date_str
     user["destiny_number"] = calculate_destiny(date_str)
-    if name and len(name) <= 30:
-        user["first_name"] = name
+    if name:
+        clean_name = _sanitize_name(name)
+        if clean_name:
+            user["first_name"] = clean_name
     await db.save_user(user_id, user)
     return web.json_response({"ok": True})
 
@@ -475,6 +488,7 @@ async def api_ask(request: web.Request) -> web.Response:
             answer = await ask_ai(prompt)
     except Exception as e:
         logging.error(f"webapp api_ask error: {e}", exc_info=True)
+        await db.refund_ask_try(user_id)
         return _json_error("Что-то пошло не так — попробуй ещё раз чуть позже", 500)
     return web.json_response({"answer": answer})
 
@@ -498,9 +512,36 @@ async def index(request: web.Request) -> web.Response:
         return web.Response(text="webapp not built", status=404)
     return web.FileResponse(path)
 
+# ── RATE LIMIT ────────────────────────────────────────────────────────────────
+# Простой in-memory sliding-window лимитер на /api/*. Ключ — X-Telegram-Init-Data
+# если есть (стабильно про пользователя), иначе IP. Главная цель — не дать
+# перебирать промокоды через /api/promo/check без ограничений (см. аудит).
+_RATE_LIMIT = 30          # запросов
+_RATE_WINDOW = 60         # секунд
+_rate_buckets: dict[str, list[float]] = {}
+
+@web.middleware
+async def _rate_limit_middleware(request: web.Request, handler):
+    if not request.path.startswith("/api/"):
+        return await handler(request)
+    key = request.headers.get("X-Telegram-Init-Data") or request.remote or "unknown"
+    now = time.time()
+    bucket = _rate_buckets.setdefault(key, [])
+    bucket[:] = [t for t in bucket if now - t < _RATE_WINDOW]
+    if len(bucket) >= _RATE_LIMIT:
+        return _json_error("Слишком много запросов — подожди немного 🙏", 429)
+    bucket.append(now)
+    # Периодически подчищаем мусорные ключи, чтобы словарь не рос бесконечно
+    if len(_rate_buckets) > 5000:
+        for k in list(_rate_buckets.keys()):
+            if not _rate_buckets[k] or now - _rate_buckets[k][-1] > _RATE_WINDOW:
+                del _rate_buckets[k]
+    return await handler(request)
+
 def setup_webapp_routes(app: web.Application, bot):
     global _bot
     _bot = bot
+    app.middlewares.append(_rate_limit_middleware)
     app.router.add_get("/api/me", api_me)
     app.router.add_post("/api/me/birthdate", api_set_birthdate)
     app.router.add_get("/api/catalog", api_catalog)

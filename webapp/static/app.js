@@ -101,7 +101,7 @@ function renderMatrix(m, birthDate) {
   return `
     <div class="topbar">
       <div class="eyebrow">Карта твоих чисел</div>
-      <h1>${ME.first_name || "Твоя матрица"}</h1>
+      <h1>${escapeHtml(ME.first_name || "Твоя матрица")}</h1>
     </div>
     <div class="octawrap">${octagramSVG(points.slice(0, 8), m.destiny)}</div>
     <div class="destiny-line">${m.destiny_title || ""}</div>

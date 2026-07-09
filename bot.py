@@ -23,7 +23,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
 from readings import PROMPTS
-from broadcasts import MORNING
 
 import db
 from config import (
@@ -1266,6 +1265,12 @@ async def successful_payment(message: Message, state: FSMContext):
         await state.clear()
         return
 
+    if payload not in PAID_RAZBORY:
+        logging.warning(f"successful_payment с неизвестным payload={payload!r} от user {message.from_user.id}")
+        await message.answer("❌ Что-то пошло не так с оплатой — напиши в поддержку.")
+        await state.clear()
+        return
+
     if payload not in user["purchased"]:
         user["purchased"].append(payload)
     user["waiting"] = payload
@@ -1774,6 +1779,7 @@ async def handle_ai_question(message: Message, state: FSMContext):
         await message.answer(answer, reply_markup=_ask_again_menu())
     except Exception as e:
         logging.error(f"Ask Eva error: {e}", exc_info=True)
+        await db.refund_ask_try(user_id)
         await message.answer("❌ Что-то пошло не так — попробуй ещё раз чуть позже 🙏", reply_markup=_ask_again_menu())
     finally:
         _generating.discard(user_id)

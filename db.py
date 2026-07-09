@@ -124,6 +124,7 @@ async def init_db(database_url: str):
         ("prem_month_count","INTEGER DEFAULT 0"),
         ("ask_day",       "DATE"),
         ("ask_day_count", "INTEGER DEFAULT 0"),
+        ("created_at",    "TIMESTAMP DEFAULT NOW()"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -390,6 +391,16 @@ async def ask_try_consume(user_id: int, daily_limit: int) -> bool:
         user_id, today, daily_limit
     )
     return row is not None
+
+async def refund_ask_try(user_id: int):
+    """Возвращает списанный вопрос дневного лимита, если генерация не удалась —
+    чтобы сбой AI-провайдера не сжигал лимит пользователя впустую."""
+    today = utc_now().date()
+    await db_pool.execute(
+        '''UPDATE users SET ask_day_count = GREATEST(ask_day_count - 1, 0)
+           WHERE user_id = $1 AND ask_day = $2''',
+        user_id, today
+    )
 
 async def followup_try_consume(user_id: int, razbor_key: str, limit: int) -> bool:
     """Атомарно списывает один бесплатный уточняющий вопрос по КОНКРЕТНОМУ
