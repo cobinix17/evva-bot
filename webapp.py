@@ -3,6 +3,7 @@
 # Переиспользует db.py/numerology.py/config.py — платёжный поток (Stars) и
 # генерация разборов остаются в bot.py/ai.py, веб только читает/инициирует.
 import os
+import re
 import json
 import hmac
 import hashlib
@@ -24,6 +25,17 @@ from numerology import numerology_summary, is_valid_date, build_numerology_conte
 from keyboards import date_choice_menu
 from ai import ask_ai
 
+# Та же санитизация что в bot.py:sanitize_name — не импортируем оттуда
+# напрямую, чтобы не создавать циклическую зависимость bot.py <-> webapp.py
+# (bot.py уже импортирует webapp.py внутри run_web()).
+_NAME_ALLOWED_RE = re.compile(r"[^а-яёА-ЯЁa-zA-Z\s\-]")
+
+def _sanitize_name(raw: str) -> str:
+    cleaned = _NAME_ALLOWED_RE.sub("", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:30]
+
+FEEDBACK_MAX_LEN = 800
 ASK_QUESTION_MAX_LEN = 300
 # Отдельная, более узкая полоса генерации именно для веб-чата "Спроси Еву" —
 # не общая с ботом (там свои _gen_semaphore/_priority_semaphore), чтобы не
@@ -104,6 +116,7 @@ async def api_me(request: web.Request) -> web.Response:
         "destiny_number": user.get("destiny_number"),
         "purchased":     user.get("purchased", []),
         "ref_balance":   user.get("ref_balance", 0),
+        "notifications": user.get("notifications", True),
         "is_premium":    db.is_premium(user),
         "premium_until": user["premium_until"].isoformat() if user.get("premium_until") else None,
         "is_admin":      user_id == ADMIN_ID,
@@ -126,6 +139,112 @@ async def api_set_birthdate(request: web.Request) -> web.Response:
     if name and len(name) <= 30:
         user["first_name"] = name
     await db.save_user(user_id, user)
+    return web.json_response({"ok": True})
+
+async def api_set_name(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    body = await request.json()
+    name = _sanitize_name((body.get("name") or "").strip())
+    if len(name) < 2 or len(name) > 30:
+        return _json_error("Введи настоящее имя — только буквы, от 2 до 30 символов")
+    user = await db.get_user(user_id)
+    user["first_name"] = name
+    await db.save_user(user_id, user)
+    return web.json_response({"ok": True, "name": name})
+
+async def api_set_notifications(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    body = await request.json()
+    user = await db.get_user(user_id)
+    user["notifications"] = bool(body.get("enabled", True))
+    await db.save_user(user_id, user)
+    return web.json_response({"ok": True})
+
+async def api_feedback(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if len(text) < 3:
+        return _json_error("Напиши текстом, хотя бы пару слов")
+    if len(text) > FEEDBACK_MAX_LEN:
+        return _json_error(f"Слишком длинно — сократи до {FEEDBACK_MAX_LEN} символов")
+    await db.add_feedback(user_id, text)
+    user = await db.get_user(user_id)
+    name = user.get("first_name") or "Аноним"
+    try:
+        await _bot.send_message(ADMIN_ID, f"💡 Обратная связь от {name} (id {user_id}, из веб-кабинета)\n\n{text}")
+    except Exception as e:
+        logging.warning(f"webapp feedback notify error: {e}")
+    return web.json_response({"ok": True})
+
+async def api_promo_check(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    body = await request.json()
+    code = (body.get("code") or "").strip().upper()
+    if not code:
+        return _json_error("Введи код промокода")
+    row = await db.db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
+    if not row:
+        return _json_error("Такого промокода не существует")
+    if row["expires_at"] and row["expires_at"] < db.utc_now():
+        return _json_error("Этот промокод уже истёк")
+    remaining = row["max_uses"] - row["uses_count"]
+    if remaining <= 0:
+        return _json_error("Этот промокод исчерпан")
+    return web.json_response({"remaining": remaining})
+
+async def api_promo_redeem(request: web.Request) -> web.Response:
+    """Активация промокода на конкретный разбор. Как и с оплатой балансом,
+    саму генерацию делает бот — после списания использования промокода
+    отправляем в чат клавиатуру выбора даты."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    body = await request.json()
+    code = (body.get("code") or "").strip().upper()
+    key  = (body.get("key") or "").strip()
+    if key not in PAID_RAZBORY:
+        return _json_error("unknown reading", 404)
+    user = await db.get_user(user_id)
+
+    if key in user.get("purchased", []):
+        return web.json_response({"already_purchased": True})
+
+    result = await db.use_coupon(code, user_id)
+    if result == "not_found":
+        return _json_error("Промокод не найден")
+    if result == "expired":
+        return _json_error("Промокод истёк")
+    if result == "limit":
+        return _json_error("Лимит промокода исчерпан")
+
+    user["purchased"].append(key)
+    user["waiting"] = key
+    await db.save_user(user_id, user)
+
+    if not user.get("birth_date"):
+        return web.json_response({"ok": True, "needs_birthdate": True})
+
+    title = PAID_RAZBORY[key]
+    desc  = RAZBOR_DESCRIPTIONS.get(key, "")
+    intro = f"💬 {desc}\n\n" if desc else ""
+    try:
+        await _bot.send_message(
+            user_id,
+            f"✅ «{title}» получен по промокоду!\n\n"
+            f"{intro}Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?",
+            reply_markup=date_choice_menu()
+        )
+    except Exception as e:
+        logging.warning(f"promo redeem notify error: {e}")
     return web.json_response({"ok": True})
 
 _SECTIONS = [
@@ -359,6 +478,11 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_post("/api/ask", api_ask)
     app.router.add_get("/api/referral", api_referral)
     app.router.add_post("/api/balance/buy/{key}", api_balance_buy)
+    app.router.add_post("/api/me/name", api_set_name)
+    app.router.add_post("/api/me/notifications", api_set_notifications)
+    app.router.add_post("/api/feedback", api_feedback)
+    app.router.add_post("/api/promo/check", api_promo_check)
+    app.router.add_post("/api/promo/redeem", api_promo_redeem)
     app.router.add_get("/app", index)
     app.router.add_get("/app/", index)
     if os.path.isdir(WEBAPP_DIR):

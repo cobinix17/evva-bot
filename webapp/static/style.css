@@ -136,3 +136,16 @@ button{ font-family:'Body',serif; }
 .ref-stat{ flex:1; text-align:center; padding:12px 4px; background:var(--bg); border:1px solid var(--border); border-radius:10px; }
 .ref-stat-n{ font-family:'Head',serif; font-weight:600; font-size:22px; color:var(--head); }
 .ref-stat-l{ font-size:9.5px; color:var(--accent); letter-spacing:.06em; margin-top:3px; }
+
+/* ── настройки ── */
+.toggle-row{ display:flex; align-items:center; justify-content:space-between; gap:14px; }
+.toggle-row p{ font-size:12.5px; color:var(--accent); }
+.switch{ position:relative; display:inline-block; width:46px; height:26px; flex-shrink:0; }
+.switch input{ opacity:0; width:0; height:0; }
+.switch-track{ position:absolute; inset:0; background:var(--border); border-radius:26px; cursor:pointer; transition:background .2s; }
+.switch-track::before{ content:''; position:absolute; width:20px; height:20px; left:3px; top:3px; background:#fff;
+  border-radius:50%; transition:transform .2s; box-shadow:0 1px 4px rgba(0,0,0,.25); }
+.switch input:checked + .switch-track{ background:linear-gradient(135deg,var(--bar1),var(--bar2)); }
+.switch input:checked + .switch-track::before{ transform:translateX(20px); }
+
+#promo-options .item{ padding:12px 14px; }

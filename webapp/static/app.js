@@ -342,6 +342,120 @@ async function buyPremium() {
   }
 }
 
+// ── настройки, промокод, обратная связь ───────────────────────────────────────
+function renderMore() {
+  return `
+    <div class="topbar"><div class="eyebrow">Настройки</div><h1>⚙️ Ещё</h1></div>
+
+    <div class="onboard">
+      <div class="section-t" style="margin-bottom:10px">Имя</div>
+      <p>Сейчас я называю тебя «${escapeHtml(ME.first_name || "не указано")}».</p>
+      <input id="name-input" placeholder="Новое имя" maxlength="30">
+      <button id="name-save-btn">Сохранить</button>
+    </div>
+
+    <div class="onboard">
+      <div class="toggle-row">
+        <div>
+          <div class="section-t" style="margin-bottom:4px">Утренние уведомления</div>
+          <p style="margin:0">Личный нумерологический прогноз каждое утро</p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="notif-toggle" ${ME.notifications ? "checked" : ""}>
+          <span class="switch-track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="onboard">
+      <div class="section-t" style="margin-bottom:10px">Промокод</div>
+      <div id="promo-block">
+        <input id="promo-code-input" placeholder="КОД" maxlength="20" style="text-transform:uppercase">
+        <button id="promo-check-btn">Проверить</button>
+      </div>
+    </div>
+
+    <div class="onboard">
+      <div class="section-t" style="margin-bottom:10px">Обратная связь</div>
+      <p>Есть пожелание или нашла недочёт? Напиши — я лично прочитаю.</p>
+      <input id="feedback-input" placeholder="Твоё сообщение" maxlength="800">
+      <button id="feedback-send-btn">Отправить</button>
+    </div>
+  `;
+}
+
+async function saveName() {
+  const input = document.getElementById("name-input");
+  const name = input.value.trim();
+  if (name.length < 2) { tg?.showAlert("Введи имя — от 2 символов 🙂"); return; }
+  try {
+    await api("/api/me/name", { method: "POST", body: JSON.stringify({ name }) });
+    tg?.showAlert("Готово! 🌸");
+    await boot();
+  } catch (e) {
+    tg?.showAlert(e.message || "Ошибка");
+  }
+}
+
+async function toggleNotifications(e) {
+  try {
+    await api("/api/me/notifications", { method: "POST", body: JSON.stringify({ enabled: e.target.checked }) });
+  } catch (err) {
+    tg?.showAlert(err.message || "Ошибка");
+    e.target.checked = !e.target.checked;
+  }
+}
+
+async function checkPromo() {
+  const code = document.getElementById("promo-code-input").value.trim().toUpperCase();
+  if (!code) { tg?.showAlert("Введи код промокода"); return; }
+  const block = document.getElementById("promo-block");
+  try {
+    const res = await api("/api/promo/check", { method: "POST", body: JSON.stringify({ code }) });
+    const all = CATALOG ? CATALOG.sections.flatMap(s => s.items) : [];
+    const purchased = new Set(ME.purchased || []);
+    const options = all.filter(it => !purchased.has(it.key));
+    block.innerHTML = `
+      <p>✅ Промокод активен — осталось использований: ${res.remaining}. Выбери разбор:</p>
+      <div id="promo-options">${options.map(it =>
+        `<div class="item" data-key="${it.key}"><div class="item-t">${it.title}</div></div>`
+      ).join("")}</div>
+    `;
+    block.querySelectorAll("#promo-options .item").forEach(el =>
+      el.addEventListener("click", () => redeemPromo(code, el.dataset.key))
+    );
+  } catch (e) {
+    tg?.showAlert(e.message || "Промокод не найден");
+  }
+}
+
+async function redeemPromo(code, key) {
+  try {
+    const res = await api("/api/promo/redeem", { method: "POST", body: JSON.stringify({ code, key }) });
+    if (res.needs_birthdate) {
+      tg?.showAlert("Разбор добавлен! Сначала укажи дату рождения на вкладке «Матрица», затем открой чат с ботом.");
+    } else {
+      tg?.showAlert("Готово! Открой чат с ботом, чтобы подтвердить дату — и разбор будет готов 🌸");
+    }
+    await boot();
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось активировать промокод");
+  }
+}
+
+async function sendFeedback() {
+  const input = document.getElementById("feedback-input");
+  const text = input.value.trim();
+  if (text.length < 3) { tg?.showAlert("Напиши текстом, хотя бы пару слов 🙂"); return; }
+  try {
+    await api("/api/feedback", { method: "POST", body: JSON.stringify({ text }) });
+    input.value = "";
+    tg?.showAlert("Спасибо! Обязательно учту 🌸");
+  } catch (e) {
+    tg?.showAlert(e.message || "Ошибка");
+  }
+}
+
 // ── навигация ────────────────────────────────────────────────────────────────
 let currentTab = "matrix";
 
@@ -360,6 +474,12 @@ function render() {
     document.getElementById("premium-buy-btn")?.addEventListener("click", buyPremium);
     document.getElementById("ask-send-btn")?.addEventListener("click", sendAskQuestion);
     loadReferralBlock();
+  } else if (currentTab === "more") {
+    app.innerHTML = renderMore();
+    document.getElementById("name-save-btn").addEventListener("click", saveName);
+    document.getElementById("notif-toggle").addEventListener("change", toggleNotifications);
+    document.getElementById("promo-check-btn").addEventListener("click", checkPromo);
+    document.getElementById("feedback-send-btn").addEventListener("click", sendFeedback);
   }
 }
 
