@@ -1893,10 +1893,11 @@ _FEEDBACK_PROMPTS = {
 }
 
 def _feedback_choice_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="💡 Предложить идею", callback_data="feedback_cat_idea"),
-        InlineKeyboardButton(text="🐞 Сообщить об ошибке", callback_data="feedback_cat_bug"),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💡 Предложить идею", callback_data="feedback_cat_idea"),
+         InlineKeyboardButton(text="🐞 Сообщить об ошибке", callback_data="feedback_cat_bug")],
+        [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")],
+    ])
 
 @dp.callback_query(F.data == "feedback_start")
 async def feedback_start_cb(callback: CallbackQuery, state: FSMContext):
@@ -1940,7 +1941,9 @@ async def handle_feedback(message: Message, state: FSMContext):
         )
     except Exception as e:
         logging.warning(f"Feedback notify error: {e}")
-    await message.answer("✅ Спасибо! Обязательно учту это 🌸")
+    await message.answer("✅ Спасибо! Обязательно учту это 🌸", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")]
+    ]))
 
 @dp.callback_query(F.data == "admin_feedback")
 async def admin_feedback_cb(callback: CallbackQuery):
@@ -1987,7 +1990,9 @@ async def ref_promo_callback(callback: CallbackQuery):
         f"💡 {REF_BONUS_PERCENT}% от суммы каждой покупки подруги — автоматически на твой баланс ⭐\n"
         f"Использовать баланс: /balance"
     )
-    await callback.message.answer(text)
+    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")]
+    ]))
     await callback.answer()
 
 @dp.message(Command("ref"), StateFilter("*"))
@@ -2014,7 +2019,9 @@ async def ref_cmd(message: Message, state: FSMContext):
         f"на свой баланс виртуальных звёзд.\n\n"
         f"Баланс можно использовать для оплаты своих разборов — команда /balance"
     )
-    await message.answer(text)
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")]
+    ]))
 
 @dp.message(Command("balance"), StateFilter("*"))
 async def balance_cmd(message: Message, state: FSMContext):
