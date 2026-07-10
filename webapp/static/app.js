@@ -90,8 +90,8 @@ function renderMatrix(m, birthDate) {
     c.value,
     c.label.replace("Число ", "").replace("Кармическое", "Карма").replace(/Личный год \d+/, m => "Год " + m.match(/\d+/)[0]),
   ]));
-  if (m.life_arcana) points.push([m.life_arcana.roman, "Аркан"]);
-  if (m.year_arcana) points.push([m.year_arcana.roman, "Аркан года"]);
+  if (m.life_arcana) points.push([m.life_arcana.num, "Аркан"]);
+  if (m.year_arcana) points.push([m.year_arcana.num, "Аркан года"]);
   while (points.length < 8) points.push([m.destiny, "—"]);
   const pins = (m.pinnacles || []).map((n, i) =>
     `<div class="pin"><div class="pin-n">${n}</div><div class="pin-a">${PIN_AGES[i] || ""} лет</div></div>`
