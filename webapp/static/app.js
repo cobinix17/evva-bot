@@ -52,8 +52,9 @@ function octagramSVG(points, destiny) {
     spokes += `<line x1="${cx}" y1="${cy}" x2="${sx.toFixed(1)}" y2="${sy.toFixed(1)}" stroke="var(--border)" stroke-width="0.8"/>`;
     badges += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR}" fill="var(--bg)" stroke="url(#gold)" stroke-width="1.6"/>`;
     badges += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR - 4}" fill="none" stroke="var(--border)" stroke-width="1"/>`;
-    const numFontSize = String(num).length > 2 ? 20 : 30;
-    badges += `<text x="${x.toFixed(1)}" y="${(y + (numFontSize > 20 ? 11 : 8)).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="${numFontSize}" fill="var(--head)">${num}</text>`;
+    const numLen = String(num).length;
+    const numFontSize = numLen >= 4 ? 15 : numLen === 3 ? 19 : numLen === 2 ? 24 : 30;
+    badges += `<text x="${x.toFixed(1)}" y="${(y + (numFontSize <= 20 ? 6 : 8)).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="${numFontSize}" fill="var(--head)">${num}</text>`;
     // длинные подписи (2 слова) переносим на две строки, иначе текст обрезается
     // краем viewBox у крайних левой/правой точек октаграммы
     const words = short.toUpperCase().split(" ");
