@@ -259,7 +259,10 @@ async def name_cmd(message: Message, state: FSMContext):
     current = user.get("first_name") or "не указано"
     await message.answer(
         f"✏️ Сейчас я называю тебя «{current}».\n\n"
-        "Как называть тебя теперь? Введи новое имя 👇\n\nДля отмены — /cancel"
+        "Как называть тебя теперь? Введи новое имя 👇\n\nДля отмены — /cancel",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
     )
     await state.set_state(Form.waiting_rename)
 
@@ -1716,7 +1719,10 @@ async def _start_ask_eva(target: Message, state: FSMContext, user: dict):
     await target.answer(
         "💬 Спроси меня о чём угодно — по твоим числам отвечу лично.\n"
         "Например: «что с деньгами в марте?» или «стоит ли сейчас менять работу?»\n\n"
-        "Для отмены — /cancel"
+        "Для отмены — /cancel",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
     )
     await state.set_state(Form.waiting_ai_question)
 
@@ -1808,7 +1814,10 @@ async def followup_cb(callback: CallbackQuery, state: FSMContext):
     await state.update_data(followup_key=key)
     title = TITLES.get(key, "разбор")
     await callback.message.answer(
-        f"❓ Что уточнить по разбору «{title}»? Спрашивай прямо 👇\n\nДля отмены — /cancel"
+        f"❓ Что уточнить по разбору «{title}»? Спрашивай прямо 👇\n\nДля отмены — /cancel",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
     )
     await state.set_state(Form.waiting_followup)
     await callback.answer()
@@ -1913,8 +1922,20 @@ async def feedback_cmd(message: Message, state: FSMContext):
 async def feedback_category_cb(callback: CallbackQuery, state: FSMContext):
     category = callback.data.replace("feedback_cat_", "")
     await state.update_data(feedback_category=category)
-    await callback.message.answer(_FEEDBACK_PROMPTS.get(category, _FEEDBACK_PROMPTS["idea"]))
+    await callback.message.answer(
+        _FEEDBACK_PROMPTS.get(category, _FEEDBACK_PROMPTS["idea"]),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
+    )
     await state.set_state(Form.waiting_feedback)
+    await callback.answer()
+
+@dp.callback_query(F.data == "cancel_to_menu")
+async def cancel_to_menu_cb(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(callback.from_user.id)
+    await callback.message.answer("❌ Отменено.", reply_markup=main_menu_for(callback.from_user.id, user))
     await callback.answer()
 
 @dp.message(StateFilter(Form.waiting_feedback))
