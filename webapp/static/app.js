@@ -393,9 +393,16 @@ function renderMore() {
 
     <div class="onboard">
       <div class="section-t" style="margin-bottom:10px">Обратная связь</div>
-      <p>Есть пожелание или нашла недочёт? Напиши — я лично прочитаю.</p>
-      <input id="feedback-input" placeholder="Твоё сообщение" maxlength="800">
-      <button id="feedback-send-btn">Отправить</button>
+      <div id="feedback-choice">
+        <p>Есть идея, чего не хватает, или нашла ошибку? Читаю каждое сообщение лично.</p>
+        <button id="feedback-idea-btn">💡 Предложить идею</button>
+        <button id="feedback-bug-btn" style="margin-top:8px">🐞 Сообщить об ошибке</button>
+      </div>
+      <div id="feedback-form" style="display:none">
+        <p id="feedback-hint"></p>
+        <input id="feedback-input" placeholder="Твоё сообщение" maxlength="800">
+        <button id="feedback-send-btn">Отправить</button>
+      </div>
     </div>
   `;
 }
@@ -459,13 +466,29 @@ async function redeemPromo(code, key) {
   }
 }
 
+const _FEEDBACK_HINTS = {
+  idea: "💡 Есть идея, чего не хватает или что было бы круто добавить? Пиши — читаю лично.",
+  bug:  "🐞 Что-то не работает или ведёт себя странно? Опиши, что произошло.",
+};
+let _feedbackCategory = "idea";
+
+function chooseFeedbackCategory(category) {
+  _feedbackCategory = category;
+  document.getElementById("feedback-choice").style.display = "none";
+  document.getElementById("feedback-form").style.display = "block";
+  document.getElementById("feedback-hint").textContent = _FEEDBACK_HINTS[category];
+  document.getElementById("feedback-input").focus();
+}
+
 async function sendFeedback() {
   const input = document.getElementById("feedback-input");
   const text = input.value.trim();
   if (text.length < 3) { tg?.showAlert("Напиши текстом, хотя бы пару слов 🙂"); return; }
   try {
-    await api("/api/feedback", { method: "POST", body: JSON.stringify({ text }) });
+    await api("/api/feedback", { method: "POST", body: JSON.stringify({ text, category: _feedbackCategory }) });
     input.value = "";
+    document.getElementById("feedback-form").style.display = "none";
+    document.getElementById("feedback-choice").style.display = "block";
     tg?.showAlert("Спасибо! Обязательно учту 🌸");
   } catch (e) {
     tg?.showAlert(e.message || "Ошибка");
@@ -495,6 +518,8 @@ function render() {
     document.getElementById("name-save-btn").addEventListener("click", saveName);
     document.getElementById("notif-toggle").addEventListener("change", toggleNotifications);
     document.getElementById("promo-check-btn").addEventListener("click", checkPromo);
+    document.getElementById("feedback-idea-btn").addEventListener("click", () => chooseFeedbackCategory("idea"));
+    document.getElementById("feedback-bug-btn").addEventListener("click", () => chooseFeedbackCategory("bug"));
     document.getElementById("feedback-send-btn").addEventListener("click", sendFeedback);
   }
 }

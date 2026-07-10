@@ -1881,23 +1881,40 @@ async def handle_followup(message: Message, state: FSMContext):
 # ─── ОБРАТНАЯ СВЯЗЬ (приватно админу, без модерации/публикации) ──────────────
 FEEDBACK_MAX_LEN = 800
 
+_FEEDBACK_PROMPTS = {
+    "idea": (
+        "💡 Есть идея, чего не хватает, или что было бы круто добавить? "
+        "Пиши — читаю каждое сообщение лично и часто беру в работу.\n\nДля отмены — /cancel"
+    ),
+    "bug": (
+        "🐞 Что-то не работает или ведёт себя странно? Опиши, что произошло "
+        "(и по возможности — в каком разборе или разделе) — разберусь.\n\nДля отмены — /cancel"
+    ),
+}
+
+def _feedback_choice_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💡 Предложить идею", callback_data="feedback_cat_idea"),
+        InlineKeyboardButton(text="🐞 Сообщить об ошибке", callback_data="feedback_cat_bug"),
+    ]])
+
 @dp.callback_query(F.data == "feedback_start")
 async def feedback_start_cb(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer(
-        "💡 Напиши, что можно улучшить в боте, или на что пожаловаться — "
-        "я лично прочитаю каждое сообщение.\n\nДля отмены — /cancel"
-    )
-    await state.set_state(Form.waiting_feedback)
+    await callback.message.answer("Что хочешь написать?", reply_markup=_feedback_choice_menu())
     await callback.answer()
 
 @dp.message(Command("feedback"), StateFilter("*"))
 async def feedback_cmd(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "💡 Напиши, что можно улучшить в боте, или на что пожаловаться — "
-        "я лично прочитаю каждое сообщение.\n\nДля отмены — /cancel"
-    )
+    await message.answer("Что хочешь написать?", reply_markup=_feedback_choice_menu())
+
+@dp.callback_query(F.data.startswith("feedback_cat_"))
+async def feedback_category_cb(callback: CallbackQuery, state: FSMContext):
+    category = callback.data.replace("feedback_cat_", "")
+    await state.update_data(feedback_category=category)
+    await callback.message.answer(_FEEDBACK_PROMPTS.get(category, _FEEDBACK_PROMPTS["idea"]))
     await state.set_state(Form.waiting_feedback)
+    await callback.answer()
 
 @dp.message(StateFilter(Form.waiting_feedback))
 async def handle_feedback(message: Message, state: FSMContext):
@@ -1908,15 +1925,18 @@ async def handle_feedback(message: Message, state: FSMContext):
     if len(text) > FEEDBACK_MAX_LEN:
         await message.answer(f"Слишком длинно — сократи до {FEEDBACK_MAX_LEN} символов, пожалуйста.")
         return
+    data = await state.get_data()
+    category = data.get("feedback_category", "idea")
     await state.clear()
     user_id = message.from_user.id
-    await db.add_feedback(user_id, text)
+    await db.add_feedback(user_id, text, category)
     user = await db.get_user(user_id)
     name = user.get("first_name") or "Аноним"
+    label = "💡 Идея" if category == "idea" else "🐞 Баг"
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"💡 Обратная связь от {name} (id {user_id})\n\n{text}"
+            f"{label} от {name} (id {user_id})\n\n{text}"
         )
     except Exception as e:
         logging.warning(f"Feedback notify error: {e}")
@@ -1935,9 +1955,10 @@ async def admin_feedback_cb(callback: CallbackQuery):
         return
     lines = ["💡 Последняя обратная связь:\n"]
     for it in items:
-        name = it["first_name"] or "Аноним"
-        dt   = it["created_at"].strftime("%d.%m %H:%M")
-        lines.append(f"— {name} ({dt}): {it['text']}")
+        name  = it["first_name"] or "Аноним"
+        dt    = it["created_at"].strftime("%d.%m %H:%M")
+        label = "🐞" if it.get("category") == "bug" else "💡"
+        lines.append(f"{label} — {name} ({dt}): {it['text']}")
     await callback.message.answer(
         "\n\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2204,7 +2225,7 @@ async def setup_bot_commands():
         BotCommand(command="promo",         description="🎁 Ввести промокод"),
         BotCommand(command="notifications", description="🔔 Утренние уведомления"),
         BotCommand(command="name",          description="✏️ Изменить имя"),
-        BotCommand(command="feedback",      description="💡 Предложение или жалоба"),
+        BotCommand(command="feedback",      description="💡 Идея или баг"),
     ]
     await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
     try:

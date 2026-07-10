@@ -108,8 +108,12 @@ async def init_db(database_url: str):
             id         SERIAL PRIMARY KEY,
             user_id    BIGINT NOT NULL,
             text       TEXT NOT NULL,
+            category   TEXT DEFAULT 'idea',
             created_at TIMESTAMP DEFAULT NOW()
         )
+    ''')
+    await db_pool.execute('''
+        ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'idea'
     ''')
     for col, definition in [
         ("first_name",    "TEXT"),
@@ -441,15 +445,15 @@ async def get_reading_text(user_id: int, razbor_key: str) -> dict | None:
     )
     return dict(row) if row else None
 
-async def add_feedback(user_id: int, text: str) -> int:
+async def add_feedback(user_id: int, text: str, category: str = "idea") -> int:
     return await db_pool.fetchval(
-        'INSERT INTO feedback (user_id, text) VALUES ($1, $2) RETURNING id',
-        user_id, text
+        'INSERT INTO feedback (user_id, text, category) VALUES ($1, $2, $3) RETURNING id',
+        user_id, text, category
     )
 
 async def list_feedback(limit: int = 10) -> list:
     rows = await db_pool.fetch(
-        '''SELECT f.id, f.user_id, f.text, f.created_at, u.first_name
+        '''SELECT f.id, f.user_id, f.text, f.category, f.created_at, u.first_name
            FROM feedback f LEFT JOIN users u ON u.user_id = f.user_id
            ORDER BY f.created_at DESC LIMIT $1''',
         limit

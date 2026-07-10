@@ -183,15 +183,17 @@ async def api_feedback(request: web.Request) -> web.Response:
         return _json_error("unauthorized", 401)
     body = await request.json()
     text = (body.get("text") or "").strip()
+    category = body.get("category") if body.get("category") in ("idea", "bug") else "idea"
     if len(text) < 3:
         return _json_error("Напиши текстом, хотя бы пару слов")
     if len(text) > FEEDBACK_MAX_LEN:
         return _json_error(f"Слишком длинно — сократи до {FEEDBACK_MAX_LEN} символов")
-    await db.add_feedback(user_id, text)
+    await db.add_feedback(user_id, text, category)
     user = await db.get_user(user_id)
-    name = user.get("first_name") or "Аноним"
+    name  = user.get("first_name") or "Аноним"
+    label = "💡 Идея" if category == "idea" else "🐞 Баг"
     try:
-        await _bot.send_message(ADMIN_ID, f"💡 Обратная связь от {name} (id {user_id}, из веб-кабинета)\n\n{text}")
+        await _bot.send_message(ADMIN_ID, f"{label} от {name} (id {user_id}, из веб-кабинета)\n\n{text}")
     except Exception as e:
         logging.warning(f"webapp feedback notify error: {e}")
     return web.json_response({"ok": True})

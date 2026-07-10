@@ -76,7 +76,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         url=CONTACT_URL
     )])
     buttons.append([InlineKeyboardButton(
-        text="💡 Предложить улучшение / сообщить о проблеме",
+        text="💡 Предложить идею / сообщить об ошибке",
         callback_data="feedback_start"
     )])
     if is_admin:
