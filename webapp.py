@@ -212,7 +212,13 @@ async def api_feedback(request: web.Request) -> web.Response:
     name  = user.get("first_name") or "Аноним"
     label = "💡 Идея" if category == "idea" else "🐞 Баг"
     try:
-        await _bot.send_message(ADMIN_ID, f"{label} от {name} (id {user_id}, из веб-кабинета)\n\n{text}")
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        await _bot.send_message(
+            ADMIN_ID, f"{label} от {name} (id {user_id}, из веб-кабинета)\n\n{text}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_{user_id}")]
+            ])
+        )
     except Exception as e:
         logging.warning(f"webapp feedback notify error: {e}")
     return web.json_response({"ok": True})

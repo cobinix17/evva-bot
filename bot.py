@@ -154,6 +154,7 @@ class Form(StatesGroup):
     waiting_followup         = State()
     waiting_rename           = State()
     waiting_feedback         = State()
+    waiting_admin_reply      = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1931,6 +1932,33 @@ async def feedback_category_cb(callback: CallbackQuery, state: FSMContext):
     await state.set_state(Form.waiting_feedback)
     await callback.answer()
 
+@dp.callback_query(F.data.startswith("admin_reply_"))
+async def admin_reply_start_cb(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    target_id = int(callback.data.replace("admin_reply_", ""))
+    await state.update_data(admin_reply_to=target_id)
+    await state.set_state(Form.waiting_admin_reply)
+    await callback.message.answer(f"✍️ Введи ответ для пользователя {target_id} (или /cancel):")
+    await callback.answer()
+
+@dp.message(StateFilter(Form.waiting_admin_reply))
+async def admin_reply_send(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    target_id = data.get("admin_reply_to")
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Напиши текстом, пожалуйста.")
+        return
+    await state.clear()
+    try:
+        await bot.send_message(target_id, f"💬 Ответ от Евы:\n\n{text}")
+        await message.answer("✅ Отправлено.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить: {e}")
+
 @dp.callback_query(F.data == "cancel_to_menu")
 async def cancel_to_menu_cb(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1958,7 +1986,10 @@ async def handle_feedback(message: Message, state: FSMContext):
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"{label} от {name} (id {user_id})\n\n{text}"
+            f"{label} от {name} (id {user_id})\n\n{text}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_{user_id}")]
+            ])
         )
     except Exception as e:
         logging.warning(f"Feedback notify error: {e}")
