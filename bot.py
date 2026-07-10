@@ -260,7 +260,7 @@ async def name_cmd(message: Message, state: FSMContext):
     current = user.get("first_name") or "не указано"
     await message.answer(
         f"✏️ Сейчас я называю тебя «{current}».\n\n"
-        "Как называть тебя теперь? Введи новое имя 👇\n\nДля отмены — /cancel",
+        "Как называть тебя теперь? Введи новое имя 👇",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
         ])
@@ -1719,8 +1719,7 @@ async def _start_ask_eva(target: Message, state: FSMContext, user: dict):
         return
     await target.answer(
         "💬 Спроси меня о чём угодно — по твоим числам отвечу лично.\n"
-        "Например: «что с деньгами в марте?» или «стоит ли сейчас менять работу?»\n\n"
-        "Для отмены — /cancel",
+        "Например: «что с деньгами в марте?» или «стоит ли сейчас менять работу?»",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
         ])
@@ -1815,7 +1814,7 @@ async def followup_cb(callback: CallbackQuery, state: FSMContext):
     await state.update_data(followup_key=key)
     title = TITLES.get(key, "разбор")
     await callback.message.answer(
-        f"❓ Что уточнить по разбору «{title}»? Спрашивай прямо 👇\n\nДля отмены — /cancel",
+        f"❓ Что уточнить по разбору «{title}»? Спрашивай прямо 👇",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
         ])
@@ -1901,11 +1900,11 @@ FEEDBACK_MAX_LEN = 800
 _FEEDBACK_PROMPTS = {
     "idea": (
         "💡 Есть идея, чего не хватает, или что было бы круто добавить? "
-        "Пиши — читаю каждое сообщение лично и часто беру в работу.\n\nДля отмены — /cancel"
+        "Пиши — читаю каждое сообщение лично и часто беру в работу."
     ),
     "bug": (
         "🐞 Что-то не работает или ведёт себя странно? Опиши, что произошло "
-        "(и по возможности — в каком разборе или разделе) — разберусь.\n\nДля отмены — /cancel"
+        "(и по возможности — в каком разборе или разделе) — разберусь."
     ),
 }
 
