@@ -32,7 +32,7 @@ from config import (
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT,
     PREMIUM_PRICE_INCREASE, PREMIUM_PRICE_INCREASE_DATE,
 )
-from ai import ask_ai
+from ai import ask_ai, is_rude, rude_reply
 from pdf import generate_pdf
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date,
@@ -1755,6 +1755,11 @@ async def handle_ai_question(message: Message, state: FSMContext):
         await _show_premium(message, user)
         return
 
+    if is_rude(question):
+        await state.clear()
+        await message.answer(rude_reply())
+        return
+
     if user_id in _generating:
         await message.answer("⏳ Дождись, пожалуйста, пока закончится текущая генерация 🔮")
         return
@@ -1839,6 +1844,11 @@ async def handle_followup(message: Message, state: FSMContext):
     if not key or key not in user.get("purchased", []):
         await state.clear()
         await message.answer("Разбор не найден — выбери его заново в «Мои разборы» и нажми «Задать вопрос».")
+        return
+
+    if is_rude(question):
+        await state.clear()
+        await message.answer(rude_reply())
         return
 
     if user_id in _generating:

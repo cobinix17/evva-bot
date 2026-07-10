@@ -25,7 +25,7 @@ from config import (
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context
 from keyboards import date_choice_menu
-from ai import ask_ai
+from ai import ask_ai, is_rude, rude_reply
 
 # Та же санитизация что в bot.py:sanitize_name — не импортируем оттуда
 # напрямую, чтобы не создавать циклическую зависимость bot.py <-> webapp.py
@@ -496,6 +496,9 @@ async def api_ask(request: web.Request) -> web.Response:
         return _json_error("Напиши вопрос текстом, хотя бы пару слов")
     if len(question) > ASK_QUESTION_MAX_LEN:
         return _json_error(f"Вопрос слишком длинный — сократи до {ASK_QUESTION_MAX_LEN} символов")
+
+    if is_rude(question):
+        return web.json_response({"answer": rude_reply()})
 
     allowed = await db.ask_try_consume(user_id, ASK_DAILY_LIMIT)
     if not allowed:
