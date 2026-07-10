@@ -92,6 +92,18 @@ button{ font-family:'Body',serif; }
 .card .big{ font-family:'Head',serif; font-weight:600; font-size:32px; color:var(--head); }
 .card .lbl{ font-size:9.5px; letter-spacing:.14em; color:var(--gold); text-transform:uppercase; margin-top:5px; font-weight:600; }
 
+/* ── ежедневный бонус ── */
+.spin-card{ display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:15px 16px; background:linear-gradient(135deg, var(--bg3), var(--bg2));
+  border:1px solid var(--gold2); border-radius:14px; box-shadow:var(--shadow); }
+.spin-t{ font-family:'Head',serif; font-weight:600; font-size:15px; color:var(--head); }
+.spin-d{ font-size:11px; color:var(--accent); margin-top:3px; line-height:1.4; max-width:200px; }
+.spin-card button{ flex-shrink:0; padding:10px 18px; border:none; border-radius:10px;
+  background:linear-gradient(135deg,var(--bar1),var(--bar2)); color:#fff; font-family:'Head',serif;
+  font-weight:600; font-size:14px; cursor:pointer; box-shadow:0 6px 16px rgba(94,58,133,.28); }
+.spin-card button:disabled{ opacity:.6; }
+.spin-card.spin-done{ border-color:var(--border); opacity:.75; }
+
 /* ── каталог ── */
 .section{ margin:22px 18px; }
 .section-t{ font-size:11px; letter-spacing:.2em; color:var(--gold); text-transform:uppercase; margin-bottom:12px; font-weight:600; }

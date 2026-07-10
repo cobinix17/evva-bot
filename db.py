@@ -129,6 +129,7 @@ async def init_db(database_url: str):
         ("ask_day",       "DATE"),
         ("ask_day_count", "INTEGER DEFAULT 0"),
         ("created_at",    "TIMESTAMP DEFAULT NOW()"),
+        ("last_spin_date", "DATE"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -267,6 +268,22 @@ async def spend_balance(user_id: int, amount: int) -> bool:
            WHERE user_id = $2 AND ref_balance >= $1
            RETURNING ref_balance''',
         amount, user_id
+    )
+    return result is not None
+
+async def daily_spin_try(user_id: int, amount: int) -> bool:
+    """Атомарно начисляет ежедневный бонус и отмечает дату — тот же неделимый
+    UPDATE-с-guard паттерн, что и в ask_try_consume: гонка из двух быстрых
+    нажатий кнопки не даст начислить дважды за один день."""
+    today = utc_now().date()
+    result = await db_pool.fetchval(
+        '''UPDATE users SET
+               ref_balance    = ref_balance + $1,
+               last_spin_date = $2
+           WHERE user_id = $3
+             AND (last_spin_date IS NULL OR last_spin_date < $2)
+           RETURNING ref_balance''',
+        amount, today, user_id
     )
     return result is not None
 

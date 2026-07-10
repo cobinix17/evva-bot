@@ -99,11 +99,20 @@ function renderMatrix(m, birthDate) {
   const cards = (m.cards || []).map(c =>
     `<div class="card"><div class="big">${c.value}</div><div class="lbl">${c.label}</div></div>`
   ).join("");
+  const spinCard = ME.can_spin
+    ? `<div class="spin-card">
+        <div><div class="spin-t">🎰 Ежедневный бонус</div><div class="spin-d">Забирай звёзды раз в день — трать на разборы и премиум</div></div>
+        <button id="spin-btn">Забрать</button>
+      </div>`
+    : `<div class="spin-card spin-done">
+        <div><div class="spin-t">🎰 Ежедневный бонус</div><div class="spin-d">Уже забрано — приходи завтра 🌸</div></div>
+      </div>`;
   return `
     <div class="topbar">
       <div class="eyebrow">Карта твоих чисел</div>
       <h1>${escapeHtml(ME.first_name || "Твоя матрица")}</h1>
     </div>
+    <div class="section" style="margin-bottom:0">${spinCard}</div>
     <div class="octawrap">${octagramSVG(points.slice(0, 8), m.destiny)}</div>
     <div class="destiny-line">${m.destiny_title || ""}</div>
     <div class="cycles">
@@ -112,6 +121,24 @@ function renderMatrix(m, birthDate) {
     </div>
     <div class="cards">${cards}</div>
   `;
+}
+
+async function spinDaily() {
+  const btn = document.getElementById("spin-btn");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    const res = await api("/api/spin", { method: "POST" });
+    tg?.showAlert(`+${res.amount} ⭐ на баланс!`);
+    ME.ref_balance = (ME.ref_balance || 0) + res.amount;
+    ME.can_spin = false;
+    render();
+  } catch (e) {
+    tg?.showAlert(e.message || "Не получилось");
+    btn.disabled = false;
+    btn.textContent = "Забрать";
+  }
 }
 
 function renderOnboard() {
@@ -502,6 +529,7 @@ function render() {
   if (currentTab === "matrix") {
     app.innerHTML = ME.matrix ? renderMatrix(ME.matrix) : renderOnboard();
     document.getElementById("ob-submit")?.addEventListener("click", submitBirthdate);
+    document.getElementById("spin-btn")?.addEventListener("click", spinDaily);
   } else if (currentTab === "catalog") {
     app.innerHTML = renderCatalog();
     app.querySelectorAll(".item").forEach(el => el.addEventListener("click", () => onItemClick(el.dataset.key)));

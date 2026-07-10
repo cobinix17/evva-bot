@@ -7,6 +7,7 @@ import re
 import time
 import json
 import hmac
+import random
 import hashlib
 import asyncio
 import logging
@@ -132,7 +133,25 @@ async def api_me(request: web.Request) -> web.Response:
         "premium_until": user["premium_until"].isoformat() if user.get("premium_until") else None,
         "is_admin":      user_id == ADMIN_ID,
         "matrix":        matrix,
+        "can_spin":      user.get("last_spin_date") is None or user["last_spin_date"] < db.utc_now().date(),
     })
+
+# ── ЕЖЕДНЕВНЫЙ БОНУС ──────────────────────────────────────────────────────────
+# Веса подобраны так, чтобы матожидание было ~2 звезды/день — на самый
+# дешёвый разбор (49⭐) нужен примерно месяц ежедневных заходов. Цель —
+# повод открывать веб-апп каждый день, а не бесплатные разборы всем.
+_SPIN_REWARDS  = [1, 2, 4, 8, 20]
+_SPIN_WEIGHTS  = [60, 25, 10, 4, 1]
+
+async def api_spin(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    amount = random.choices(_SPIN_REWARDS, weights=_SPIN_WEIGHTS, k=1)[0]
+    ok = await db.daily_spin_try(user_id, amount)
+    if not ok:
+        return _json_error("Бонус уже забран — приходи завтра 🌸", 429)
+    return web.json_response({"ok": True, "amount": amount})
 
 async def api_set_birthdate(request: web.Request) -> web.Response:
     user_id = await _authed_user_id(request)
@@ -545,6 +564,7 @@ def setup_webapp_routes(app: web.Application, bot):
     _bot = bot
     app.middlewares.append(_rate_limit_middleware)
     app.router.add_get("/api/me", api_me)
+    app.router.add_post("/api/spin", api_spin)
     app.router.add_post("/api/me/birthdate", api_set_birthdate)
     app.router.add_get("/api/catalog", api_catalog)
     app.router.add_get("/api/matrix", api_matrix)
