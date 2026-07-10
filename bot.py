@@ -1861,13 +1861,20 @@ async def handle_followup(message: Message, state: FSMContext):
     _generating.add(user_id)
     wait_msg = await message.answer("⏳ Ева думает над ответом...")
     try:
-        name    = user.get("first_name") or "дорогая"
-        title   = TITLES.get(key, "разбор")
-        context = build_numerology_context(name, user["birth_date"])
+        name     = user.get("first_name") or "дорогая"
+        title    = TITLES.get(key, "разбор")
+        context  = build_numerology_context(name, user["birth_date"])
+        saved    = await db.get_reading_text(user_id, key)
+        reading_block = (
+            f"\n\nВот текст самого разбора, который ты ей уже прислала — отвечай ИМЕННО по нему, "
+            f"не противоречь и не повторяй общие фразы, если в разборе уже есть конкретика:\n«{saved['text']}»"
+            if saved and saved.get("text") else ""
+        )
         prompt  = (
-            f"Вот нумерологические данные {name}:\n{context}\n\n"
+            f"Вот нумерологические данные {name}:\n{context}"
+            f"{reading_block}\n\n"
             f"Она только что получила от тебя платный разбор «{title}» и теперь уточняет: «{question}»\n\n"
-            "Ответь как Ева — тепло, конкретно, опираясь на её числа и тему этого разбора. "
+            "Ответь как Ева — тепло, конкретно, опираясь на её числа и на то, что уже написано в разборе. "
             "Это часть живого диалога: не используй emoji-заголовки, не структурируй ответ на "
             "блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
         )
