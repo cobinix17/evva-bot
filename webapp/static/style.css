@@ -41,6 +41,13 @@ body{
 }
 h1,h2,h3{ font-family:'Head',serif; font-weight:600; color:var(--head); margin:0; }
 button{ font-family:'Body',serif; }
+/* У Cormorant Garamond цифра "1" в старостильном начертании похожа на "I" —
+   принудительно включаем прямые (lining) цифры везде, где Head используется
+   для чисел, чтобы не путать с римскими. */
+h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
+  font-variant-numeric: lining-nums;
+  font-feature-settings: "lnum" 1, "pnum" 1;
+}
 
 #app{ min-height:100vh; padding-bottom:84px; }
 .loading{ min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; color:var(--accent); }

@@ -54,7 +54,7 @@ function octagramSVG(points, destiny) {
     badges += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR - 4}" fill="none" stroke="var(--border)" stroke-width="1"/>`;
     const numLen = String(num).length;
     const numFontSize = numLen >= 4 ? 15 : numLen === 3 ? 19 : numLen === 2 ? 24 : 30;
-    badges += `<text x="${x.toFixed(1)}" y="${(y + (numFontSize <= 20 ? 6 : 8)).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="${numFontSize}" fill="var(--head)">${num}</text>`;
+    badges += `<text x="${x.toFixed(1)}" y="${(y + (numFontSize <= 20 ? 6 : 8)).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="${numFontSize}" fill="var(--head)" style="font-variant-numeric:lining-nums">${num}</text>`;
     // длинные подписи (2 слова) переносим на две строки, иначе текст обрезается
     // краем viewBox у крайних левой/правой точек октаграммы
     const words = short.toUpperCase().split(" ");
@@ -77,7 +77,7 @@ function octagramSVG(points, destiny) {
     <circle cx="${cx}" cy="${cy}" r="46" fill="var(--bg2)" stroke="url(#gold)" stroke-width="2.2"/>
     <circle cx="${cx}" cy="${cy}" r="40" fill="none" stroke="var(--border)" stroke-width="1"/>
     <text x="${cx}" y="${cy - 14}" text-anchor="middle" font-family="Body" font-size="9.5" letter-spacing="2.6" fill="var(--accent)">СУДЬБА</text>
-    <text x="${cx}" y="${cy + 24}" text-anchor="middle" font-family="Head" font-size="62" fill="var(--head)">${destiny}</text>
+    <text x="${cx}" y="${cy + 24}" text-anchor="middle" font-family="Head" font-size="62" fill="var(--head)" style="font-variant-numeric:lining-nums">${destiny}</text>
     ${badges}${labels}
   </svg>`;
 }
