@@ -207,6 +207,15 @@ def calculate_personal_month(date_str: str, year: int | None = None,
     py = calculate_personal_year(date_str, year)
     return _reduce_to_single(py + _digit_sum(month))
 
+def calculate_personal_day(date_str: str, on_date: "_date_type | None" = None) -> int:
+    """Число личного дня = личный месяц + число дня (сегодня, если on_date
+    не передан). Используется для точечных уведомлений premium — не спамим
+    каждый день, шлём только когда личный день совпадает с числом судьбы
+    ('день силы')."""
+    d = on_date or datetime.now().date()
+    pm = calculate_personal_month(date_str, year=d.year, month=d.month)
+    return _reduce_to_single(pm + _digit_sum(d.day))
+
 _RU_MONTHS_NOM = (
     "январь", "февраль", "март", "апрель", "май", "июнь",
     "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",

@@ -5,6 +5,7 @@ import logging
 import asyncio
 import json
 import random
+import secrets
 from datetime import datetime, date, timedelta, timezone
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command, StateFilter
@@ -36,7 +37,7 @@ from ai import ask_ai, is_rude, rude_reply
 from pdf import generate_pdf
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date,
-    build_numerology_context, calculate_personal_month,
+    build_numerology_context, calculate_personal_month, calculate_personal_day,
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
@@ -44,7 +45,7 @@ from keyboards import (
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
     notif_off_menu, admin_menu, balance_pay_menu,
-    premium_subscribe_menu, premium_active_menu,
+    premium_subscribe_menu, premium_active_menu, gift_sections_menu,
 )
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
@@ -489,6 +490,25 @@ async def start(message: Message, state: FSMContext):
         if key in user.get("purchased", []):
             await _resume_purchased_from_start(message, state, user, key)
             return
+
+    # Подарок: /start gift_<code> — кто-то прислал ссылку на купленный для
+    # неё разбор. Забираем атомарно (redeem_gift), чтобы повторный переход
+    # по той же ссылке или гонка из двух кликов не выдали разбор дважды.
+    if len(args) > 1 and args[1].startswith("gift_"):
+        code = args[1][len("gift_"):]
+        key = await db.redeem_gift(code, message.from_user.id)
+        if key is None:
+            await message.answer(
+                "🎁 Эта ссылка уже использована или недействительна.",
+                reply_markup=main_menu_for(message.from_user.id, user)
+            )
+            return
+        if key not in user.get("purchased", []):
+            user["purchased"].append(key)
+        title = PAID_RAZBORY.get(key, "разбор")
+        await message.answer(f"🎁 Тебе подарили «{title}»! Забираем 🌸")
+        await _resume_purchased_from_start(message, state, user, key)
+        return
 
     await message.answer("🔮 Выбери свой разбор 👇", reply_markup=main_menu_for(message.from_user.id, user))
 
@@ -1201,6 +1221,45 @@ async def stars_buy_handler(callback: CallbackQuery, state: FSMContext):
         await send_invoice(callback.message.chat.id, title, desc, key, price)
     await callback.answer()
 
+@dp.callback_query(F.data == "gift_start")
+async def gift_start_cb(callback: CallbackQuery):
+    await callback.message.answer(
+        "🎁 Выбери разбор, который хочешь подарить — пришлю тебе ссылку, "
+        "которую перешлёшь подруге. Она сама выберет дату и заберёт подарок.",
+        reply_markup=gift_sections_menu()
+    )
+    await callback.answer()
+
+_GIFT_SECTION_MENUS = {
+    "destiny": section_destiny_menu,
+    "money":   section_money_menu,
+    "love":    section_love_menu,
+    "health":  section_health_menu,
+    "past":    section_past_menu,
+}
+
+@dp.callback_query(F.data.startswith("giftsection_"))
+async def gift_section_cb(callback: CallbackQuery):
+    name = callback.data.replace("giftsection_", "")
+    menu_fn = _GIFT_SECTION_MENUS.get(name)
+    if not menu_fn:
+        await callback.answer()
+        return
+    await callback.message.answer("🎁 Выбери разбор для подарка:", reply_markup=menu_fn(gift=True))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("gift_") & ~F.data.in_({"gift_start"}))
+async def gift_buy_handler(callback: CallbackQuery):
+    key = callback.data.replace("gift_", "")
+    if key not in PAID_RAZBORY:
+        await callback.answer()
+        return
+    price = PRICES.get(key, 49)
+    title = PAID_RAZBORY[key]
+    desc  = f"Подарок: {RAZBOR_DESCRIPTIONS.get(key, title)}"
+    await send_invoice(callback.message.chat.id, f"🎁 {title}", desc, f"gift_{key}", price)
+    await callback.answer()
+
 @dp.callback_query(F.data.startswith("balance_buy_"))
 async def balance_buy_handler(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("balance_buy_", "")
@@ -1267,6 +1326,26 @@ async def successful_payment(message: Message, state: FSMContext):
             )
         else:
             await message.answer(f"💎 Премиум продлён до {until.strftime('%d.%m.%Y')} — спасибо, что со мной 🌸")
+        await state.clear()
+        return
+
+    # ── ПОДАРОК РАЗБОРА ──────────────────────────────────────────────────
+    if payload.startswith("gift_"):
+        key = payload.removeprefix("gift_")
+        if key not in PAID_RAZBORY:
+            logging.warning(f"gift payment с неизвестным key={key!r} от user {message.from_user.id}")
+            await message.answer("❌ Что-то пошло не так с оплатой — напиши в поддержку.")
+            await state.clear()
+            return
+        code = secrets.token_hex(4)
+        await db.create_gift(code, key, message.from_user.id)
+        bot_info = await bot.get_me()
+        gift_link = f"https://t.me/{bot_info.username}?start=gift_{code}"
+        title = PAID_RAZBORY[key]
+        await message.answer(
+            f"🎁 Готово! «{title}» ждёт получателя.\n\n"
+            f"Перешли эту ссылку подруге — она откроет бота и заберёт подарок:\n{gift_link}",
+        )
         await state.clear()
         return
 
@@ -2190,6 +2269,22 @@ def _premium_day_message(name: str, destiny_number: int, day_number: int, birth_
         pm_line = ""
     return base + pm_line + "\n🔮 Все разборы открыты — /menu"
 
+def _power_day_message(name: str, destiny_number: int) -> str:
+    """Точечное уведомление premium — шлём вместо обычного утреннего поста
+    только когда личный день совпадает с числом судьбы ('день силы',
+    статистически 2-4 раза в месяц). Редкость важнее частоты — так
+    сообщение воспринимается как ценный сигнал, а не рассылка."""
+    return (
+        f"⚡ {name}, сегодня твой день силы!\n\n"
+        f"Личное число дня совпадает с твоим числом судьбы — {destiny_number}. "
+        "Такое бывает всего пару раз в месяц: энергия дня и твоя внутренняя "
+        "энергия звучат в унисон, поэтому всё, что ты начнёшь или решишь "
+        "сегодня, пойдёт легче и с меньшим сопротивлением.\n\n"
+        "Используй этот день для того, что откладывала — важного разговора, "
+        "решения, первого шага. Момент редкий, не трать его на мелочи 🌸\n\n"
+        "💎 Все разборы открыты — /menu"
+    )
+
 async def send_daily_horoscope():
     """UTC 8:00 = Москва 11:00 — утренняя рассылка с нумерологией дня."""
     while True:
@@ -2212,7 +2307,9 @@ async def send_daily_horoscope():
                     name    = row['first_name'] or "дорогая"
                     number  = row['destiny_number']
                     premium = row['premium_until'] is not None and row['premium_until'] > now_naive
-                    if premium:
+                    if premium and calculate_personal_day(row['birth_date'], today) == number:
+                        text = _power_day_message(name, number)
+                    elif premium:
                         text = _premium_day_message(name, number, day_number, row['birth_date'])
                     else:
                         text = _day_message(name, number, day_number)

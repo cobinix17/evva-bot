@@ -72,6 +72,10 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         callback_data="ref_promo"
     )])
     buttons.append([InlineKeyboardButton(
+        text="🎁 Подарить разбор подруге",
+        callback_data="gift_start"
+    )])
+    buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы (за рубли)",
         url=CONTACT_URL
     )])
@@ -122,23 +126,26 @@ def free_choose_menu() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None) -> InlineKeyboardMarkup:
+def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool = False) -> InlineKeyboardMarkup:
     """Строит меню раздела из (ключ, 'эмодзи Название'), а цену берёт
     ЖИВЬЁМ из config.PRICES — раньше цена дублировалась текстом в каждом
-    пункте вручную и могла разъехаться с той, что реально списывается."""
+    пункте вручную и могла разъехаться с той, что реально списывается.
+    gift=True — та же структура, но callback ведёт в подарочную покупку
+    (gift_{key}) вместо обычной (buy_{key}), для /gift-флоу."""
     purchased = user.get("purchased", []) if user else []
+    prefix_cb = "gift_" if gift else "buy_"
     buttons   = []
     for key, emoji_title in keys_with_emoji:
-        prefix = "✅ " if key in purchased else ""
+        prefix = ("✅ " if key in purchased else "") if not gift else ""
         price  = PRICES.get(key, 49)
         buttons.append([InlineKeyboardButton(
             text=f"{prefix}{emoji_title} — {price} ⭐",
-            callback_data=f"buy_{key}"
+            callback_data=f"{prefix_cb}{key}"
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def section_destiny_menu(user=None) -> InlineKeyboardMarkup:
+def section_destiny_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
     items = [
         ("matrix_full",    "🔮 Матрица судьбы"),
         ("mission",        "🌟 Предназначение и миссия"),
@@ -148,9 +155,9 @@ def section_destiny_menu(user=None) -> InlineKeyboardMarkup:
         ("karma",          "🔴 Кармический долг"),
         ("forecast_2026",  "🗓 Прогноз на 2026 год"),
     ]
-    return _section_menu(items, user)
+    return _section_menu(items, user, gift)
 
-def section_money_menu(user=None) -> InlineKeyboardMarkup:
+def section_money_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
     items = [
         ("finance",       "💹 Финансовый прогноз"),
         ("wealth_blocks", "🚧 Блоки богатства"),
@@ -162,9 +169,9 @@ def section_money_menu(user=None) -> InlineKeyboardMarkup:
         ("money",         "💰 Денежный код"),
         ("days",          "🌙 Сильные и слабые дни"),
     ]
-    return _section_menu(items, user)
+    return _section_menu(items, user, gift)
 
-def section_love_menu(user=None) -> InlineKeyboardMarkup:
+def section_love_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
     items = [
         ("compat",   "💑 Совместимость двух людей"),
         ("when",     "💘 Когда встретишь того самого"),
@@ -176,9 +183,9 @@ def section_love_menu(user=None) -> InlineKeyboardMarkup:
         ("lonely",   "😔 Почему ты одинока"),
         ("breakup",  "💔 Разбор после расставания"),
     ]
-    return _section_menu(items, user)
+    return _section_menu(items, user, gift)
 
-def section_health_menu(user=None) -> InlineKeyboardMarkup:
+def section_health_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
     items = [
         ("health_code",   "💚 Код здоровья"),
         ("energy_drain",  "⚡ Что крадёт энергию"),
@@ -186,16 +193,28 @@ def section_health_menu(user=None) -> InlineKeyboardMarkup:
         ("stress_number", "😤 Число стресса"),
         ("intuition",     "🔮 Интуиция и внутренний голос"),
     ]
-    return _section_menu(items, user)
+    return _section_menu(items, user, gift)
 
-def section_past_menu(user=None) -> InlineKeyboardMarkup:
+def section_past_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
     items = [
         ("past_life",     "📜 Прошлые жизни"),
         ("future_portal", "🌟 Прогноз на 3 года"),
         ("turning_point", "🔄 Поворотные точки судьбы"),
         ("ancestor_code", "🌳 Родовой код"),
     ]
-    return _section_menu(items, user)
+    return _section_menu(items, user, gift)
+
+def gift_sections_menu() -> InlineKeyboardMarkup:
+    """Выбор раздела для подарка — те же 5 тем, что и в обычном меню,
+    но каждая кнопка ведёт в giftsection_* вместо section_*."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Судьба и личность",  callback_data="giftsection_destiny")],
+        [InlineKeyboardButton(text="💰 Деньги и карьера",   callback_data="giftsection_money")],
+        [InlineKeyboardButton(text="💑 Любовь и отношения", callback_data="giftsection_love")],
+        [InlineKeyboardButton(text="🌙 Здоровье и энергия", callback_data="giftsection_health")],
+        [InlineKeyboardButton(text="✨ Прошлое и будущее",  callback_data="giftsection_past")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")],
+    ])
 
 def my_readings_menu(user: dict) -> InlineKeyboardMarkup:
     purchased = user.get("purchased", [])

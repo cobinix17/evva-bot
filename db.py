@@ -115,6 +115,16 @@ async def init_db(database_url: str):
     await db_pool.execute('''
         ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'idea'
     ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS gifts (
+            code         TEXT PRIMARY KEY,
+            razbor_key   TEXT   NOT NULL,
+            from_user_id BIGINT NOT NULL,
+            redeemed_by  BIGINT,
+            created_at   TIMESTAMP DEFAULT NOW(),
+            redeemed_at  TIMESTAMP
+        )
+    ''')
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -206,6 +216,30 @@ async def save_user(user_id: int, user: dict):
         user.get('referred_by'),
         user_id
     )
+
+# ─── ПОДАРКИ ─────────────────────────────────────────────────────────────────
+async def create_gift(code: str, razbor_key: str, from_user_id: int):
+    await db_pool.execute(
+        'INSERT INTO gifts (code, razbor_key, from_user_id) VALUES ($1, $2, $3)',
+        code, razbor_key, from_user_id
+    )
+
+async def get_gift(code: str) -> dict | None:
+    row = await db_pool.fetchrow('SELECT * FROM gifts WHERE code = $1', code)
+    return dict(row) if row else None
+
+async def redeem_gift(code: str, user_id: int) -> str | None:
+    """Атомарно отмечает подарок забранным — тот же guard-в-WHERE паттерн:
+    если redeemed_by уже не NULL, повторный клик по той же ссылке ничего
+    не сделает. Возвращает razbor_key при успехе, None если код не найден
+    или уже использован."""
+    row = await db_pool.fetchrow(
+        '''UPDATE gifts SET redeemed_by = $1, redeemed_at = NOW()
+           WHERE code = $2 AND redeemed_by IS NULL
+           RETURNING razbor_key''',
+        user_id, code
+    )
+    return row['razbor_key'] if row else None
 
 # ─── КУПОНЫ ──────────────────────────────────────────────────────────────────
 async def create_coupon(code: str, max_uses: int = 1) -> str:
