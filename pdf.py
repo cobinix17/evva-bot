@@ -16,6 +16,7 @@ import os
 import re
 import io
 import math
+import time
 import logging
 from datetime import datetime
 from fpdf import FPDF
@@ -431,8 +432,13 @@ def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int
     ref_bonus_percent — процент реферального бонуса для текста на CTA-странице
     (реальное значение приходит из config.REF_BONUS_PERCENT через bot.py, чтобы
     pdf.py не зависел от config.py). См. docstring модуля про основной/резервный рендер."""
+    t0 = time.perf_counter()
     try:
-        return _generate_pdf_weasy(title, text, user_name, destiny_number, birth_date, upsells, ref_bonus_percent)
+        result = _generate_pdf_weasy(title, text, user_name, destiny_number, birth_date, upsells, ref_bonus_percent)
+        logging.info(f"PDF (weasy) сгенерирован за {time.perf_counter()-t0:.2f}с")
+        return result
     except Exception as e:
-        logging.warning(f"WeasyPrint PDF failed ({e}), falling back to fpdf")
-        return _generate_pdf_fpdf(title, text, user_name=user_name, destiny_number=destiny_number)
+        logging.warning(f"WeasyPrint PDF failed ({e}), falling back to fpdf", exc_info=True)
+        result = _generate_pdf_fpdf(title, text, user_name=user_name, destiny_number=destiny_number)
+        logging.info(f"PDF (fpdf fallback) сгенерирован за {time.perf_counter()-t0:.2f}с")
+        return result

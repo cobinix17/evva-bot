@@ -196,7 +196,8 @@ async def check_subscription(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(CHANNEL, user_id)
         return member.status in ("member", "administrator", "creator")
-    except Exception:
+    except Exception as e:
+        logging.warning(f"check_subscription({user_id}) failed: {e}")
         return False
 
 def utc_now() -> datetime:

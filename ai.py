@@ -4,10 +4,23 @@
 # постобработки текста — так модуль можно использовать независимо.
 import os
 import re
+import time
 import logging
 import asyncio
 from datetime import datetime
 import httpx
+
+# Один клиент на весь процесс вместо создания httpx.AsyncClient() на каждый
+# запрос — экономит TLS/TCP-хендшейк на каждом вызове провайдера (Groq
+# особенно, там до 6 запросов за один ask_ai). Таймаут задаётся per-request
+# у каждого вызова, поэтому дефолтный клиентский не нужен.
+_http_client: httpx.AsyncClient | None = None
+
+def _client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient()
+    return _http_client
 
 _RU_MONTHS = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -471,19 +484,19 @@ async def _try_cerebras(prompt: str) -> str | None:
         "max_tokens":  8000,
         "temperature": 0.8,
     }
+    t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(url, headers=headers, json=data, timeout=90)
-            if r.status_code == 429:
-                logging.warning("Cerebras 429 rate limit"); return None
-            r.raise_for_status()
-            msg    = r.json()["choices"][0]["message"]
-            raw    = msg.get("content") or ""
-            if not raw:
-                logging.warning("Cerebras — пустой content в ответе"); return None
-            result = _finalize(raw, "Cerebras")
-            if result: logging.info("Cerebras ответил успешно")
-            return result
+        r = await _client().post(url, headers=headers, json=data, timeout=90)
+        if r.status_code == 429:
+            logging.warning("Cerebras 429 rate limit"); return None
+        r.raise_for_status()
+        msg    = r.json()["choices"][0]["message"]
+        raw    = msg.get("content") or ""
+        if not raw:
+            logging.warning("Cerebras — пустой content в ответе"); return None
+        result = await asyncio.to_thread(_finalize, raw, "Cerebras")
+        if result: logging.info(f"Cerebras ответил успешно за {time.perf_counter()-t0:.1f}с")
+        return result
     except Exception as e:
         logging.warning(f"Cerebras failed: {e}"); return None
 
@@ -494,6 +507,7 @@ async def _try_groq(prompt: str) -> str | None:
         return None
     url     = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    t0 = time.perf_counter()
     for model in GROQ_MODELS:
         for attempt in range(2):
             try:
@@ -505,20 +519,19 @@ async def _try_groq(prompt: str) -> str | None:
                     ],
                     "max_tokens": 6000,
                 }
-                async with httpx.AsyncClient() as client:
-                    r = await client.post(url, headers=headers, json=data, timeout=45)
-                    if r.status_code == 429:
-                        retry_after = int(r.headers.get("retry-after", 5))
-                        logging.warning(f"Groq {model} 429, retry-after={retry_after}s")
-                        await asyncio.sleep(min(retry_after, 10)); break
-                    if r.status_code == 400:
-                        logging.warning(f"Groq {model} 400: {r.text[:300]}"); break
-                    r.raise_for_status()
-                    raw    = r.json()["choices"][0]["message"]["content"]
-                    result = _finalize(raw, f"Groq {model}")
-                    if result is None: continue
-                    logging.info(f"Groq {model} ответил успешно")
-                    return result
+                r = await _client().post(url, headers=headers, json=data, timeout=45)
+                if r.status_code == 429:
+                    retry_after = int(r.headers.get("retry-after", 5))
+                    logging.warning(f"Groq {model} 429, retry-after={retry_after}s")
+                    await asyncio.sleep(min(retry_after, 10)); break
+                if r.status_code == 400:
+                    logging.warning(f"Groq {model} 400: {r.text[:300]}"); break
+                r.raise_for_status()
+                raw    = r.json()["choices"][0]["message"]["content"]
+                result = await asyncio.to_thread(_finalize, raw, f"Groq {model}")
+                if result is None: continue
+                logging.info(f"Groq {model} ответил успешно за {time.perf_counter()-t0:.1f}с")
+                return result
             except Exception as e:
                 logging.warning(f"Groq {model} attempt {attempt+1} failed: {e}"); break
     return None
@@ -545,20 +558,20 @@ async def _try_openrouter(prompt: str) -> str | None:
         "max_tokens":  8192,
         "temperature": 0.7,
     }
+    t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(url, headers=headers, json=data, timeout=60)
-            if r.status_code == 429:
-                logging.warning("OpenRouter 429 rate limit"); return None
-            if r.status_code == 400:
-                logging.warning(f"OpenRouter 400: {r.text[:500]}"); return None
-            r.raise_for_status()
-            body       = r.json()
-            raw        = body["choices"][0]["message"]["content"]
-            model_used = body.get("model", "unknown")
-            result     = _finalize(raw, "OpenRouter")
-            if result: logging.info(f"OpenRouter ответил успешно (модель: {model_used})")
-            return result
+        r = await _client().post(url, headers=headers, json=data, timeout=60)
+        if r.status_code == 429:
+            logging.warning("OpenRouter 429 rate limit"); return None
+        if r.status_code == 400:
+            logging.warning(f"OpenRouter 400: {r.text[:500]}"); return None
+        r.raise_for_status()
+        body       = r.json()
+        raw        = body["choices"][0]["message"]["content"]
+        model_used = body.get("model", "unknown")
+        result     = await asyncio.to_thread(_finalize, raw, "OpenRouter")
+        if result: logging.info(f"OpenRouter ответил успешно за {time.perf_counter()-t0:.1f}с (модель: {model_used})")
+        return result
     except Exception as e:
         logging.warning(f"OpenRouter failed: {e}"); return None
 
@@ -580,6 +593,7 @@ async def ask_ai(prompt: str) -> str:
     как сдаться — иногда у той же модели со второй попытки получается
     полный ответ. Если все варианты неполные — отдаётся лучший доступный
     результат, а не отказ."""
+    t0 = time.perf_counter()
     providers = [
         ("OpenRouter", _try_openrouter),
         ("Cerebras",   _try_cerebras),
@@ -593,6 +607,7 @@ async def ask_ai(prompt: str) -> str:
             if not result:
                 break  # этот провайдер недоступен вовсе — переходим к следующему
             if is_structure_complete(prompt, result) and ends_properly(result):
+                logging.info(f"ask_ai завершён за {time.perf_counter()-t0:.1f}с ({name})")
                 return result
             reason = "оборвался на полуслове" if is_structure_complete(prompt, result) else "неполный по структуре"
             logging.warning(
@@ -603,6 +618,7 @@ async def ask_ai(prompt: str) -> str:
         # переходим к следующему провайдеру во внешнем цикле
 
     if last_incomplete:
-        logging.warning("Все провайдеры дали неполный ответ — отдаю последний доступный результат")
+        logging.warning(f"Все провайдеры дали неполный ответ за {time.perf_counter()-t0:.1f}с — отдаю последний доступный результат")
         return last_incomplete
+    logging.error(f"Все провайдеры недоступны, ask_ai сдался за {time.perf_counter()-t0:.1f}с")
     raise Exception("Все провайдеры недоступны или вернули иностранные символы")
