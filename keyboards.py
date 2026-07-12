@@ -101,17 +101,18 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Главное меню",      callback_data="show_menu")],
     ])
 
-def premium_subscribe_menu(invoice_url: str, rub_price: int | None = None) -> InlineKeyboardMarkup:
+def premium_subscribe_menu(invoice_url: str, rub_invoice_url: str | None = None,
+                            rub_price: int | None = None) -> InlineKeyboardMarkup:
     """Кнопка оплаты подписки — ведёт на invoice-ссылку с subscription_period,
     Telegram сам оформит рекуррентное списание раз в месяц. Вторая кнопка
-    (если передан rub_price) — оплата рублями через ЮKassa: там это РАЗОВЫЙ
-    платёж на месяц, не автопродление (в отличие от Stars-подписки), поэтому
-    подписан отдельным текстом, а не 'подпиской'."""
+    (если передан rub_invoice_url) — оплата рублями через ЮKassa, подключённую
+    как Telegram-провайдер: там это РАЗОВЫЙ платёж на месяц, не автопродление
+    (в отличие от Stars-подписки), поэтому подписан отдельным текстом."""
     buttons = [[InlineKeyboardButton(text="💎 Оформить за 399 ⭐/мес", url=invoice_url)]]
-    if rub_price:
+    if rub_invoice_url:
         buttons.append([InlineKeyboardButton(
             text=f"💳 Оплатить {rub_price}₽ (на месяц)",
-            callback_data="premium_pay_rub"
+            url=rub_invoice_url
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
