@@ -38,6 +38,7 @@ from pdf import generate_pdf
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date,
     build_numerology_context, calculate_personal_month, calculate_personal_day,
+    calculate_matrix_full,
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
@@ -1449,10 +1450,11 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             await db.save_reading_text(user_id, waiting, title, answer, date_str)
 
         try:
+            matrix_data = calculate_matrix_full(date_str) if waiting == "matrix_full" else None
             pdf_bytes = await _generate_pdf_async(
                 title, answer, user_name=name, destiny_number=number,
                 birth_date=date_str, upsells=_build_upsells(waiting, user),
-                ref_bonus_percent=REF_BONUS_PERCENT,
+                ref_bonus_percent=REF_BONUS_PERCENT, matrix_data=matrix_data,
             )
             pdf_file = BufferedInputFile(pdf_bytes, filename=f"{title}.pdf")
             await bot.send_document(

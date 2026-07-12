@@ -263,6 +263,41 @@ def calculate_challenges(date_str: str) -> list[int]:
     c3 = abs(c1 - c2)
     return [c1, c2, c3]
 
+# ─── ВИЗУАЛЬНАЯ МАТРИЦА СУДЬБЫ (метод Ладини, для PDF) ───────────────────────
+# Разные школы (Ладини, Гладков и последователи) сходятся в базовых 4 точках,
+# но расходятся в трактовке производных точек по жизненным сферам — поэтому
+# берём один консистентный вариант расчёта и НЕ привязываем буквы к
+# конкретным сферам (деньги/здоровье и т.п.), только к слою расчёта. Текстовую
+# трактовку по-прежнему даёт сам промпт matrix_full, схема — просто визуал.
+
+def calculate_matrix_full(date_str: str) -> dict:
+    """Полная матрица судьбы — 12 точек хешаграммы (метод Ладини), сведённых
+    в диапазон 1-22 (Старшие Арканы). Слой 1 — из даты рождения напрямую,
+    слои 2-3 — производные суммы соседних точек по кругу."""
+    parts = date_str.strip().split(".")
+    d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+
+    a = _reduce_to_arcana(d)
+    b = _reduce_to_arcana(m)
+    v = _reduce_to_arcana(_digit_sum(y))
+    g = _reduce_to_arcana(a + b + v)
+
+    dd = _reduce_to_arcana(a + b)
+    e  = _reduce_to_arcana(b + v)
+    zh = _reduce_to_arcana(v + g)
+    z  = _reduce_to_arcana(g + a)
+
+    i  = _reduce_to_arcana(dd + e)
+    k  = _reduce_to_arcana(e + zh)
+    l  = _reduce_to_arcana(zh + z)
+    m_ = _reduce_to_arcana(z + dd)
+
+    return {
+        "a": a, "b": b, "v": v, "g": g,
+        "d": dd, "e": e, "zh": zh, "z": z,
+        "i": i, "k": k, "l": l, "m": m_,
+    }
+
 # ─── ПОЗИЦИИ В МАТРИЦЕ (упрощённая схема для контекста) ──────────────────────
 
 def _matrix_positions(date_str: str) -> dict:
