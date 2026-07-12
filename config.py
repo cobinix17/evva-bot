@@ -142,7 +142,7 @@ PREMIUM_PERIOD        = 2592000    # 30*24*60*60 — обязательное з
 # Показывается в оффере как стимул оформить пораньше. Когда дата наступит —
 # просто подними PREMIUM_PRICE и убери/обнови этот блок.
 PREMIUM_PRICE_INCREASE      = 499
-PREMIUM_PRICE_INCREASE_DATE = "1 августа 2026"
+PREMIUM_PRICE_INCREASE_DATE = "1 октября 2026"  # полный запуск конец июля — весь август и сентябрь по старой цене
 PREMIUM_DAILY_LIMIT   = 5          # сколько НОВЫХ разборов открывать в день
 PREMIUM_MONTHLY_LIMIT = 30         # сколько НОВЫХ разборов открывать за месяц подписки
 PREMIUM_PAYLOAD       = "premium_sub"
