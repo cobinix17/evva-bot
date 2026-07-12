@@ -80,7 +80,7 @@ _TEMPLATE_NAME = "pdf_template.html"
 
 def _generate_pdf_weasy(title: str, text: str, user_name: str, destiny_number: int | None,
                          birth_date: str | None, upsells: list[dict] | None,
-                         ref_bonus_percent: int = 25, matrix_data: dict | None = None) -> bytes:
+                         ref_bonus_percent: int = 25) -> bytes:
     from jinja2 import Environment, FileSystemLoader
     from weasyprint import HTML
 
@@ -107,7 +107,6 @@ def _generate_pdf_weasy(title: str, text: str, user_name: str, destiny_number: i
         upsells        = clean_upsells,
         bot_handle     = "@nnumerology_bot",
         ref_bonus_percent = ref_bonus_percent,
-        matrix_data    = matrix_data,
     )
     return HTML(string=html_str, base_url=_TEMPLATE_DIR).write_pdf()
 
@@ -426,20 +425,16 @@ def _draw_header_band(pdf: FPDF, text: str, font_name: str):
 # ── ТОЧКА ВХОДА ────────────────────────────────────────────────────────────────
 def generate_pdf(title: str, text: str, user_name: str = "", destiny_number: int | None = None,
                   birth_date: str | None = None, upsells: list[dict] | None = None,
-                  ref_bonus_percent: int = 25, matrix_data: dict | None = None) -> bytes:
+                  ref_bonus_percent: int = 25) -> bytes:
     """Генерирует PDF разбора. birth_date и upsells — необязательные: если дата
     рождения передана, на второй странице появляется карта чисел; если передан
     список апселлов ([{'title','desc','price'}, ...]) — добавляется страница CTA.
     ref_bonus_percent — процент реферального бонуса для текста на CTA-странице
     (реальное значение приходит из config.REF_BONUS_PERCENT через bot.py, чтобы
-    pdf.py не зависел от config.py). matrix_data — схема "Матрица судьбы"
-    (numerology.calculate_matrix_full), рисуется только в fallback-нейтральном
-    WeasyPrint-рендере — во fpdf2-фолбэке схему не рисуем, только текст (см.
-    docstring модуля про основной/резервный рендер), поэтому параметр туда не
-    прокидывается."""
+    pdf.py не зависел от config.py). См. docstring модуля про основной/резервный рендер."""
     t0 = time.perf_counter()
     try:
-        result = _generate_pdf_weasy(title, text, user_name, destiny_number, birth_date, upsells, ref_bonus_percent, matrix_data)
+        result = _generate_pdf_weasy(title, text, user_name, destiny_number, birth_date, upsells, ref_bonus_percent)
         logging.info(f"PDF (weasy) сгенерирован за {time.perf_counter()-t0:.2f}с")
         return result
     except Exception as e:
