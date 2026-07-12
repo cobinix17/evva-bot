@@ -125,6 +125,15 @@ async def init_db(database_url: str):
             redeemed_at  TIMESTAMP
         )
     ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS yookassa_payments (
+            payment_id TEXT PRIMARY KEY,
+            user_id    BIGINT NOT NULL,
+            payload    TEXT   NOT NULL,
+            amount_rub INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    ''')
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -240,6 +249,18 @@ async def redeem_gift(code: str, user_id: int) -> str | None:
         user_id, code
     )
     return row['razbor_key'] if row else None
+
+async def mark_yookassa_payment(payment_id: str, user_id: int, payload: str, amount_rub: int) -> bool:
+    """INSERT ... ON CONFLICT DO NOTHING — если этот payment_id уже обработан
+    (ЮKassa шлёт вебхук с повтором, пока не получит 200), возвращает False,
+    и вызывающий код не выдаёт премиум/разбор второй раз."""
+    result = await db_pool.execute(
+        '''INSERT INTO yookassa_payments (payment_id, user_id, payload, amount_rub)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (payment_id) DO NOTHING''',
+        payment_id, user_id, payload, amount_rub
+    )
+    return result == "INSERT 0 1"
 
 # ─── КУПОНЫ ──────────────────────────────────────────────────────────────────
 async def create_coupon(code: str, max_uses: int = 1) -> str:

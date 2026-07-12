@@ -32,6 +32,7 @@ from config import (
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT,
     PREMIUM_PRICE_INCREASE, PREMIUM_PRICE_INCREASE_DATE,
+    YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB,
 )
 from ai import ask_ai, is_rude, rude_reply
 from pdf import generate_pdf
@@ -1767,7 +1768,36 @@ async def _show_premium(target: Message, user: dict):
         logging.error(f"Premium invoice error: {e}", exc_info=True)
         await target.answer("❌ Не удалось открыть оплату — попробуй чуть позже 🙏")
         return
-    await target.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link))
+    await target.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link, PREMIUM_PRICE_RUB if YOOKASSA_SHOP_ID else None))
+
+@dp.callback_query(F.data == "premium_pay_rub")
+async def premium_pay_rub_cb(callback: CallbackQuery):
+    """Разовая оплата премиума рублями через ЮKassa (в отличие от Stars — не
+    авто-подписка: через месяц пришлём напоминание продлить так же). Ссылку
+    создаём на лету под конкретного пользователя (payment привязан к
+    metadata.user_id), а не переиспользуем одну на всех."""
+    if not YOOKASSA_SHOP_ID:
+        await callback.answer("Оплата рублями временно недоступна", show_alert=True)
+        return
+    from yookassa_pay import create_payment
+    user_id = callback.from_user.id
+    bot_info = await bot.get_me()
+    try:
+        payment_id, url = await create_payment(
+            amount_rub=PREMIUM_PRICE_RUB,
+            description="Ева Премиум — месяц подписки",
+            return_url=f"https://t.me/{bot_info.username}",
+            metadata={"user_id": str(user_id), "payload": PREMIUM_PAYLOAD},
+        )
+    except Exception as e:
+        logging.error(f"YooKassa create_payment error: {e}", exc_info=True)
+        await callback.answer("❌ Не удалось создать оплату — попробуй чуть позже 🙏", show_alert=True)
+        return
+    await callback.message.answer(
+        f"💳 Оплати {PREMIUM_PRICE_RUB}₽ по ссылке — премиум активируется автоматически "
+        f"в течение минуты после оплаты:\n{url}"
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data == "premium_info")
 async def premium_info_cb(callback: CallbackQuery):
