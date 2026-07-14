@@ -32,7 +32,7 @@ from config import (
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT,
     PREMIUM_PRICE_INCREASE, PREMIUM_PRICE_INCREASE_DATE,
-    YOOKASSA_PROVIDER_TOKEN, PREMIUM_PRICE_RUB,
+    YOOKASSA_PROVIDER_TOKEN, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE,
 )
 from ai import ask_ai, is_rude, rude_reply
 from pdf import generate_pdf
@@ -45,7 +45,7 @@ from keyboards import (
     free_choose_menu, section_destiny_menu, section_money_menu,
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
-    notif_off_menu, admin_menu, balance_pay_menu,
+    notif_off_menu, admin_menu, balance_pay_menu, payment_choice_menu,
     premium_subscribe_menu, premium_active_menu, gift_sections_menu, profile_menu,
 )
 
@@ -1168,6 +1168,30 @@ async def send_invoice(chat_id, title, description, payload, amount):
         prices=[LabeledPrice(label=title, amount=amount)],
     )
 
+async def send_invoice_rub(chat_id, title, description, payload, price_rub):
+    """Оплата разбора рублями через ЮKassa, подключённую как Telegram-провайдер
+    (см. _create_premium_invoice_rub) — тот же принцип, но здесь как обычный
+    invoice-карточка в чате (send_invoice), а не ссылка. receipt в
+    provider_data обязателен для 54-ФЗ (фискальный чек), need_email — Telegram
+    сам спросит почту покупателя перед оплатой."""
+    receipt = {
+        "receipt": {
+            "items": [{
+                "description": title,
+                "quantity": "1.00",
+                "amount": {"value": f"{price_rub}.00", "currency": "RUB"},
+                "vat_code": 1,
+            }]
+        }
+    }
+    await bot.send_invoice(
+        chat_id=chat_id, title=title, description=description,
+        payload=payload, provider_token=YOOKASSA_PROVIDER_TOKEN, currency="RUB",
+        prices=[LabeledPrice(label=title, amount=price_rub * 100)],
+        need_email=True, send_email_to_provider=True,
+        provider_data=json.dumps(receipt),
+    )
+
 async def _start_date_flow(message: Message, state: FSMContext, user: dict, key: str, is_free: bool = False):
     """Общий переход к вводу даты(-ат) после того как разбор уже точно
     доступен пользователю (куплен, оплачен балансом, взят по купону/бесплатно).
@@ -1226,18 +1250,35 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
     if await _premium_unlock(callback, state, user, key):
         return
     if key in PAID_RAZBORY:
-        price   = PRICES.get(key, 49)
-        title   = PAID_RAZBORY[key]
-        balance = user.get("ref_balance", 0)
-        if balance >= price:
+        price     = PRICES.get(key, 49)
+        title     = PAID_RAZBORY[key]
+        balance   = user.get("ref_balance", 0)
+        price_rub = rub_price(price) if YOOKASSA_PROVIDER_TOKEN else None
+        if balance >= price or price_rub:
+            price_line = f"{price} ⭐" + (f" / {price_rub}₽" if price_rub else "")
             await callback.message.answer(
-                f"У тебя {balance} ⭐ на бонусном балансе — хватает на «{title}» ({price} ⭐).\n\n"
-                f"Как оплатить?",
-                reply_markup=balance_pay_menu(key, price)
+                f"«{title}» — {price_line}.\n\nКак оплатить?",
+                reply_markup=payment_choice_menu(key, price, price_rub, balance)
             )
         else:
             desc = RAZBOR_DESCRIPTIONS.get(key, title)
             await send_invoice(callback.message.chat.id, title, desc, key, price)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("rub_buy_"))
+async def rub_buy_handler(callback: CallbackQuery, state: FSMContext):
+    """Оплата разбора рублями через ЮKassa (Telegram-провайдер)."""
+    key  = callback.data.replace("rub_buy_", "")
+    user = await db.get_user(callback.from_user.id)
+    if key in user["purchased"]:
+        await _resume_already_purchased(callback, state, user, key)
+        return
+    if key in PAID_RAZBORY and YOOKASSA_PROVIDER_TOKEN:
+        price     = PRICES.get(key, 49)
+        price_rub = rub_price(price)
+        title     = PAID_RAZBORY[key]
+        desc      = RAZBOR_DESCRIPTIONS.get(key, title)
+        await send_invoice_rub(callback.message.chat.id, title, desc, key, price_rub)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("stars_buy_"))
@@ -1329,7 +1370,14 @@ async def successful_payment(message: Message, state: FSMContext):
     user    = await db.get_user(message.from_user.id)
     sp      = message.successful_payment
     payload = sp.invoice_payload
-    amount  = sp.total_amount  # в Stars (XTR) это целое число
+    # total_amount — минимальные единицы валюты: для Stars (XTR) это сами
+    # звёзды, для RUB — копейки. Реф-бонус считаем в звёздах-эквиваленте,
+    # иначе на рублёвых платежах бонус считался бы из копеек и был бы
+    # в сотни раз больше положенного.
+    if sp.currency == "RUB":
+        amount = round(sp.total_amount / 100 / STARS_TO_RUB_RATE)
+    else:
+        amount = sp.total_amount
 
     # ── ПРЕМИУМ-ПОДПИСКА (первая оплата и все ежемесячные продления) ──
     # Telegram присылает successful_payment и при оформлении, и при каждом

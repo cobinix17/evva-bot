@@ -150,9 +150,9 @@ PREMIUM_TITLE         = "💎 Ева Премиум"
 ASK_DAILY_LIMIT       = 10         # сколько вопросов Еве премиум может задать в день
 FOLLOWUP_LIMIT        = 3          # бесплатных уточняющих вопросов по КАЖДОМУ купленному разбору
 
-# ─── ЮKASSA ЧЕРЕЗ TELEGRAM PAYMENTS (оплата рублями, пока только премиум) ────
+# ─── ЮKASSA ЧЕРЕЗ TELEGRAM PAYMENTS (оплата рублями) ─────────────────────────
 # Подключено через BotFather (Payments → Connect ЮKassa), НЕ напрямую через
-# API ЮKassa — значит платёж идёт тем же путём, что и Stars: create_invoice_link
+# API ЮKassa — значит платёж идёт тем же путём, что и Stars: send_invoice
 # + тот же successful_payment хендлер. Никакого отдельного вебхука не нужно,
 # Telegram сам всё проверяет на своей стороне.
 import os as _os
@@ -160,8 +160,13 @@ YOOKASSA_PROVIDER_TOKEN = _os.getenv("YOOKASSA_PROVIDER_TOKEN", "")
 # Фиксированный курс ⭐→₽ — цены в рублях считаются из уже заданных цен в Stars,
 # чтобы не вести два независимых прайс-листа. При желании сделать вручную
 # заданные рублёвые цены — замени формулу на словарь.
-STARS_TO_RUB_RATE    = 1.6
-PREMIUM_PRICE_RUB    = round(PREMIUM_PRICE * STARS_TO_RUB_RATE / 10) * 10  # 399⭐ → 640₽
+STARS_TO_RUB_RATE = 1.6
+
+def rub_price(price_stars: int) -> int:
+    """Округляем до десятков рублей — ровные цифры выглядят опрятнее."""
+    return round(price_stars * STARS_TO_RUB_RATE / 10) * 10
+
+PREMIUM_PRICE_RUB = rub_price(PREMIUM_PRICE)  # 399⭐ → 640₽
 
 RAZBOR_DESCRIPTIONS = {
     "matrix_full":   "Полная картина личности: характер, таланты, деньги, любовь, карма и предназначение в одном разборе.",
