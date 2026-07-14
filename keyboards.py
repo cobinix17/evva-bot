@@ -53,14 +53,6 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
             callback_data="premium_info"
         )])
 
-    purchased = user.get("purchased", []) if user else []
-    if purchased:
-        count = len(purchased)
-        buttons.append([InlineKeyboardButton(
-            text=f"📚 Мои разборы ({count})",
-            callback_data="my_readings"
-        )])
-
     buttons.append([InlineKeyboardButton(text="── Выбери тему ──", callback_data="noop")])
     buttons.append([InlineKeyboardButton(text="🔮 Судьба и личность",    callback_data="section_destiny")])
     buttons.append([InlineKeyboardButton(text="💰 Деньги и карьера",     callback_data="section_money")])
@@ -97,19 +89,27 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Главное меню",      callback_data="show_menu")],
     ])
 
-def profile_menu(notifications_on: bool) -> InlineKeyboardMarkup:
+def profile_menu(notifications_on: bool, purchased_count: int = 0) -> InlineKeyboardMarkup:
     """Единая точка входа во всё, что раньше было раскидано по главному меню
-    и отдельным командам: рефералка, промокод, подарок, имя, уведомления."""
+    и отдельным командам: мои разборы, рефералка, промокод, подарок, имя,
+    уведомления."""
     notif_text = "🔕 Отключить уведомления" if notifications_on else "🔔 Включить уведомления"
     notif_cb   = "notif_off" if notifications_on else "notif_on"
-    return InlineKeyboardMarkup(inline_keyboard=[
+    buttons = []
+    if purchased_count:
+        buttons.append([InlineKeyboardButton(
+            text=f"📚 Мои разборы ({purchased_count})",
+            callback_data="my_readings"
+        )])
+    buttons += [
         [InlineKeyboardButton(text="👥 Реферальная ссылка", callback_data="ref_promo")],
         [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="promo_start")],
         [InlineKeyboardButton(text="🎁 Подарить разбор подруге", callback_data="gift_start")],
         [InlineKeyboardButton(text="✏️ Изменить имя", callback_data="name_start")],
         [InlineKeyboardButton(text=notif_text, callback_data=notif_cb)],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="show_menu")],
-    ])
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def premium_subscribe_menu(invoice_url: str, rub_invoice_url: str | None = None,
                             rub_price: int | None = None) -> InlineKeyboardMarkup:

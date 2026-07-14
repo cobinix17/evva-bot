@@ -2216,7 +2216,7 @@ async def _show_profile(target: Message, user: dict):
         f"✨ Кстати, в веб-кабинете (кнопка «🔮 Кабинет» внизу чата) есть "
         f"ежедневный бонус звёзд — загляни, если ещё не пробовала."
     )
-    await target.answer(text, reply_markup=profile_menu(notif_on))
+    await target.answer(text, reply_markup=profile_menu(notif_on, len(user.get("purchased", []))))
 
 @dp.message(Command("profile"), StateFilter("*"))
 async def profile_cmd(message: Message, state: FSMContext):
