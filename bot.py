@@ -2213,8 +2213,8 @@ async def _show_profile(target: Message, user: dict):
         f"⭐ Баланс: {balance}\n"
         f"{premium_line}\n"
         f"🔔 Уведомления: {'включены' if notif_on else 'отключены'}\n\n"
-        f"✨ Кстати, в веб-кабинете (кнопка «🔮 Кабинет» внизу чата) есть "
-        f"ежедневный бонус звёзд — загляни, если ещё не пробовала."
+        f"✨ Кстати, во вкладке «Матрица» веб-кабинета (кнопка «🔮 Кабинет» "
+        f"под полем ввода) есть ежедневный бонус звёзд — загляни, если ещё не пробовала."
     )
     await target.answer(text, reply_markup=profile_menu(notif_on, len(user.get("purchased", []))))
 
