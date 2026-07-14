@@ -107,12 +107,21 @@ function renderMatrix(m, birthDate) {
     : `<div class="spin-card spin-done">
         <div><div class="spin-t">🎰 Ежедневный бонус</div><div class="spin-d">Уже забрано — приходи завтра 🌸</div></div>
       </div>`;
+  const digestCard = ME.digest_count < ME.digest_min
+    ? `<div class="spin-card spin-done">
+        <div><div class="spin-t">📋 Твой портрет</div><div class="spin-d">Куплено ${ME.digest_count}/${ME.digest_min} разборов — собери ещё, чтобы открыть общий портрет</div></div>
+      </div>`
+    : `<div class="spin-card">
+        <div><div class="spin-t">📋 Твой портрет</div><div class="spin-d">${ME.digest_ready ? "Готов — выжимка по всем купленным разборам" : "Собери связную выжимку из всех купленных разборов"}</div></div>
+        <button id="digest-btn">${ME.digest_ready ? "Открыть" : "Собрать"}</button>
+      </div>`;
   return `
     <div class="topbar">
       <div class="eyebrow">Карта твоих чисел</div>
       <h1>${escapeHtml(ME.first_name || "Твоя матрица")}</h1>
     </div>
     <div class="section" style="margin-bottom:0">${spinCard}</div>
+    <div class="section" style="margin-bottom:0; margin-top:10px;">${digestCard}</div>
     <div class="octawrap">${octagramSVG(points.slice(0, 8), m.destiny)}</div>
     <div class="destiny-line">${m.destiny_title || ""}</div>
     <div class="cycles">
@@ -121,6 +130,30 @@ function renderMatrix(m, birthDate) {
     </div>
     <div class="cards">${cards}</div>
   `;
+}
+
+async function openDigest() {
+  const btn = document.getElementById("digest-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "…"; }
+  app.innerHTML = `<div class="empty">Собираю портрет из всех купленных разборов…</div>`;
+  try {
+    const r = await api("/api/profile_digest", { method: "POST" });
+    ME.digest_ready = true;
+    app.innerHTML = `
+      <button class="back-btn" id="reading-back">← Назад</button>
+      <div class="reading-view">
+        <h2>${escapeHtml(r.title)}</h2>
+        <div class="reading-text">${escapeHtml(r.text)}</div>
+      </div>
+    `;
+    document.getElementById("reading-back").addEventListener("click", render);
+  } catch (e) {
+    app.innerHTML = `
+      <button class="back-btn" id="reading-back">← Назад</button>
+      <div class="empty">${e.message || "Не получилось собрать портрет"}</div>
+    `;
+    document.getElementById("reading-back").addEventListener("click", render);
+  }
 }
 
 async function spinDaily() {
@@ -530,6 +563,7 @@ function render() {
     app.innerHTML = ME.matrix ? renderMatrix(ME.matrix) : renderOnboard();
     document.getElementById("ob-submit")?.addEventListener("click", submitBirthdate);
     document.getElementById("spin-btn")?.addEventListener("click", spinDaily);
+    document.getElementById("digest-btn")?.addEventListener("click", openDigest);
   } else if (currentTab === "catalog") {
     app.innerHTML = renderCatalog();
     app.querySelectorAll(".item").forEach(el => el.addEventListener("click", () => onItemClick(el.dataset.key)));

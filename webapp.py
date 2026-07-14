@@ -134,7 +134,19 @@ async def api_me(request: web.Request) -> web.Response:
         "is_admin":      user_id == ADMIN_ID,
         "matrix":        matrix,
         "can_spin":      user.get("last_spin_date") is None or user["last_spin_date"] < db.utc_now().date(),
+        **await _digest_status(user_id, user),
     })
+
+async def _digest_status(user_id: int, user: dict) -> dict:
+    """Лёгкая проверка для карточки 'Портрет' на Матрице — не запускает
+    генерацию, только смотрит сколько разборов куплено и есть ли уже
+    актуальный (совпадающий по составу) кэш."""
+    purchased = sorted(k for k in user.get("purchased", []) if k in PAID_RAZBORY)
+    result = {"digest_count": len(purchased), "digest_min": MIN_DIGEST_READINGS, "digest_ready": False}
+    if len(purchased) >= MIN_DIGEST_READINGS:
+        cached = await db.get_reading_text(user_id, _DIGEST_KEY)
+        result["digest_ready"] = bool(cached and cached.get("date_str") == ",".join(purchased))
+    return result
 
 # ── ЕЖЕДНЕВНЫЙ БОНУС ──────────────────────────────────────────────────────────
 # Веса подобраны так, чтобы матожидание было ~2 звезды/день — на самый
@@ -522,6 +534,65 @@ async def api_ask(request: web.Request) -> web.Response:
         return _json_error("Что-то пошло не так — попробуй ещё раз чуть позже", 500)
     return web.json_response({"answer": answer})
 
+# ── ПОРТРЕТ ИЗ КУПЛЕННЫХ РАЗБОРОВ ─────────────────────────────────────────────
+MIN_DIGEST_READINGS = 3
+_DIGEST_KEY = "profile_digest"
+
+async def api_profile_digest(request: web.Request) -> web.Response:
+    """Собирает связную выжимку из ВСЕХ купленных разборов пользователя —
+    не новый продукт, а способ показать ценность уже купленного и мягко
+    подтолкнуть докупить недостающее (ниже MIN_DIGEST_READINGS фича заперта).
+    Кэшируется как обычный разбор (db.save_reading_text/get_reading_text) под
+    служебным ключом profile_digest; date_str там же используется НЕ под дату,
+    а под отпечаток набора купленных ключей — это дешёвый способ понять,
+    изменился ли состав покупок с прошлой сборки, без отдельной колонки/таблицы."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user = await db.get_user(user_id)
+    purchased = sorted(k for k in user.get("purchased", []) if k in PAID_RAZBORY)
+    if len(purchased) < MIN_DIGEST_READINGS:
+        return _json_error(
+            f"Нужно минимум {MIN_DIGEST_READINGS} купленных разбора, чтобы собрать портрет "
+            f"(сейчас {len(purchased)}) — загляни в «Разборы» 🌸",
+            409
+        )
+    signature = ",".join(purchased)
+
+    cached = await db.get_reading_text(user_id, _DIGEST_KEY)
+    if cached and cached.get("date_str") == signature:
+        return web.json_response({"title": cached["title"], "text": cached["text"], "cached": True})
+
+    texts = []
+    for key in purchased:
+        r = await db.get_reading_text(user_id, key)
+        if r and r.get("text"):
+            title = TITLES.get(key, key)
+            texts.append(f"### {title}\n{r['text'][:1200]}")
+    if len(texts) < MIN_DIGEST_READINGS:
+        return _json_error("Разборы ещё готовятся — попробуй чуть позже 🌸", 409)
+
+    name = user.get("first_name") or "дорогая"
+    prompt = (
+        f"Вот тексты {len(texts)} разборов, которые уже получила {name} по своим числам:\n\n"
+        + "\n\n".join(texts) +
+        "\n\nСведи это всё в ОДИН связный портрет личности — не пересказывай каждый разбор "
+        "по очереди, а найди общее: повторяющиеся черты, ключевые таланты и уязвимости, "
+        "главное, что стоит знать о себе прямо сейчас. Не используй emoji-заголовки и "
+        "структуру по блокам — свяжный текст на 6-10 предложений, тепло и по делу, "
+        "как итоговое резюме консультации."
+    )
+    try:
+        async with _web_gen_semaphore:
+            digest_text = await ask_ai(prompt)
+    except Exception as e:
+        logging.error(f"profile_digest ask_ai error: {e}", exc_info=True)
+        return _json_error("Не получилось собрать портрет — попробуй чуть позже 🙏", 500)
+
+    title = "📋 Твой портрет"
+    await db.save_reading_text(user_id, _DIGEST_KEY, title, digest_text, signature)
+    return web.json_response({"title": title, "text": digest_text, "cached": False})
+
 async def api_matrix(request: web.Request) -> web.Response:
     """Публичный расчёт матрицы по дате — для гостевого превью без входа
     (человек ещё не открывал бота, но зашёл по ссылке на веб)."""
@@ -582,6 +653,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_post("/api/reading/{key}/regenerate", api_reading_regenerate)
     app.router.add_post("/api/premium/buy", api_premium_buy)
     app.router.add_post("/api/ask", api_ask)
+    app.router.add_post("/api/profile_digest", api_profile_digest)
     app.router.add_get("/api/referral", api_referral)
     app.router.add_post("/api/balance/buy/{key}", api_balance_buy)
     app.router.add_post("/api/me/name", api_set_name)
