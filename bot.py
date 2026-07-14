@@ -1848,6 +1848,28 @@ async def premium_info_cb(callback: CallbackQuery):
     await _show_premium(callback.message, user)
     await callback.answer()
 
+@dp.message(Command("premium_preview"), StateFilter("*"))
+async def premium_preview_cmd(message: Message, state: FSMContext):
+    """Только для админа — показывает офер с ценами (Stars + ₽) в обход
+    авто-премиума, который для ADMIN_ID всегда включён (см. db.get_user).
+    Нужно для скриншотов в поддержку ЮKassa: 'цены рядом с ценами звёзд'."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    try:
+        link = await _create_premium_invoice()
+    except Exception as e:
+        logging.error(f"Premium invoice error: {e}", exc_info=True)
+        await message.answer("❌ Не удалось открыть оплату — попробуй чуть позже 🙏")
+        return
+    rub_link = None
+    if YOOKASSA_PROVIDER_TOKEN:
+        try:
+            rub_link = await _create_premium_invoice_rub()
+        except Exception as e:
+            logging.warning(f"Premium RUB invoice error: {e}")
+    await message.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link, rub_link, PREMIUM_PRICE_RUB))
+
 @dp.message(Command("premium"), StateFilter("*"))
 async def premium_cmd(message: Message, state: FSMContext):
     await state.clear()
