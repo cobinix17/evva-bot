@@ -46,7 +46,7 @@ from keyboards import (
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
     notif_off_menu, admin_menu, balance_pay_menu,
-    premium_subscribe_menu, premium_active_menu, gift_sections_menu,
+    premium_subscribe_menu, premium_active_menu, gift_sections_menu, profile_menu,
 )
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
@@ -157,6 +157,7 @@ class Form(StatesGroup):
     waiting_rename           = State()
     waiting_feedback         = State()
     waiting_admin_reply      = State()
+    waiting_promo            = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -269,6 +270,21 @@ async def name_cmd(message: Message, state: FSMContext):
         ])
     )
     await state.set_state(Form.waiting_rename)
+
+@dp.callback_query(F.data == "name_start")
+async def name_start_cb(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(callback.from_user.id)
+    current = user.get("first_name") or "не указано"
+    await callback.message.answer(
+        f"✏️ Сейчас я называю тебя «{current}».\n\n"
+        "Как называть тебя теперь? Введи новое имя 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
+    )
+    await state.set_state(Form.waiting_rename)
+    await callback.answer()
 
 @dp.message(StateFilter(Form.waiting_rename))
 async def handle_rename(message: Message, state: FSMContext):
@@ -598,14 +614,8 @@ async def cancel_cmd(message: Message, state: FSMContext):
         user = await db.get_user(message.from_user.id)
         await message.answer("❌ Отменено.", reply_markup=main_menu_for(message.from_user.id, user))
 
-@dp.message(Command("promo"), StateFilter("*"))
-async def promo_cmd(message: Message, state: FSMContext):
-    await state.clear()
-    parts = message.text.strip().split()
-    if len(parts) < 2:
-        await message.answer("Введи промокод так: /promo КОД")
-        return
-    code = parts[1].upper()
+async def _apply_promo(message: Message, code: str):
+    code = code.strip().upper()
     row  = await db.db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
     if not row:
         await message.answer("❌ Такого промокода не существует.")
@@ -624,6 +634,31 @@ async def promo_cmd(message: Message, state: FSMContext):
         "использование промокода 👇",
         reply_markup=coupon_razboy_menu(code, user)
     )
+
+@dp.message(Command("promo"), StateFilter("*"))
+async def promo_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        await message.answer("Введи промокод так: /promo КОД")
+        return
+    await _apply_promo(message, parts[1])
+
+@dp.callback_query(F.data == "promo_start")
+async def promo_start_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer(
+        "🎁 Введи промокод:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
+    )
+    await state.set_state(Form.waiting_promo)
+    await callback.answer()
+
+@dp.message(StateFilter(Form.waiting_promo))
+async def handle_promo_input(message: Message, state: FSMContext):
+    await state.clear()
+    await _apply_promo(message, (message.text or "").strip())
 
 @dp.message(Command("coupon"), StateFilter("*"))
 async def coupon_cmd(message: Message, state: FSMContext):
@@ -2156,6 +2191,44 @@ async def admin_feedback_cb(callback: CallbackQuery):
     )
     await callback.answer()
 
+# ─── МОЙ ПРОФИЛЬ ─────────────────────────────────────────────────────────────
+# Единая точка входа во всё, что раньше было раскидано по главному меню и
+# отдельным командам: рефералка, промокод, подарок, имя, уведомления.
+async def _show_profile(target: Message, user: dict):
+    name    = user.get("first_name") or "не указано"
+    bdate   = user.get("birth_date") or "не указана"
+    number  = user.get("destiny_number")
+    balance = user.get("ref_balance", 0)
+    premium = db.is_premium(user)
+    premium_line = (
+        f"💎 Премиум до {user['premium_until'].strftime('%d.%m.%Y')}"
+        if premium else "💎 Премиум не активен"
+    )
+    notif_on = user.get("notifications", True)
+    text = (
+        f"👤 Твой профиль\n\n"
+        f"Имя: {name}\n"
+        f"Дата рождения: {bdate}"
+        + (f" (число судьбы {number})" if number is not None else "") + "\n"
+        f"⭐ Баланс: {balance}\n"
+        f"{premium_line}\n"
+        f"🔔 Уведомления: {'включены' if notif_on else 'отключены'}"
+    )
+    await target.answer(text, reply_markup=profile_menu(notif_on))
+
+@dp.message(Command("profile"), StateFilter("*"))
+async def profile_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(message.from_user.id)
+    await _show_profile(message, user)
+
+@dp.callback_query(F.data == "my_profile")
+async def my_profile_cb(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(callback.from_user.id)
+    await _show_profile(callback.message, user)
+    await callback.answer()
+
 # ─── РЕФЕРАЛЬНАЯ СИСТЕМА ─────────────────────────────────────────────────────
 @dp.callback_query(F.data == "ref_promo")
 async def ref_promo_callback(callback: CallbackQuery):
@@ -2431,11 +2504,7 @@ async def setup_bot_commands():
         BotCommand(command="menu",          description="🔮 Меню разборов"),
         BotCommand(command="premium",       description="💎 Ева Премиум — все разборы"),
         BotCommand(command="ask",           description="💬 Спросить Еву (премиум)"),
-        BotCommand(command="ref",           description="👥 Пригласить подругу — получить ⭐"),
-        BotCommand(command="balance",       description="⭐ Мой бонусный баланс"),
-        BotCommand(command="promo",         description="🎁 Ввести промокод"),
-        BotCommand(command="notifications", description="🔔 Утренние уведомления"),
-        BotCommand(command="name",          description="✏️ Изменить имя"),
+        BotCommand(command="profile",       description="👤 Мой профиль"),
         BotCommand(command="feedback",      description="💡 Идея или баг"),
     ]
     await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())

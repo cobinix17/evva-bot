@@ -68,12 +68,8 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
     buttons.append([InlineKeyboardButton(text="🌙 Здоровье и энергия",   callback_data="section_health")])
     buttons.append([InlineKeyboardButton(text="✨ Прошлое и будущее",    callback_data="section_past")])
     buttons.append([InlineKeyboardButton(
-        text="👥 Пригласи подругу — получи ⭐",
-        callback_data="ref_promo"
-    )])
-    buttons.append([InlineKeyboardButton(
-        text="🎁 Подарить разбор подруге",
-        callback_data="gift_start"
+        text="👤 Мой профиль",
+        callback_data="my_profile"
     )])
     buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы (за рубли)",
@@ -99,6 +95,20 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📝 Отзывы на модерации", callback_data="admin_reviews")],
         [InlineKeyboardButton(text="💡 Обратная связь",     callback_data="admin_feedback")],
         [InlineKeyboardButton(text="⬅️ Главное меню",      callback_data="show_menu")],
+    ])
+
+def profile_menu(notifications_on: bool) -> InlineKeyboardMarkup:
+    """Единая точка входа во всё, что раньше было раскидано по главному меню
+    и отдельным командам: рефералка, промокод, подарок, имя, уведомления."""
+    notif_text = "🔕 Отключить уведомления" if notifications_on else "🔔 Включить уведомления"
+    notif_cb   = "notif_off" if notifications_on else "notif_on"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Реферальная ссылка", callback_data="ref_promo")],
+        [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="promo_start")],
+        [InlineKeyboardButton(text="🎁 Подарить разбор подруге", callback_data="gift_start")],
+        [InlineKeyboardButton(text="✏️ Изменить имя", callback_data="name_start")],
+        [InlineKeyboardButton(text=notif_text, callback_data=notif_cb)],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="show_menu")],
     ])
 
 def premium_subscribe_menu(invoice_url: str, rub_invoice_url: str | None = None,
