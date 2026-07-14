@@ -1265,6 +1265,28 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
             await send_invoice(callback.message.chat.id, title, desc, key, price)
     await callback.answer()
 
+@dp.message(Command("buy_preview"), StateFilter("*"))
+async def buy_preview_cmd(message: Message, state: FSMContext):
+    """Только для админа — показывает экран выбора оплаты (⭐/₽/баланс) для
+    конкретного разбора в обход авто-владения всеми разборами у ADMIN_ID
+    (см. db.get_user). /buy_preview matrix_full. Для скриншотов в поддержку."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    parts = message.text.strip().split()
+    key = parts[1] if len(parts) > 1 else "matrix_full"
+    if key not in PAID_RAZBORY:
+        await message.answer(f"Нет такого разбора: {key}")
+        return
+    price     = PRICES.get(key, 49)
+    title     = PAID_RAZBORY[key]
+    price_rub = rub_price(price) if YOOKASSA_PROVIDER_TOKEN else None
+    price_line = f"{price} ⭐" + (f" / {price_rub}₽" if price_rub else "")
+    await message.answer(
+        f"«{title}» — {price_line}.\n\nКак оплатить?",
+        reply_markup=payment_choice_menu(key, price, price_rub, balance=0)
+    )
+
 @dp.callback_query(F.data.startswith("rub_buy_"))
 async def rub_buy_handler(callback: CallbackQuery, state: FSMContext):
     """Оплата разбора рублями через ЮKassa (Telegram-провайдер)."""
