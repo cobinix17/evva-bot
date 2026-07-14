@@ -2212,7 +2212,9 @@ async def _show_profile(target: Message, user: dict):
         + (f" (число судьбы {number})" if number is not None else "") + "\n"
         f"⭐ Баланс: {balance}\n"
         f"{premium_line}\n"
-        f"🔔 Уведомления: {'включены' if notif_on else 'отключены'}"
+        f"🔔 Уведомления: {'включены' if notif_on else 'отключены'}\n\n"
+        f"✨ Кстати, в веб-кабинете (кнопка «🔮 Кабинет» внизу чата) есть "
+        f"ежедневный бонус звёзд — загляни, если ещё не пробовала."
     )
     await target.answer(text, reply_markup=profile_menu(notif_on))
 
