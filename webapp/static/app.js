@@ -34,6 +34,10 @@ let ME = null;
 let CATALOG = null;
 
 // ── SVG-октаграмма ──────────────────────────────────────────────────────────
+// points: [num, shortLabel, description][]. Каждая точка — кликабельная
+// <g data-i="i">: тап разворачивает пояснение под схемой (см. toggleOctaPoint).
+// Бейджи появляются по очереди (staggered fade+scale через CSS-задержку) —
+// ощущение "карты, которую исследуешь", а не мгновенно отрисованная картинка.
 function octagramSVG(points, destiny) {
   const cx = 200, cy = 200, R = 132, badgeR = 27, labelR = R + 34;
   const pt = (i, r) => {
@@ -49,23 +53,25 @@ function octagramSVG(points, destiny) {
     const ca = Math.cos((-90 + i * 45) * Math.PI / 180);
     const anchor = ca > 0.35 ? "start" : ca < -0.35 ? "end" : "middle";
     const [sx, sy] = pt(i, R - badgeR);
+    const delay = (i * 70).toFixed(0);
     spokes += `<line x1="${cx}" y1="${cy}" x2="${sx.toFixed(1)}" y2="${sy.toFixed(1)}" stroke="var(--border)" stroke-width="0.8"/>`;
-    badges += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR}" fill="var(--bg)" stroke="url(#gold)" stroke-width="1.6"/>`;
-    badges += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR - 4}" fill="none" stroke="var(--border)" stroke-width="1"/>`;
     const numLen = String(num).length;
     const numFontSize = numLen >= 4 ? 15 : numLen === 3 ? 19 : numLen === 2 ? 24 : 30;
-    badges += `<text x="${x.toFixed(1)}" y="${(y + (numFontSize <= 20 ? 6 : 8)).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="${numFontSize}" fill="var(--head)" style="font-variant-numeric:lining-nums">${num}</text>`;
+    badges += `<g class="octa-pt" data-i="${i}" style="animation-delay:${delay}ms">`
+            + `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR}" fill="var(--bg)" stroke="url(#gold)" stroke-width="1.6"/>`
+            + `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badgeR - 4}" fill="none" stroke="var(--border)" stroke-width="1"/>`
+            + `<text x="${x.toFixed(1)}" y="${(y + (numFontSize <= 20 ? 6 : 8)).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="${numFontSize}" fill="var(--head)" style="font-variant-numeric:lining-nums">${num}</text>`
+            + `</g>`;
     // длинные подписи (2 слова) переносим на две строки, иначе текст обрезается
     // краем viewBox у крайних левой/правой точек октаграммы
     const words = short.toUpperCase().split(" ");
-    if (words.length > 1 && short.length > 6) {
-      labels += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${anchor}" font-family="Body" font-size="10.5" letter-spacing="1.2" fill="var(--accent)">`
-              + `<tspan x="${lx.toFixed(1)}" dy="0">${words[0]}</tspan>`
-              + `<tspan x="${lx.toFixed(1)}" dy="12">${words.slice(1).join(" ")}</tspan>`
-              + `</text>`;
-    } else {
-      labels += `<text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="${anchor}" font-family="Body" font-size="11" letter-spacing="1.6" fill="var(--accent)">${short.toUpperCase()}</text>`;
-    }
+    const labelBody = (words.length > 1 && short.length > 6)
+      ? `<tspan x="${lx.toFixed(1)}" dy="0">${words[0]}</tspan><tspan x="${lx.toFixed(1)}" dy="12">${words.slice(1).join(" ")}</tspan>`
+      : words.join(" ");
+    const labelY = (words.length > 1 && short.length > 6) ? ly : ly + 4;
+    labels += `<g class="octa-pt" data-i="${i}" style="animation-delay:${delay}ms">`
+            + `<text x="${lx.toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="${anchor}" font-family="Body" font-size="11" letter-spacing="1.6" fill="var(--accent)">${labelBody}</text>`
+            + `</g>`;
   });
   return `<svg viewBox="-65 -65 530 530" class="octa">
     <defs><linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
@@ -82,17 +88,44 @@ function octagramSVG(points, destiny) {
   </svg>`;
 }
 
+let _octaDescs = [];
+let _octaOpenIndex = null;
+
+function toggleOctaPoint(i) {
+  const panel = document.getElementById("octa-info");
+  if (!panel) return;
+  if (_octaOpenIndex === i) {
+    _octaOpenIndex = null;
+    panel.classList.remove("open");
+    return;
+  }
+  _octaOpenIndex = i;
+  const d = _octaDescs[i] || {};
+  panel.innerHTML = `<div class="octa-info-t">${escapeHtml(d.label || "")}</div><div class="octa-info-d">${escapeHtml(d.desc || "Нет описания")}</div>`;
+  panel.classList.add("open");
+}
+
 const PIN_AGES = ["0–32", "32–41", "41–50", "50+"];
 
 function renderMatrix(m, birthDate) {
   const points = [];
-  (m.cards || []).slice(0, 6).forEach(c => points.push([
-    c.value,
-    c.label.replace("Число ", "").replace("Кармическое", "Карма").replace(/Личный год \d+/, m => "Год " + m.match(/\d+/)[0]),
-  ]));
-  if (m.life_arcana) points.push([m.life_arcana.num, "Аркан"]);
-  if (m.year_arcana) points.push([m.year_arcana.num, "Аркан года"]);
-  while (points.length < 8) points.push([m.destiny, "—"]);
+  const descs  = [];
+  (m.cards || []).slice(0, 6).forEach(c => {
+    const shortLabel = c.label.replace("Число ", "").replace("Кармическое", "Карма").replace(/Личный год \d+/, mm => "Год " + mm.match(/\d+/)[0]);
+    points.push([c.value, shortLabel]);
+    descs.push({ label: c.label, desc: c.desc });
+  });
+  if (m.life_arcana) {
+    points.push([m.life_arcana.num, "Аркан"]);
+    descs.push({ label: `Аркан — ${m.life_arcana.name}`, desc: m.life_arcana.keyword });
+  }
+  if (m.year_arcana) {
+    points.push([m.year_arcana.num, "Аркан года"]);
+    descs.push({ label: `Аркан года — ${m.year_arcana.name}`, desc: m.year_arcana.keyword });
+  }
+  while (points.length < 8) { points.push([m.destiny, "—"]); descs.push({ label: "—", desc: "" }); }
+  _octaDescs = descs;
+  _octaOpenIndex = null;
   const pins = (m.pinnacles || []).map((n, i) =>
     `<div class="pin"><div class="pin-n">${n}</div><div class="pin-a">${PIN_AGES[i] || ""} лет</div></div>`
   ).join("");
@@ -123,6 +156,8 @@ function renderMatrix(m, birthDate) {
     <div class="section" style="margin-bottom:0">${spinCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${digestCard}</div>
     <div class="octawrap">${octagramSVG(points.slice(0, 8), m.destiny)}</div>
+    <div class="octa-hint">✦ Нажми на число, чтобы узнать больше</div>
+    <div id="octa-info" class="octa-info"></div>
     <div class="destiny-line">${m.destiny_title || ""}</div>
     <div class="cycles">
       <div class="cyc-head"><span class="cyc-rule"></span><span class="cyc-t">Жизненные циклы</span><span class="cyc-rule"></span></div>
@@ -157,18 +192,31 @@ async function openDigest() {
 }
 
 async function spinDaily() {
-  const btn = document.getElementById("spin-btn");
+  const btn  = document.getElementById("spin-btn");
+  const card = btn?.closest(".spin-card");
   if (!btn) return;
   btn.disabled = true;
-  btn.textContent = "…";
+  btn.textContent = "✨";
+  card?.classList.add("charging");
   try {
-    const res = await api("/api/spin", { method: "POST" });
-    tg?.showAlert(`+${res.amount} ⭐ на баланс!`);
+    // Небольшая намеренная пауза — "энергия собирается", не мгновенный
+    // попап. API обычно отвечает быстрее, поэтому ждём оба параллельно.
+    const [res] = await Promise.all([
+      api("/api/spin", { method: "POST" }),
+      new Promise(r => setTimeout(r, 550)),
+    ]);
     ME.ref_balance = (ME.ref_balance || 0) + res.amount;
     ME.can_spin = false;
-    render();
+    if (card) {
+      card.classList.remove("charging");
+      card.innerHTML = `<div class="spin-reveal">+${res.amount} <span class="spin-reveal-star">⭐</span></div>`;
+      setTimeout(render, 1300);
+    } else {
+      render();
+    }
   } catch (e) {
     tg?.showAlert(e.message || "Не получилось");
+    card?.classList.remove("charging");
     btn.disabled = false;
     btn.textContent = "Забрать";
   }
@@ -564,6 +612,9 @@ function render() {
     document.getElementById("ob-submit")?.addEventListener("click", submitBirthdate);
     document.getElementById("spin-btn")?.addEventListener("click", spinDaily);
     document.getElementById("digest-btn")?.addEventListener("click", openDigest);
+    app.querySelectorAll(".octa-pt").forEach(el =>
+      el.addEventListener("click", () => toggleOctaPoint(parseInt(el.dataset.i, 10)))
+    );
   } else if (currentTab === "catalog") {
     app.innerHTML = renderCatalog();
     app.querySelectorAll(".item").forEach(el => el.addEventListener("click", () => onItemClick(el.dataset.key)));

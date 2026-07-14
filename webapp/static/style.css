@@ -69,6 +69,24 @@ h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
 }
 .octa{ width:min(88vw, 340px); height:min(88vw, 340px); position:relative; z-index:1;
   filter:drop-shadow(0 8px 24px rgba(94,58,133,.18)); }
+
+/* точки октаграммы появляются по очереди и реагируют на тап —
+   не статичная картинка, а "карта, которую исследуешь" */
+.octa-pt{ cursor:pointer; transform-box:fill-box; transform-origin:center;
+  animation:octaIn .5s backwards; transition:opacity .15s; touch-action:manipulation; }
+@keyframes octaIn{ from{ opacity:0; transform:scale(.55); } to{ opacity:1; transform:scale(1); } }
+.octa-pt:active{ opacity:.72; }
+@media (prefers-reduced-motion: reduce){ .octa-pt{ animation:none; } }
+
+.octa-hint{ text-align:center; font-size:10.5px; color:var(--accent); opacity:.8; margin:-2px 0 0; }
+
+.octa-info{ max-height:0; overflow:hidden; opacity:0; margin:0 24px;
+  transition:max-height .32s ease, opacity .25s ease, margin .32s ease; }
+.octa-info.open{ max-height:220px; opacity:1; margin:12px 24px 4px;
+  background:var(--card, var(--bg2)); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+.octa-info-t{ font-family:'Head',serif; font-weight:600; font-size:14px; color:var(--head); margin-bottom:5px; }
+.octa-info-d{ font-size:12.5px; line-height:1.5; color:var(--ink); }
+
 .destiny-line{ text-align:center; font-family:'Head',serif; font-weight:600; font-size:18px; color:var(--head);
   margin:6px 24px 20px; line-height:1.4; }
 
@@ -110,6 +128,17 @@ h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
   font-weight:600; font-size:14px; cursor:pointer; box-shadow:0 6px 16px rgba(94,58,133,.28); }
 .spin-card button:disabled{ opacity:.6; }
 .spin-card.spin-done{ border-color:var(--border); opacity:.75; }
+.spin-card.charging{ animation:spinPulse 1.1s ease-in-out infinite; }
+@keyframes spinPulse{ 0%,100%{ opacity:1; } 50%{ opacity:.55; } }
+.spin-reveal{ width:100%; text-align:center; padding:6px 0;
+  font-family:'Head',serif; font-weight:600; font-size:26px; color:var(--gold);
+  animation:spinReveal .5s cubic-bezier(.2,.8,.3,1.3); }
+.spin-reveal-star{ font-size:22px; }
+@keyframes spinReveal{ from{ opacity:0; transform:scale(.55); } to{ opacity:1; transform:scale(1); } }
+@media (prefers-reduced-motion: reduce){
+  .spin-card.charging{ animation:none; }
+  .spin-reveal{ animation:none; }
+}
 
 /* ── каталог ── */
 .section{ margin:22px 18px; }
