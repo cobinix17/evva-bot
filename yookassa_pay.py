@@ -16,10 +16,10 @@ Configuration.secret_key = YOOKASSA_SECRET_KEY
 
 
 async def create_payment(amount_rub: int, description: str, return_url: str,
-                          metadata: dict, email: str | None = None,
-                          method: str | None = None) -> tuple[str, str]:
-    """Создаёт платёж с confirmation.type=redirect. email — обязателен для
-    чека по 54-ФЗ, раз Telegram сам его для нас не спрашивает. method —
+                          metadata: dict, method: str | None = None) -> tuple[str, str]:
+    """Создаёт платёж с confirmation.type=redirect. Контакт покупателя для
+    чека (54-ФЗ) не передаём — если он нужен, страница оплаты ЮKassa сама
+    запросит email/телефон у покупателя (мы его в бота не просим). method —
     "bank_card" или "sbp": если задан, сразу ведёт на этот способ оплаты
     в обход общей страницы выбора ЮKassa (как в примере Durev VPN — три
     отдельные кнопки вместо одной с выбором внутри). None — обычная
@@ -34,8 +34,6 @@ async def create_payment(amount_rub: int, description: str, return_url: str,
                 "vat_code": 1,
             }]
         }
-        if email:
-            receipt["customer"] = {"email": email}
         payload = {
             "amount": {"value": f"{amount_rub}.00", "currency": "RUB"},
             "confirmation": {"type": "redirect", "return_url": return_url},

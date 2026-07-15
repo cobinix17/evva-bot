@@ -34,11 +34,9 @@ async def init_db(database_url: str):
             notifications      BOOLEAN DEFAULT TRUE,
             reviews_left       TEXT DEFAULT '[]',
             ref_balance        INTEGER DEFAULT 0,
-            referred_by        BIGINT,
-            email              TEXT
+            referred_by        BIGINT
         )
     ''')
-    await db_pool.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT')
     await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS referrals (
             id          SERIAL PRIMARY KEY,
@@ -227,11 +225,6 @@ async def save_user(user_id: int, user: dict):
         user.get('referred_by'),
         user_id
     )
-
-async def set_email(user_id: int, email: str):
-    """Сохраняет email для чеков ЮKassa — чтобы не спрашивать заново на
-    каждой рублёвой оплате (см. handle_rub_email в bot.py)."""
-    await db_pool.execute('UPDATE users SET email = $1 WHERE user_id = $2', email, user_id)
 
 # ─── ПОДАРКИ ─────────────────────────────────────────────────────────────────
 async def create_gift(code: str, razbor_key: str, from_user_id: int):
