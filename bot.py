@@ -2310,6 +2310,22 @@ async def _show_profile(target: Message, user: dict):
     )
     await target.answer(text, reply_markup=profile_menu(notif_on, len(user.get("purchased", []))))
 
+@dp.message(Command("revoke_premium"), StateFilter("*"))
+async def revoke_premium_cmd(message: Message, state: FSMContext):
+    """Только для админа — снимает премиум с конкретного user_id.
+    /revoke_premium 123456789. Нужно для чистки тестовых оплат (пока
+    ЮKassa была в тестовом режиме, успешные тестовые оплаты выдавали
+    настоящий премиум — бот не может отличить тестовую оплату от боевой)."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Использование: /revoke_premium USER_ID")
+        return
+    target_id = int(parts[1])
+    await db.set_premium(target_id, None)
+    await message.answer(f"✅ Премиум снят с {target_id}.")
+
 @dp.message(Command("profile"), StateFilter("*"))
 async def profile_cmd(message: Message, state: FSMContext):
     await state.clear()
