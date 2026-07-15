@@ -23,7 +23,7 @@ from config import (
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
-    YOOKASSA_SHOP_ID,
+    YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE,
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context
 from keyboards import date_choice_menu
@@ -679,9 +679,27 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
     if not is_new:
         return web.Response(status=200)
 
+    # Реф-бонус считаем в звёздах-эквиваленте (см. ту же нормализацию в
+    # bot.py successful_payment) — amount_rub уже в рублях, не в копейках.
+    stars_equiv = round(amount_rub / STARS_TO_RUB_RATE)
+
     if payload == PREMIUM_PAYLOAD:
-        until = db.utc_now() + timedelta(days=31)
+        user = await db.get_user(user_id)
+        # Продлеваем от максимума текущей даты и "сейчас" — повторная оплата
+        # до истечения срока добавляет 31 день сверху, а не затирает остаток.
+        current_until = user.get("premium_until")
+        base = current_until if current_until and current_until > db.utc_now() else db.utc_now()
+        until = base + timedelta(days=31)
         await db.set_premium(user_id, until)
+
+        referrer_id = user.get("referred_by")
+        if referrer_id:
+            bonus = max(1, round(stars_equiv * REF_BONUS_PERCENT / 100))
+            try:
+                await db.add_ref_bonus(referrer_id, user_id, bonus, "premium")
+            except Exception as e:
+                logging.warning(f"yookassa premium ref bonus error: {e}")
+
         try:
             await _bot.send_message(
                 user_id,
@@ -703,6 +721,23 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
         user["purchased"].append(payload)
     user["waiting"] = payload
     await db.save_user(user_id, user)
+
+    referrer_id = user.get("referred_by")
+    if referrer_id:
+        bonus = max(1, round(stars_equiv * REF_BONUS_PERCENT / 100))
+        try:
+            await db.add_ref_bonus(referrer_id, user_id, bonus, payload)
+            buyer_name = user.get("first_name") or "Подруга"
+            title_ref  = TITLES.get(payload, "разбор")
+            await _bot.send_message(
+                referrer_id,
+                f"🎉 +{bonus} ⭐ на твой баланс!\n\n"
+                f"{buyer_name} купила «{title_ref}» по твоей реферальной ссылке.\n"
+                f"Проверить баланс: /balance"
+            )
+        except Exception as e:
+            logging.warning(f"yookassa reading ref bonus error: {e}")
+
     title = PAID_RAZBORY[payload]
     try:
         await _bot.send_message(
