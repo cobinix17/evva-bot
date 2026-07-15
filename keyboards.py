@@ -296,7 +296,7 @@ def payment_choice_menu(key: str, price: int, price_rub: int | None = None,
     buttons = []
     if balance >= price:
         buttons.append([InlineKeyboardButton(text=f"⭐ Оплатить балансом ({price} ⭐)", callback_data=f"balance_buy_{key}")])
-    buttons.append([InlineKeyboardButton(text=f"⭐ Оплатить {price} звёзд Telegram", callback_data=f"stars_buy_{key}")])
+    buttons.append([InlineKeyboardButton(text=f"⭐ {price} звёзд Telegram", callback_data=f"stars_buy_{key}")])
     if price_rub:
         buttons.append([InlineKeyboardButton(text=f"💳 Картой — {price_rub}₽", callback_data=f"rub_card_buy_{key}")])
         buttons.append([InlineKeyboardButton(text=f"📱 СБП / QR — {price_rub}₽", callback_data=f"rub_sbp_buy_{key}")])

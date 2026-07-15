@@ -1219,8 +1219,11 @@ async def handle_rub_email(message: Message, state: FSMContext):
         return
     method_line = {"bank_card": "картой", "sbp": "через СБП"}.get(method, "картой, СБП и другими способами")
     await message.answer(
-        f"💳 Оплати {price_rub}₽ по ссылке — {method_line}:\n{url}\n\n"
-        "После оплаты доступ откроется автоматически в течение минуты."
+        f"💳 Оплати {price_rub}₽ — {method_line}.\n\n"
+        "После оплаты доступ откроется автоматически в течение минуты.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"Оплатить {price_rub}₽", url=url)]
+        ])
     )
 
 async def _start_date_flow(message: Message, state: FSMContext, user: dict, key: str, is_free: bool = False):
