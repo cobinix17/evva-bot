@@ -121,8 +121,12 @@ def premium_subscribe_menu(invoice_url: str, rub_price: int | None = None) -> In
     buttons = [[InlineKeyboardButton(text="💎 Оформить за 399 ⭐/мес", url=invoice_url)]]
     if rub_price:
         buttons.append([InlineKeyboardButton(
-            text=f"💳 Оплатить {rub_price}₽ (на месяц)",
-            callback_data="premium_pay_rub"
+            text=f"💳 Картой — {rub_price}₽ (на месяц)",
+            callback_data="premium_pay_rub_card"
+        )])
+        buttons.append([InlineKeyboardButton(
+            text=f"📱 СБП / QR — {rub_price}₽ (на месяц)",
+            callback_data="premium_pay_rub_sbp"
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -286,13 +290,16 @@ def payment_choice_menu(key: str, price: int, price_rub: int | None = None,
                          balance: int = 0) -> InlineKeyboardMarkup:
     """Выбор способа оплаты разбора — показывается когда есть хотя бы один
     вариант помимо обычной звёздной оплаты (баланс или рубли), иначе просто
-    сразу шлют звёздный invoice без лишнего экрана выбора."""
+    сразу шлют звёздный invoice без лишнего экрана выбора. Карта и СБП/QR —
+    отдельные кнопки (сразу ведут на нужный способ на странице ЮKassa),
+    а не один пункт с выбором внутри."""
     buttons = []
     if balance >= price:
         buttons.append([InlineKeyboardButton(text=f"⭐ Оплатить балансом ({price} ⭐)", callback_data=f"balance_buy_{key}")])
     buttons.append([InlineKeyboardButton(text=f"⭐ Оплатить {price} звёзд Telegram", callback_data=f"stars_buy_{key}")])
     if price_rub:
-        buttons.append([InlineKeyboardButton(text=f"💳 Оплатить {price_rub}₽", callback_data=f"rub_buy_{key}")])
+        buttons.append([InlineKeyboardButton(text=f"💳 Картой — {price_rub}₽", callback_data=f"rub_card_buy_{key}")])
+        buttons.append([InlineKeyboardButton(text=f"📱 СБП / QR — {price_rub}₽", callback_data=f"rub_sbp_buy_{key}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def coupon_razboy_menu(code: str, user: dict = None) -> InlineKeyboardMarkup:

@@ -16,12 +16,14 @@ Configuration.secret_key = YOOKASSA_SECRET_KEY
 
 
 async def create_payment(amount_rub: int, description: str, return_url: str,
-                          metadata: dict, email: str | None = None) -> tuple[str, str]:
-    """Создаёт платёж с confirmation.type=redirect — полноценная страница
-    оплаты ЮKassa со ВСЕМИ подключёнными способами (карта/СБП/ЮMoney/...),
-    в отличие от Telegram-native invoice. email — обязателен для чека по
-    54-ФЗ, раз Telegram сам его для нас не спрашивает (как это делал
-    need_email в Telegram Payments). Возвращает (payment_id,
+                          metadata: dict, email: str | None = None,
+                          method: str | None = None) -> tuple[str, str]:
+    """Создаёт платёж с confirmation.type=redirect. email — обязателен для
+    чека по 54-ФЗ, раз Telegram сам его для нас не спрашивает. method —
+    "bank_card" или "sbp": если задан, сразу ведёт на этот способ оплаты
+    в обход общей страницы выбора ЮKassa (как в примере Durev VPN — три
+    отдельные кнопки вместо одной с выбором внутри). None — обычная
+    страница со всеми подключёнными способами. Возвращает (payment_id,
     confirmation_url) — на вторую ссылку отправляем пользователя платить."""
     def _create():
         receipt = {
@@ -34,14 +36,17 @@ async def create_payment(amount_rub: int, description: str, return_url: str,
         }
         if email:
             receipt["customer"] = {"email": email}
-        payment = Payment.create({
+        payload = {
             "amount": {"value": f"{amount_rub}.00", "currency": "RUB"},
             "confirmation": {"type": "redirect", "return_url": return_url},
             "capture": True,
             "description": description,
             "metadata": metadata,
             "receipt": receipt,
-        }, uuid.uuid4().hex)
+        }
+        if method:
+            payload["payment_method_data"] = {"type": method}
+        payment = Payment.create(payload, uuid.uuid4().hex)
         return payment.id, payment.confirmation.confirmation_url
     return await asyncio.to_thread(_create)
 
