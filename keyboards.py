@@ -156,19 +156,10 @@ def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool 
     for key, emoji_title in keys_with_emoji:
         prefix = ("✅ " if key in purchased else "") if not gift else ""
         price  = PRICES.get(key, 49)
-        row = [InlineKeyboardButton(
+        buttons.append([InlineKeyboardButton(
             text=f"{prefix}{emoji_title} — {price} ⭐",
             callback_data=f"{prefix_cb}{key}"
-        )]
-        # Кнопка рублей — сразу отдельным invoice (rub_buy_), без
-        # промежуточного экрана выбора, только для обычной покупки
-        # (не для подарка — там оплата пока только звёздами).
-        if YOOKASSA_PROVIDER_TOKEN and not gift:
-            row.append(InlineKeyboardButton(
-                text=f"💳 {rub_price(price)}₽",
-                callback_data=f"rub_buy_{key}"
-            ))
-        buttons.append(row)
+        )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
