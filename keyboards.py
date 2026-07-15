@@ -156,8 +156,11 @@ def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool 
     for key, emoji_title in keys_with_emoji:
         prefix = ("✅ " if key in purchased else "") if not gift else ""
         price  = PRICES.get(key, 49)
+        price_line = f"{price} ⭐"
+        if YOOKASSA_PROVIDER_TOKEN and not gift:
+            price_line += f" / {rub_price(price)}₽"
         buttons.append([InlineKeyboardButton(
-            text=f"{prefix}{emoji_title} — {price} ⭐",
+            text=f"{prefix}{emoji_title} — {price_line}",
             callback_data=f"{prefix_cb}{key}"
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
