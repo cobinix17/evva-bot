@@ -270,35 +270,77 @@ async function openReading(key) {
   app.innerHTML = `<div class="empty">Открываю разбор…</div>`;
   try {
     const r = await api(`/api/reading/${key}`);
-    app.innerHTML = `
-      <button class="back-btn" id="reading-back">← Назад</button>
-      <div class="reading-view">
-        <h2>${escapeHtml(r.title)}</h2>
-        <div class="reading-text">${escapeHtml(r.text)}</div>
-        <button id="reading-regen-btn" style="margin-top:18px">🔁 Заказать заново</button>
-      </div>
-    `;
-    document.getElementById("reading-back").addEventListener("click", render);
-    document.getElementById("reading-regen-btn").addEventListener("click", () => regenerateReading(key));
+    renderReadingResult(key, r.title, r.text);
   } catch (e) {
-    app.innerHTML = `
-      <button class="back-btn" id="reading-back">← Назад</button>
-      <div class="empty">${e.message || "Разбор ещё готовится"}.<br>Открой его в чате с ботом 🌸</div>
-    `;
-    document.getElementById("reading-back").addEventListener("click", render);
+    // 404 — разбор куплен, но ещё не сгенерирован: показываем форму даты,
+    // чтобы получить его прямо здесь, без ухода в чат с ботом.
+    renderReadingDateForm(key);
   }
 }
 
-async function regenerateReading(key) {
+function renderReadingResult(key, title, text) {
+  app.innerHTML = `
+    <button class="back-btn" id="reading-back">← Назад</button>
+    <div class="reading-view">
+      <h2>${escapeHtml(title)}</h2>
+      <div class="reading-text">${escapeHtml(text)}</div>
+      <button id="reading-regen-btn" style="margin-top:18px">🔁 Другая дата</button>
+    </div>
+  `;
+  document.getElementById("reading-back").addEventListener("click", render);
+  document.getElementById("reading-regen-btn").addEventListener("click", () => renderReadingDateForm(key, true));
+}
+
+function renderReadingDateForm(key, forceNew) {
+  const item = findCatalogItem(key);
+  const title = item ? item.title : "Разбор";
+  const isCompat = key === "compat";
+  let inner;
+  if (isCompat) {
+    inner = `
+      <p>Введи две даты рождения — Ева составит разбор совместимости.</p>
+      <input id="rd-date1" placeholder="Твоя дата: ДД.ММ.ГГГГ" inputmode="numeric" value="${(!forceNew && ME.birth_date) ? escapeHtml(ME.birth_date) : ""}">
+      <input id="rd-date2" placeholder="Дата партнёра: ДД.ММ.ГГГГ" inputmode="numeric" style="margin-top:10px">
+    `;
+  } else {
+    const prefill = (!forceNew && ME.birth_date) ? escapeHtml(ME.birth_date) : "";
+    inner = `
+      <p>Для кого делаем разбор? Введи дату рождения.</p>
+      <input id="rd-date" placeholder="ДД.ММ.ГГГГ" inputmode="numeric" value="${prefill}">
+    `;
+  }
+  app.innerHTML = `
+    <button class="back-btn" id="reading-back">← Назад</button>
+    <div class="onboard">
+      <div class="eyebrow">${escapeHtml(title)}</div>
+      ${inner}
+      <button id="rd-submit" style="margin-top:14px">🔮 Получить разбор</button>
+    </div>
+  `;
+  document.getElementById("reading-back").addEventListener("click", render);
+  document.getElementById("rd-submit").addEventListener("click", () => generateReading(key));
+}
+
+async function generateReading(key) {
+  let body;
+  if (key === "compat") {
+    const d1 = document.getElementById("rd-date1").value.trim();
+    const d2 = document.getElementById("rd-date2").value.trim();
+    if (!d1 || !d2) { tg?.showAlert("Введи обе даты 🌸"); return; }
+    body = { date1: d1, date2: d2 };
+  } else {
+    const d = document.getElementById("rd-date").value.trim();
+    if (!d) { tg?.showAlert("Введи дату рождения 🌸"); return; }
+    body = { date: d };
+  }
+  app.innerHTML = `<div class="empty">⏳ Ева составляет разбор…<br>Это занимает до минуты 🔮</div>`;
   try {
-    const res = await api(`/api/reading/${key}/regenerate`, { method: "POST" });
-    if (res.needs_birthdate) {
-      tg?.showAlert("Сначала укажи дату рождения в чате с ботом 🌸");
-      return;
-    }
-    tg?.showAlert("Открой чат с ботом — там можно выбрать дату и разбор придёт заново 🌸");
+    const r = await api(`/api/reading/${key}/generate`, { method: "POST", body: JSON.stringify(body) });
+    await boot();               // подтянуть обновлённую дату рождения/каталог
+    renderReadingResult(key, r.title, r.text);
   } catch (e) {
-    tg?.showAlert(e.message || "Не удалось заказать заново");
+    tg?.showAlert(e.message || "Не удалось составить разбор");
+    renderReadingDateForm(key, true);
   }
 }
 
@@ -308,7 +350,7 @@ async function buyWithStars(key) {
     if (res.already_purchased) { await boot(); return; }
     tg.openInvoice(res.invoice_url, (status) => {
       if (status === "paid") {
-        tg?.showAlert("Оплата прошла! Разбор готовится — через минуту откроется здесь и придёт в чат с ботом 🌸");
+        tg?.showAlert("Оплата прошла 🌸 Открой разбор — введи дату и получишь его прямо здесь.");
         boot();
       }
     });
@@ -321,8 +363,9 @@ async function buyWithBalance(key) {
   try {
     const res = await api(`/api/balance/buy/${key}`, { method: "POST" });
     if (res.already_purchased) { await boot(); return; }
-    tg?.showAlert("Оплачено балансом! Открой чат с ботом — там нужно подтвердить дату рождения, и разбор будет готов 🌸");
+    tg?.showAlert("Оплачено балансом 🌸 Открой разбор — введи дату и получишь его прямо здесь.");
     await boot();
+    await openReading(key);
   } catch (e) {
     tg?.showAlert(e.message || "Не удалось оплатить балансом");
   }

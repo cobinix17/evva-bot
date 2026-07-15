@@ -23,8 +23,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
-from readings import PROMPTS
-
 import db
 from config import (
     TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS,
@@ -36,6 +34,9 @@ from config import (
 )
 from ai import ask_ai, is_rude, rude_reply
 from pdf import generate_pdf
+from generation import (
+    premium_gen_semaphore, generate_single, generate_compat, _generating,
+)
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date,
     build_numerology_context, calculate_personal_month, calculate_personal_day,
@@ -166,25 +167,10 @@ class Form(StatesGroup):
 # запускает второй разбор) — это удваивает расход токенов и рассинхронизирует
 # поле waiting. Храним в памяти процесса: бот однопроцессный (один polling),
 # поэтому простого set достаточно — внешний стор (Redis) не нужен.
-_generating: set[int] = set()
-
-# Глобальный лимит одновременных генераций разборов. Защищает от всплеска
-# (сотни человек нажали «купить» в одну секунду → сотни параллельных запросов
-# к OpenRouter): лишние ждут своей очереди, а не бьют по rate-лимитам и бюджету.
-_gen_semaphore = asyncio.Semaphore(8)
-
-# Отдельная полоса для премиум-подписчиков — их генерации не встают в общую
-# очередь за бесплатными пользователями, поэтому в часы пика премиум отвечает
-# быстрее. Это один из бонусов подписки («приоритет генерации»).
-_priority_semaphore = asyncio.Semaphore(4)
-
-# Лимиты премиума (30 новых разборов в месяц, 5 в день) считаются в БД —
-# см. db.premium_try_consume. Счётчики переживают перезапуск бота и период
-# сбрасывается сам (новый день/месяц обнуляет соответствующий счётчик).
-# Регенерация уже открытых разборов слот не тратит.
-
-def _premium_gen_semaphore(user: dict):
-    return _priority_semaphore if db.is_premium(user) else _gen_semaphore
+# Замок генерации (_generating), семафоры и premium_gen_semaphore теперь общие
+# с веб-кабинетом — см. generation.py. Лимиты премиума (30/мес, 5/день)
+# считаются в БД (db.premium_try_consume); регенерация открытых разборов слот
+# не тратит.
 
 async def _generate_pdf_async(*args, **kwargs) -> bytes:
     """Сборка PDF (fontTools) — тяжёлая по CPU и СИНХРОННАЯ: при прямом вызове
@@ -209,18 +195,6 @@ def utc_now() -> datetime:
 
 def main_menu_for(user_id: int, user: dict):
     return main_menu(user, is_admin=(user_id == ADMIN_ID), is_premium=db.is_premium(user))
-
-def build_prompt(key: str, **kwargs) -> str:
-    """Собирает промпт по ключу. Бросает ValueError если ключ не найден."""
-    current_year = datetime.now().year
-    kwargs.setdefault("year", current_year)
-    kwargs.setdefault("year_next", current_year + 1)
-    kwargs.setdefault("year_after_next", current_year + 2)
-    template = PROMPTS.get(key)
-    if not template:
-        logging.error(f"build_prompt: промпт не найден для ключа '{key}'")
-        raise ValueError(f"Промпт '{key}' не существует в PROMPTS")
-    return template.format(**kwargs)
 
 _NAME_ALLOWED_RE = re.compile(r"[^а-яёА-ЯЁa-zA-Z\s\-]")
 
@@ -1563,7 +1537,6 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     if user_id in _generating:
         await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
         return
-    _generating.add(user_id)
 
     if not user.get("birth_date"):
         user["birth_date"]     = date_str
@@ -1595,11 +1568,9 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             pass
 
     try:
-        title = TITLES.get(waiting, "🔮 Разбор")
-        cached = await db.get_reading_text(user_id, waiting)
-        if cached and cached.get("date_str") == date_str:
-            await stop_intermediate()
-            answer = cached["text"]
+        title, answer, from_cache = await generate_single(user_id, user, waiting, date_str)
+        await stop_intermediate()
+        if from_cache:
             await send_long(
                 message.chat.id,
                 f"{title}\n\n{answer}\n\n"
@@ -1607,13 +1578,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
                 f"чтобы не было противоречий."
             )
         else:
-            context = build_numerology_context(name, date_str)
-            prompt  = build_prompt(waiting, name=name, context=context, date=date_str)
-            async with _premium_gen_semaphore(user):
-                answer = await ask_ai(prompt)
-            await stop_intermediate()
             await send_long(message.chat.id, f"{title}\n\n{answer}")
-            await db.save_reading_text(user_id, waiting, title, answer, date_str)
 
         try:
             pdf_bytes = await _generate_pdf_async(
@@ -1658,8 +1623,6 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         )
         await message.answer(retry_text, reply_markup=retry_menu(waiting, is_free=is_free))
         await state.clear()
-    finally:
-        _generating.discard(user_id)
 
 def _parse_two_dates(text: str) -> list[str] | None:
     if "," not in text:
@@ -1698,7 +1661,6 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
     if user_id in _generating:
         await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
         return
-    _generating.add(user_id)
 
     wait_msg = await message.answer("⏳ Ева составляет разбор совместимости...")
 
@@ -1724,26 +1686,17 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
 
     try:
         n1 = calculate_destiny(parts[0])
-        n2 = calculate_destiny(parts[1])
-        compat_date_str = f"{parts[0]},{parts[1]}"
-        cached = await db.get_reading_text(user_id, "compat")
-        if cached and cached.get("date_str") == compat_date_str:
-            await stop_intermediate()
-            answer = cached["text"]
+        title, answer, from_cache = await generate_compat(user_id, user, parts[0], parts[1])
+        await stop_intermediate()
+        if from_cache:
             await send_long(
                 message.chat.id,
-                f"💑 Совместимость\n\n{answer}\n\n"
+                f"{title}\n\n{answer}\n\n"
                 f"ℹ️ Разбор совместимости для этих дат мы уже делали — показываю тот же текст, "
                 f"чтобы не было противоречий."
             )
         else:
-            context = build_numerology_context(name, parts[0])
-            prompt  = build_prompt("compat", name=name, context=context, date1=parts[0], date2=parts[1], n2=n2)
-            async with _premium_gen_semaphore(user):
-                answer = await ask_ai(prompt)
-            await stop_intermediate()
-            await send_long(message.chat.id, f"💑 Совместимость\n\n{answer}")
-            await db.save_reading_text(user_id, "compat", "💑 Совместимость", answer, compat_date_str)
+            await send_long(message.chat.id, f"{title}\n\n{answer}")
 
         try:
             pdf_bytes = await _generate_pdf_async(
@@ -1783,8 +1736,6 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
         )
         await message.answer(retry_text, reply_markup=retry_menu("compat", is_free=is_free))
         await state.clear()
-    finally:
-        _generating.discard(user_id)
 
 @dp.message(StateFilter(Form.waiting_date))
 async def handle_date(message: Message, state: FSMContext):
@@ -2063,7 +2014,7 @@ async def handle_ai_question(message: Message, state: FSMContext):
             "диалога, а не отдельный разбор: не используй emoji-заголовки, не структурируй "
             "ответ на блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
         )
-        async with _premium_gen_semaphore(user):
+        async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
         await message.answer(answer, reply_markup=_ask_again_menu())
     except Exception as e:
@@ -2165,7 +2116,7 @@ async def handle_followup(message: Message, state: FSMContext):
             "Это часть живого диалога: не используй emoji-заголовки, не структурируй ответ на "
             "блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
         )
-        async with _premium_gen_semaphore(user):
+        async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❓ Спросить ещё по этому разбору", callback_data=f"followup_{key}")],

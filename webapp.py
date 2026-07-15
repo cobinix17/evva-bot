@@ -25,7 +25,7 @@ from config import (
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
     YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE,
 )
-from numerology import numerology_summary, is_valid_date, build_numerology_context
+from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny
 from keyboards import date_choice_menu
 from ai import ask_ai, is_rude, rude_reply
 
@@ -370,11 +370,13 @@ async def api_reading(request: web.Request) -> web.Response:
         "text":  reading["text"],
     })
 
-async def api_reading_regenerate(request: web.Request) -> web.Response:
-    """Повторный заказ уже купленного разбора — бесплатно, т.к. оплата уже
-    была. Саму генерацию делает бот: если дата совпадёт с прошлой, бот
-    вернёт тот же сохранённый текст (см. _process_date), а если пользователь
-    введёт новую дату — сгенерирует заново."""
+async def api_reading_generate(request: web.Request) -> web.Response:
+    """Генерирует купленный разбор ПРЯМО в вебе (без ухода в чат с ботом).
+    Берёт дату(-ы) из тела запроса, гоняет то же ядро генерации, что и бот
+    (generation.generate_single/generate_compat — ИИ + кэш), и возвращает
+    готовый текст фронту. Оплата уже была при покупке — повторный вызов на ту
+    же дату бесплатно вернёт тот же текст из кэша, на новую — сгенерирует
+    заново. compat принимает date1+date2, остальные — date."""
     user_id = await _authed_user_id(request)
     if not user_id:
         return _json_error("unauthorized", 401)
@@ -385,23 +387,38 @@ async def api_reading_regenerate(request: web.Request) -> web.Response:
     if key not in user.get("purchased", []):
         return _json_error("not purchased", 403)
 
-    user["waiting"] = key
-    await db.save_user(user_id, user)
-
-    if not user.get("birth_date"):
-        return web.json_response({"ok": True, "needs_birthdate": True})
-
-    title = PAID_RAZBORY[key]
     try:
-        await _bot.send_message(
-            user_id,
-            f"🔁 «{title}» — заказываешь заново.\n\n"
-            f"Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?",
-            reply_markup=date_choice_menu()
-        )
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    from generation import generate_single, generate_compat, GenerationBusy
+    try:
+        if key == "compat":
+            date1 = (body.get("date1") or "").strip()
+            date2 = (body.get("date2") or "").strip()
+            if not is_valid_date(date1) or not is_valid_date(date2):
+                return _json_error("Введи две корректные даты в формате ДД.ММ.ГГГГ", 400)
+            title, text, from_cache = await generate_compat(user_id, user, date1, date2)
+        else:
+            date_str = (body.get("date") or "").strip()
+            if not date_str and user.get("birth_date"):
+                date_str = user["birth_date"]
+            if not is_valid_date(date_str):
+                return _json_error("Введи корректную дату в формате ДД.ММ.ГГГГ", 400)
+            # Первая дата в жизни аккаунта — запоминаем как дату рождения.
+            if not user.get("birth_date"):
+                user["birth_date"]     = date_str
+                user["destiny_number"] = calculate_destiny(date_str)
+                await db.save_user(user_id, user)
+            title, text, from_cache = await generate_single(user_id, user, key, date_str)
+    except GenerationBusy:
+        return _json_error("Разбор уже готовится — подожди пару секунд 🔮", 409)
     except Exception as e:
-        logging.warning(f"reading regenerate notify error: {e}")
-    return web.json_response({"ok": True})
+        logging.error(f"web reading generate error [{key}]: {e}", exc_info=True)
+        return _json_error("Не удалось составить разбор — попробуй ещё раз чуть позже 🙏", 500)
+
+    return web.json_response({"title": title, "text": text, "from_cache": from_cache})
 
 async def api_premium_buy(request: web.Request) -> web.Response:
     """Invoice-ссылка на подписку с subscription_period — открывается через
@@ -449,12 +466,9 @@ async def api_referral(request: web.Request) -> web.Response:
     })
 
 async def api_balance_buy(request: web.Request) -> web.Response:
-    """Оплата разбора бонусным балансом. Само списание и открытие разбора
-    происходит здесь, но фактическую генерацию (ИИ + PDF) всё ещё делает
-    бот — чтобы не дублировать эту логику, после оплаты отправляем в чат
-    сообщение с кнопкой 'Для себя/другая дата' (use_my_date/use_new_date —
-    их обработчики в bot.py не привязаны к FSM-состоянию, сработают
-    независимо от того, что именно прислало эту клавиатуру)."""
+    """Оплата разбора бонусным балансом. Списываем баланс, открываем разбор —
+    саму генерацию потом запустит форма даты в вебе (api_reading_generate),
+    без ухода в чат с ботом."""
     user_id = await _authed_user_id(request)
     if not user_id:
         return _json_error("unauthorized", 401)
@@ -464,8 +478,6 @@ async def api_balance_buy(request: web.Request) -> web.Response:
     user = await db.get_user(user_id)
     if key in user.get("purchased", []):
         return web.json_response({"already_purchased": True})
-    if not user.get("birth_date"):
-        return _json_error("Сначала укажи дату рождения на вкладке «Матрица»", 400)
 
     price = PRICES.get(key, 49)
     spent = await db.spend_balance(user_id, price)
@@ -474,21 +486,9 @@ async def api_balance_buy(request: web.Request) -> web.Response:
 
     user = await db.get_user(user_id)  # перечитываем — баланс уже списан
     user["purchased"].append(key)
-    user["waiting"] = key
     await db.save_user(user_id, user)
-
-    title = PAID_RAZBORY[key]
-    desc  = RAZBOR_DESCRIPTIONS.get(key, "")
-    intro = f"💬 {desc}\n\n" if desc else ""
-    try:
-        await _bot.send_message(
-            user_id,
-            f"✅ «{title}» оплачен балансом ({price} ⭐)!\n\n"
-            f"{intro}Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?",
-            reply_markup=date_choice_menu()
-        )
-    except Exception as e:
-        logging.warning(f"balance buy notify error: {e}")
+    # Баланс — бонусные (реферальные) звёзды, а не живые деньги: в выручку
+    # не пишем, иначе двойной счёт с покупкой, что этот бонус породила.
     return web.json_response({"ok": True})
 
 async def api_ask(request: web.Request) -> web.Response:
@@ -765,7 +765,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_get("/api/matrix", api_matrix)
     app.router.add_post("/api/buy/{key}", api_buy)
     app.router.add_get("/api/reading/{key}", api_reading)
-    app.router.add_post("/api/reading/{key}/regenerate", api_reading_regenerate)
+    app.router.add_post("/api/reading/{key}/generate", api_reading_generate)
     app.router.add_post("/api/premium/buy", api_premium_buy)
     app.router.add_post("/api/ask", api_ask)
     app.router.add_post("/webhook/yookassa", yookassa_webhook)
