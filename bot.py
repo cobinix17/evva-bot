@@ -1169,16 +1169,52 @@ async def send_invoice(chat_id, title, description, payload, amount):
         prices=[LabeledPrice(label=title, amount=amount)],
     )
 
+async def _create_and_send_rub_payment(target: Message, user_id: int, payload: str, price_rub: int, title: str, description: str, method: str | None, email: str):
+    """Создаёт платёж в ЮKassa и присылает кнопку оплаты. Общий хвост для
+    случая с уже сохранённым email и для только что введённого."""
+    from yookassa_pay import create_payment
+    bot_info = await bot.get_me()
+    try:
+        payment_id, url = await create_payment(
+            amount_rub=price_rub,
+            description=description or title,
+            return_url=f"https://t.me/{bot_info.username}",
+            metadata={"user_id": str(user_id), "payload": payload},
+            email=email,
+            method=method,
+        )
+    except Exception as e:
+        logging.error(f"YooKassa create_payment error: {e}", exc_info=True)
+        await target.answer("❌ Не удалось создать оплату — попробуй чуть позже 🙏")
+        return
+    method_line = {"bank_card": "картой", "sbp": "через СБП"}.get(method, "картой, СБП и другими способами")
+    await target.answer(
+        f"💳 Оплати {price_rub}₽ — {method_line}.\n\n"
+        "После оплаты доступ откроется автоматически в течение минуты.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"Оплатить {price_rub}₽", url=url)]
+        ])
+    )
+
 async def _ask_rub_email(message_or_callback, state: FSMContext, payload: str, price_rub: int, title: str, description: str, method: str | None = None):
     """Первый шаг оплаты рублями — email для чека (54-ФЗ), обязателен для
     прямого API ЮKassa (в отличие от Telegram Payments, тут его сама
     Telegram не спрашивает — просим сами). method — "bank_card"/"sbp",
-    сразу ведёт на нужный способ оплаты (см. rub_card_buy_/rub_sbp_buy_)."""
+    сразу ведёт на нужный способ оплаты (см. rub_card_buy_/rub_sbp_buy_).
+    Если email уже сохранён с прошлой оплаты — сразу создаём платёж,
+    заново не спрашиваем."""
+    user_id = message_or_callback.from_user.id
+    target  = message_or_callback.message if isinstance(message_or_callback, CallbackQuery) else message_or_callback
+    user = await db.get_user(user_id)
+    saved_email = user.get("email")
+    if saved_email:
+        await target.answer(f"«{title}» — {price_rub}₽. Чек придёт на {saved_email}.")
+        await _create_and_send_rub_payment(target, user_id, payload, price_rub, title, description, method, saved_email)
+        return
     await state.update_data(rub_payload=payload, rub_amount=price_rub, rub_title=title, rub_desc=description, rub_method=method)
     await state.set_state(Form.waiting_rub_email)
-    target = message_or_callback.message if isinstance(message_or_callback, CallbackQuery) else message_or_callback
     await target.answer(
-        f"«{title}» — {price_rub}₽.\n\nВведи email — на него придёт чек об оплате:",
+        f"«{title}» — {price_rub}₽.\n\nВведи email — на него придёт чек об оплате (запомню на будущее):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
         ])
@@ -1202,29 +1238,8 @@ async def handle_rub_email(message: Message, state: FSMContext):
     if not payload:
         await message.answer("❌ Что-то пошло не так — попробуй заново из меню.")
         return
-    from yookassa_pay import create_payment
-    bot_info = await bot.get_me()
-    try:
-        payment_id, url = await create_payment(
-            amount_rub=price_rub,
-            description=description or title,
-            return_url=f"https://t.me/{bot_info.username}",
-            metadata={"user_id": str(message.from_user.id), "payload": payload},
-            email=email,
-            method=method,
-        )
-    except Exception as e:
-        logging.error(f"YooKassa create_payment error: {e}", exc_info=True)
-        await message.answer("❌ Не удалось создать оплату — попробуй чуть позже 🙏")
-        return
-    method_line = {"bank_card": "картой", "sbp": "через СБП"}.get(method, "картой, СБП и другими способами")
-    await message.answer(
-        f"💳 Оплати {price_rub}₽ — {method_line}.\n\n"
-        "После оплаты доступ откроется автоматически в течение минуты.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"Оплатить {price_rub}₽", url=url)]
-        ])
-    )
+    await db.set_email(message.from_user.id, email)
+    await _create_and_send_rub_payment(message, message.from_user.id, payload, price_rub, title, description, method, email)
 
 async def _start_date_flow(message: Message, state: FSMContext, user: dict, key: str, is_free: bool = False):
     """Общий переход к вводу даты(-ат) после того как разбор уже точно
