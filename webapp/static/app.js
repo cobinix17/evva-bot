@@ -129,7 +129,10 @@ function renderMatrix(m, birthDate) {
   const pins = (m.pinnacles || []).map((n, i) =>
     `<div class="pin"><div class="pin-n">${n}</div><div class="pin-a">${PIN_AGES[i] || ""} лет</div></div>`
   ).join("");
-  const cards = (m.cards || []).map(c =>
+  const cardList = [...(m.cards || [])];
+  if (m.life_arcana) cardList.push({ value: m.life_arcana.num, label: `Аркан — ${m.life_arcana.name}` });
+  if (m.year_arcana) cardList.push({ value: m.year_arcana.num, label: `Аркан года — ${m.year_arcana.name}` });
+  const cards = cardList.map(c =>
     `<div class="card"><div class="big">${c.value}</div><div class="lbl">${c.label}</div></div>`
   ).join("");
   const spinCard = ME.can_spin
