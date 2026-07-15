@@ -23,7 +23,7 @@ from config import (
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
-    YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE,
+    PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price,
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny
 from keyboards import date_choice_menu
@@ -135,6 +135,9 @@ async def api_me(request: web.Request) -> web.Response:
         "premium_until": user["premium_until"].isoformat() if user.get("premium_until") else None,
         "is_admin":      user_id == ADMIN_ID,
         "matrix":        matrix,
+        "email":         user.get("email"),
+        "yookassa":      bool(YOOKASSA_SHOP_ID),
+        "premium_price_rub": PREMIUM_PRICE_RUB if YOOKASSA_SHOP_ID else None,
         "can_spin":      user.get("last_spin_date") is None or user["last_spin_date"] < db.utc_now().date(),
         **await _digest_status(user_id, user),
     })
@@ -319,15 +322,16 @@ async def api_catalog(request: web.Request) -> web.Response:
             "title": title,
             "items": [
                 {
-                    "key":   k,
-                    "title": TITLES.get(k, k),
-                    "price": PRICES.get(k, 49),
-                    "desc":  RAZBOR_DESCRIPTIONS.get(k, ""),
+                    "key":       k,
+                    "title":     TITLES.get(k, k),
+                    "price":     PRICES.get(k, 49),
+                    "price_rub": rub_price(PRICES.get(k, 49)) if YOOKASSA_SHOP_ID else None,
+                    "desc":      RAZBOR_DESCRIPTIONS.get(k, ""),
                 }
                 for k in items
             ],
         })
-    return web.json_response({"sections": sections})
+    return web.json_response({"sections": sections, "yookassa": bool(YOOKASSA_SHOP_ID)})
 
 async def api_buy(request: web.Request) -> web.Response:
     """Создаёт invoice-ссылку на разбор — фронт открывает её через
@@ -351,6 +355,63 @@ async def api_buy(request: web.Request) -> web.Response:
         currency="XTR", prices=[LabeledPrice(label=title, amount=price)],
     )
     return web.json_response({"invoice_url": link})
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+async def api_buy_rub(request: web.Request) -> web.Response:
+    """Создаёт платёж рублями через ЮKassa (карта или СБП) для разбора или
+    премиума. Возвращает confirmation_url — фронт открывает его через
+    tg.openLink. email обязателен для чека (54-ФЗ); сохраняем, чтобы в
+    следующий раз не спрашивать. Выдача разбора/премиума — в вебхуке
+    /webhook/yookassa после успешной оплаты, как и для бота."""
+    if not YOOKASSA_SHOP_ID:
+        return _json_error("Оплата рублями недоступна", 400)
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    key = request.match_info["key"]
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    method = body.get("method")
+    if method not in ("bank_card", "sbp"):
+        return _json_error("bad method", 400)
+    user  = await db.get_user(user_id)
+    email = (body.get("email") or user.get("email") or "").strip()
+    if not _EMAIL_RE.match(email):
+        return _json_error("Введи корректный email для чека", 400)
+    if email != user.get("email"):
+        await db.set_email(user_id, email)
+
+    if key in (PREMIUM_PAYLOAD, "premium"):
+        if db.is_premium(user):
+            return web.json_response({"already_premium": True})
+        payload, price_rub, title = PREMIUM_PAYLOAD, PREMIUM_PRICE_RUB, PREMIUM_TITLE
+        desc = "Безлимитный доступ ко всем разборам, личный прогноз каждое утро и приоритетная генерация."
+    else:
+        if key not in PAID_RAZBORY:
+            return _json_error("unknown reading", 404)
+        if key in user.get("purchased", []):
+            return web.json_response({"already_purchased": True})
+        payload, price_rub = key, rub_price(PRICES.get(key, 49))
+        title = PAID_RAZBORY[key]
+        desc  = RAZBOR_DESCRIPTIONS.get(key, title)
+
+    from yookassa_pay import create_payment
+    try:
+        _, url = await create_payment(
+            amount_rub=price_rub,
+            description=desc or title,
+            return_url=f"https://t.me/{await _get_bot_username()}",
+            metadata={"user_id": str(user_id), "payload": payload},
+            email=email,
+            method=method,
+        )
+    except Exception as e:
+        logging.error(f"web YooKassa create_payment error: {e}", exc_info=True)
+        return _json_error("Не удалось создать оплату — попробуй позже 🙏", 500)
+    return web.json_response({"confirmation_url": url})
 
 async def api_reading(request: web.Request) -> web.Response:
     """Отдаёт сохранённый текст уже сгенерированного разбора — открывается
@@ -764,6 +825,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_get("/api/catalog", api_catalog)
     app.router.add_get("/api/matrix", api_matrix)
     app.router.add_post("/api/buy/{key}", api_buy)
+    app.router.add_post("/api/buy_rub/{key}", api_buy_rub)
     app.router.add_get("/api/reading/{key}", api_reading)
     app.router.add_post("/api/reading/{key}/generate", api_reading_generate)
     app.router.add_post("/api/premium/buy", api_premium_buy)

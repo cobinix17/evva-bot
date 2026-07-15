@@ -386,24 +386,58 @@ async function onItemClick(key) {
     await openReading(key);
     return;
   }
+  renderPayScreen(key);
+}
+
+// Экран выбора способа оплаты разбора — звёзды / карта ₽ / СБП ₽ / баланс.
+function renderPayScreen(key) {
   const item    = findCatalogItem(key);
+  if (!item) { buyWithStars(key); return; }
   const balance = ME.ref_balance || 0;
-  if (item && balance >= item.price && tg?.showPopup) {
-    tg.showPopup({
-      title: item.title,
-      message: `У тебя ${balance} ⭐ на бонусном балансе — хватает на этот разбор (${item.price} ⭐). Как оплатить?`,
-      buttons: [
-        { id: "balance", type: "default", text: `Балансом (${item.price} ⭐)` },
-        { id: "stars",   type: "default", text: "Звёздами Telegram" },
-        { id: "cancel",  type: "cancel" },
-      ],
-    }, (buttonId) => {
-      if (buttonId === "balance") buyWithBalance(key);
-      else if (buttonId === "stars") buyWithStars(key);
-    });
-    return;
+  const rub     = item.price_rub;
+  const priceLine = `${item.price} ⭐${rub ? ` / ${rub}₽` : ""}`;
+  const emailVal = ME.email ? escapeHtml(ME.email) : "";
+  let btns = "";
+  if (balance >= item.price)
+    btns += `<button class="pay-btn" data-m="balance">⭐ Балансом (${item.price} ⭐)</button>`;
+  btns += `<button class="pay-btn" data-m="stars">⭐ ${item.price} звёзд Telegram</button>`;
+  if (rub) {
+    btns += `<button class="pay-btn" data-m="card">💳 Картой — ${rub}₽</button>`;
+    btns += `<button class="pay-btn" data-m="sbp">📱 СБП / QR — ${rub}₽</button>`;
   }
-  await buyWithStars(key);
+  app.innerHTML = `
+    <button class="back-btn" id="pay-back">← Назад</button>
+    <div class="onboard">
+      <div class="eyebrow">${escapeHtml(item.title)} — ${priceLine}</div>
+      <p>${escapeHtml(item.desc || "")}</p>
+      ${rub ? `<input id="pay-email" placeholder="email для чека (для оплаты ₽)" inputmode="email" value="${emailVal}" style="margin-bottom:6px">` : ""}
+      <div class="pay-btns">${btns}</div>
+    </div>
+  `;
+  document.getElementById("pay-back").addEventListener("click", render);
+  app.querySelectorAll(".pay-btn").forEach(b => b.addEventListener("click", () => {
+    const m = b.dataset.m;
+    if (m === "balance") buyWithBalance(key);
+    else if (m === "stars") buyWithStars(key);
+    else buyWithRub(key, m === "card" ? "bank_card" : "sbp");
+  }));
+}
+
+async function buyWithRub(key, method) {
+  const emailEl = document.getElementById("pay-email");
+  const email = (emailEl?.value || ME.email || "").trim();
+  if (!email) { tg?.showAlert("Введи email — на него придёт чек об оплате 🌸"); return; }
+  try {
+    const res = await api(`/api/buy_rub/${key}`, {
+      method: "POST", body: JSON.stringify({ method, email }),
+    });
+    if (res.already_purchased || res.already_premium) { await boot(); return; }
+    ME.email = email;
+    tg?.showAlert("Открываю страницу оплаты. После оплаты вернись сюда — разбор откроется 🌸");
+    if (res.confirmation_url) tg.openLink(res.confirmation_url);
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось создать оплату");
+  }
 }
 
 function renderMine() {
@@ -430,7 +464,11 @@ function renderPremium() {
       <div class="onboard">
         <p>До 30 разборов в месяц без поштучной покупки, личный прогноз каждое утро,
         приоритетная генерация и безлимитный AI-чат «Спроси Еву» по твоим числам.</p>
-        <button id="premium-buy-btn">Оформить за 399 ⭐/мес</button>
+        ${ME.yookassa ? `<input id="pay-email" placeholder="email для чека (для оплаты ₽)" inputmode="email" value="${ME.email ? escapeHtml(ME.email) : ""}" style="margin-bottom:6px">` : ""}
+        <button id="premium-buy-btn">⭐ Оформить за 399 ⭐/мес</button>
+        ${ME.yookassa ? `
+        <button id="premium-card-btn" style="margin-top:8px">💳 Картой — ${ME.premium_price_rub}₽ (на месяц)</button>
+        <button id="premium-sbp-btn" style="margin-top:8px">📱 СБП / QR — ${ME.premium_price_rub}₽ (на месяц)</button>` : ""}
       </div>
     ` : (() => {
       const until = ME.premium_until ? new Date(ME.premium_until).toLocaleDateString("ru-RU") : "";
@@ -509,6 +547,23 @@ async function buyPremium() {
     });
   } catch (e) {
     tg?.showAlert(e.message || "Не удалось начать оплату");
+  }
+}
+
+async function buyPremiumRub(method) {
+  const emailEl = document.getElementById("pay-email");
+  const email = (emailEl?.value || ME.email || "").trim();
+  if (!email) { tg?.showAlert("Введи email — на него придёт чек об оплате 🌸"); return; }
+  try {
+    const res = await api("/api/buy_rub/premium", {
+      method: "POST", body: JSON.stringify({ method, email }),
+    });
+    if (res.already_premium) { await boot(); return; }
+    ME.email = email;
+    tg?.showAlert("Открываю страницу оплаты. После оплаты премиум активируется автоматически 🌸");
+    if (res.confirmation_url) tg.openLink(res.confirmation_url);
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось создать оплату");
   }
 }
 
@@ -670,6 +725,8 @@ function render() {
   } else if (currentTab === "premium") {
     app.innerHTML = renderPremium();
     document.getElementById("premium-buy-btn")?.addEventListener("click", buyPremium);
+    document.getElementById("premium-card-btn")?.addEventListener("click", () => buyPremiumRub("bank_card"));
+    document.getElementById("premium-sbp-btn")?.addEventListener("click", () => buyPremiumRub("sbp"));
     document.getElementById("ask-send-btn")?.addEventListener("click", sendAskQuestion);
     loadReferralBlock();
   } else if (currentTab === "more") {

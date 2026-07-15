@@ -100,6 +100,7 @@ h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
   background:linear-gradient(135deg,var(--bar1),var(--bar2)); color:#fff; font-family:'Head',serif;
   font-weight:600; font-size:16px; letter-spacing:.02em; cursor:pointer; box-shadow:0 8px 20px rgba(94,58,133,.3); }
 .onboard button:active{ transform:translateY(1px); }
+.pay-btns{ display:flex; flex-direction:column; gap:8px; }
 
 .cycles{ margin:26px 18px; }
 .cyc-head{ display:flex; align-items:center; gap:12px; margin-bottom:16px; }
