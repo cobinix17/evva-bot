@@ -16,15 +16,15 @@ Configuration.secret_key = YOOKASSA_SECRET_KEY
 
 
 async def create_payment(amount_rub: int, description: str, return_url: str,
-                          metadata: dict, method: str | None = None) -> tuple[str, str]:
-    """Создаёт платёж с confirmation.type=redirect. Контакт покупателя для
-    чека (54-ФЗ) не передаём — если он нужен, страница оплаты ЮKassa сама
-    запросит email/телефон у покупателя (мы его в бота не просим). method —
-    "bank_card" или "sbp": если задан, сразу ведёт на этот способ оплаты
-    в обход общей страницы выбора ЮKassa (как в примере Durev VPN — три
-    отдельные кнопки вместо одной с выбором внутри). None — обычная
-    страница со всеми подключёнными способами. Возвращает (payment_id,
-    confirmation_url) — на вторую ссылку отправляем пользователя платить."""
+                          metadata: dict, email: str, method: str | None = None) -> tuple[str, str]:
+    """Создаёт платёж с confirmation.type=redirect. email — ОБЯЗАТЕЛЕН: без
+    контакта в receipt.customer ЮKassa отклоняет создание платежа (проверено
+    на практике — форма оплаты сама email не запрашивает, это не Checkout
+    Widget). method — "bank_card" или "sbp": если задан, сразу ведёт на этот
+    способ оплаты в обход общей страницы выбора ЮKassa (как в примере Durev
+    VPN — три отдельные кнопки вместо одной с выбором внутри). None —
+    обычная страница со всеми подключёнными способами. Возвращает
+    (payment_id, confirmation_url) — на вторую ссылку отправляем платить."""
     def _create():
         receipt = {
             "items": [{
@@ -32,7 +32,8 @@ async def create_payment(amount_rub: int, description: str, return_url: str,
                 "quantity": "1.00",
                 "amount": {"value": f"{amount_rub}.00", "currency": "RUB"},
                 "vat_code": 1,
-            }]
+            }],
+            "customer": {"email": email},
         }
         payload = {
             "amount": {"value": f"{amount_rub}.00", "currency": "RUB"},

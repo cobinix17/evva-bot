@@ -158,6 +158,7 @@ class Form(StatesGroup):
     waiting_feedback         = State()
     waiting_admin_reply      = State()
     waiting_promo            = State()
+    waiting_rub_email        = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1168,12 +1169,9 @@ async def send_invoice(chat_id, title, description, payload, amount):
         prices=[LabeledPrice(label=title, amount=amount)],
     )
 
-async def _pay_rub(message_or_callback, payload: str, price_rub: int, title: str, description: str, method: str | None = None):
-    """Создаёт платёж в ЮKassa и присылает кнопку оплаты — без предварительного
-    вопроса про email: если для чека (54-ФЗ) нужен контакт, а мы его не
-    передали, страница оплаты ЮKassa сама запросит его у покупателя."""
-    user_id = message_or_callback.from_user.id
-    target  = message_or_callback.message if isinstance(message_or_callback, CallbackQuery) else message_or_callback
+async def _create_and_send_rub_payment(target: Message, user_id: int, payload: str, price_rub: int, title: str, description: str, method: str | None, email: str):
+    """Создаёт платёж в ЮKassa и присылает кнопку оплаты. Общий хвост для
+    случая с уже сохранённым email и для только что введённого."""
     from yookassa_pay import create_payment
     bot_info = await bot.get_me()
     try:
@@ -1182,6 +1180,7 @@ async def _pay_rub(message_or_callback, payload: str, price_rub: int, title: str
             description=description or title,
             return_url=f"https://t.me/{bot_info.username}",
             metadata={"user_id": str(user_id), "payload": payload},
+            email=email,
             method=method,
         )
     except Exception as e:
@@ -1196,6 +1195,47 @@ async def _pay_rub(message_or_callback, payload: str, price_rub: int, title: str
             [InlineKeyboardButton(text=f"Оплатить {price_rub}₽", url=url)]
         ])
     )
+
+async def _pay_rub(message_or_callback, state: FSMContext, payload: str, price_rub: int, title: str, description: str, method: str | None = None):
+    """Оплата рублями — email для чека ЮKassa обязателен на уровне API (без
+    него платёж не создаётся, проверено на практике). Если email уже
+    сохранён с прошлой оплаты — сразу создаём платёж, заново не спрашиваем."""
+    user_id = message_or_callback.from_user.id
+    target  = message_or_callback.message if isinstance(message_or_callback, CallbackQuery) else message_or_callback
+    user = await db.get_user(user_id)
+    saved_email = user.get("email")
+    if saved_email:
+        await _create_and_send_rub_payment(target, user_id, payload, price_rub, title, description, method, saved_email)
+        return
+    await state.update_data(rub_payload=payload, rub_amount=price_rub, rub_title=title, rub_desc=description, rub_method=method)
+    await state.set_state(Form.waiting_rub_email)
+    await target.answer(
+        f"«{title}» — {price_rub}₽.\n\nВведи email — на него придёт чек об оплате (запомню на будущее):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
+    )
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+@dp.message(StateFilter(Form.waiting_rub_email))
+async def handle_rub_email(message: Message, state: FSMContext):
+    email = (message.text or "").strip()
+    if not _EMAIL_RE.match(email):
+        await message.answer("❌ Похоже на неверный email — введи ещё раз (например, name@mail.ru):")
+        return
+    data       = await state.get_data()
+    payload    = data.get("rub_payload")
+    price_rub  = data.get("rub_amount")
+    title      = data.get("rub_title")
+    description = data.get("rub_desc")
+    method     = data.get("rub_method")
+    await state.clear()
+    if not payload:
+        await message.answer("❌ Что-то пошло не так — попробуй заново из меню.")
+        return
+    await db.set_email(message.from_user.id, email)
+    await _create_and_send_rub_payment(message, message.from_user.id, payload, price_rub, title, description, method, email)
 
 async def _start_date_flow(message: Message, state: FSMContext, user: dict, key: str, is_free: bool = False):
     """Общий переход к вводу даты(-ат) после того как разбор уже точно
@@ -1310,7 +1350,7 @@ async def rub_buy_handler(callback: CallbackQuery, state: FSMContext):
         price_rub = rub_price(price)
         title     = PAID_RAZBORY[key]
         desc      = RAZBOR_DESCRIPTIONS.get(key, title)
-        await _pay_rub(callback, key, price_rub, title, desc, method=method)
+        await _pay_rub(callback, state, key, price_rub, title, desc, method=method)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("stars_buy_"))
@@ -1900,7 +1940,7 @@ async def premium_pay_rub_cb(callback: CallbackQuery, state: FSMContext):
         return
     method = "bank_card" if callback.data == "premium_pay_rub_card" else "sbp"
     await _pay_rub(
-        callback, PREMIUM_PAYLOAD, PREMIUM_PRICE_RUB, PREMIUM_TITLE,
+        callback, state, PREMIUM_PAYLOAD, PREMIUM_PRICE_RUB, PREMIUM_TITLE,
         "Безлимитный доступ ко всем разборам, личный прогноз каждое утро и приоритетная генерация.",
         method=method,
     )
