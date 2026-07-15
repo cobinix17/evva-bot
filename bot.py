@@ -114,7 +114,7 @@ async def global_error_handler(event: ErrorEvent):
     update = event.update
     try:
         if update.message:
-            await update.message.answer("❌ Что-то пошло не так. Попробуй /menu или /cancel.")
+            await update.message.answer("❌ Что-то пошло не так. Попробуй /menu или /cancel.", reply_markup=_MENU_BACK_MARKUP)
         elif update.callback_query:
             await update.callback_query.answer("❌ Что-то пошло не так.", show_alert=True)
     except Exception:
@@ -615,18 +615,22 @@ async def cancel_cmd(message: Message, state: FSMContext):
         user = await db.get_user(message.from_user.id)
         await message.answer("❌ Отменено.", reply_markup=main_menu_for(message.from_user.id, user))
 
+_MENU_BACK_MARKUP = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")]
+])
+
 async def _apply_promo(message: Message, code: str):
     code = code.strip().upper()
     row  = await db.db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
     if not row:
-        await message.answer("❌ Такого промокода не существует.")
+        await message.answer("❌ Такого промокода не существует.", reply_markup=_MENU_BACK_MARKUP)
         return
     if row['expires_at'] and row['expires_at'] < utc_now():
-        await message.answer("❌ Этот промокод уже истёк.")
+        await message.answer("❌ Этот промокод уже истёк.", reply_markup=_MENU_BACK_MARKUP)
         return
     remaining = row['max_uses'] - row['uses_count']
     if remaining <= 0:
-        await message.answer("❌ Этот промокод исчерпан — все использования закончились.")
+        await message.answer("❌ Этот промокод исчерпан — все использования закончились.", reply_markup=_MENU_BACK_MARKUP)
         return
     user = await db.get_user(message.from_user.id)
     await message.answer(
@@ -1185,7 +1189,7 @@ async def _create_and_send_rub_payment(target: Message, user_id: int, payload: s
         )
     except Exception as e:
         logging.error(f"YooKassa create_payment error: {e}", exc_info=True)
-        await target.answer("❌ Не удалось создать оплату — попробуй чуть позже 🙏")
+        await target.answer("❌ Не удалось создать оплату — попробуй чуть позже 🙏", reply_markup=_MENU_BACK_MARKUP)
         return
     method_line = {"bank_card": "картой", "sbp": "через СБП"}.get(method, "картой, СБП и другими способами")
     await target.answer(
@@ -1232,7 +1236,7 @@ async def handle_rub_email(message: Message, state: FSMContext):
     method     = data.get("rub_method")
     await state.clear()
     if not payload:
-        await message.answer("❌ Что-то пошло не так — попробуй заново из меню.")
+        await message.answer("❌ Что-то пошло не так — попробуй заново из меню.", reply_markup=_MENU_BACK_MARKUP)
         return
     await db.set_email(message.from_user.id, email)
     await _create_and_send_rub_payment(message, message.from_user.id, payload, price_rub, title, description, method, email)
@@ -1490,7 +1494,7 @@ async def successful_payment(message: Message, state: FSMContext):
         key = payload.removeprefix("gift_")
         if key not in PAID_RAZBORY:
             logging.warning(f"gift payment с неизвестным key={key!r} от user {message.from_user.id}")
-            await message.answer("❌ Что-то пошло не так с оплатой — напиши в поддержку.")
+            await message.answer("❌ Что-то пошло не так с оплатой — напиши в поддержку.", reply_markup=_MENU_BACK_MARKUP)
             await state.clear()
             return
         code = secrets.token_hex(4)
@@ -1507,7 +1511,7 @@ async def successful_payment(message: Message, state: FSMContext):
 
     if payload not in PAID_RAZBORY:
         logging.warning(f"successful_payment с неизвестным payload={payload!r} от user {message.from_user.id}")
-        await message.answer("❌ Что-то пошло не так с оплатой — напиши в поддержку.")
+        await message.answer("❌ Что-то пошло не так с оплатой — напиши в поддержку.", reply_markup=_MENU_BACK_MARKUP)
         await state.clear()
         return
 
@@ -1921,7 +1925,7 @@ async def _show_premium(target: Message, user: dict):
         link = await _create_premium_invoice()
     except Exception as e:
         logging.error(f"Premium invoice error: {e}", exc_info=True)
-        await target.answer("❌ Не удалось открыть оплату — попробуй чуть позже 🙏")
+        await target.answer("❌ Не удалось открыть оплату — попробуй чуть позже 🙏", reply_markup=_MENU_BACK_MARKUP)
         return
     await target.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link, PREMIUM_PRICE_RUB if YOOKASSA_SHOP_ID else None))
 
@@ -2110,7 +2114,7 @@ async def handle_followup(message: Message, state: FSMContext):
     user = await db.get_user(user_id)
     if not key or key not in user.get("purchased", []):
         await state.clear()
-        await message.answer("Разбор не найден — выбери его заново в «Мои разборы» и нажми «Задать вопрос».")
+        await message.answer("Разбор не найден — выбери его заново в «Мои разборы» и нажми «Задать вопрос».", reply_markup=_MENU_BACK_MARKUP)
         return
 
     if is_rude(question):
@@ -2444,7 +2448,7 @@ async def balance_cmd(message: Message, state: FSMContext):
         ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
         lines.append(f"\n🔗 Пригласи подругу и начни зарабатывать:\n{ref_link}")
 
-    await message.answer("\n".join(lines))
+    await message.answer("\n".join(lines), reply_markup=_MENU_BACK_MARKUP)
 
 # ─── РАССЫЛКИ ────────────────────────────────────────────────────────────────
 _DAY_ENERGY = {

@@ -260,8 +260,9 @@ def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
         if s not in user.get("purchased", []):
             title = TITLES.get(s, s)
             price = PRICES.get(s, 49)
+            price_line = f"{price} ⭐" + (f" / {rub_price(price)}₽" if YOOKASSA_SHOP_ID else "")
             buttons.append([InlineKeyboardButton(
-                text=f"{title} — {price} ⭐",
+                text=f"{title} — {price_line}",
                 callback_data=f"buy_{s}"
             )])
     reviews_left = user.get("reviews_left", [])
