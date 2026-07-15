@@ -136,6 +136,16 @@ async def init_db(database_url: str):
             created_at TIMESTAMP DEFAULT NOW()
         )
     ''')
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS payments (
+            id          SERIAL PRIMARY KEY,
+            user_id     BIGINT NOT NULL,
+            razbor_key  TEXT,
+            amount_xtr  INTEGER NOT NULL,
+            currency    TEXT NOT NULL,
+            created_at  TIMESTAMP DEFAULT NOW()
+        )
+    ''')
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -538,6 +548,19 @@ async def list_feedback(limit: int = 10) -> list:
         limit
     )
     return [dict(r) for r in rows]
+
+async def log_payment(user_id: int, razbor_key: str | None, amount_xtr: int, currency: str):
+    """Лог РЕАЛЬНОЙ денежной оплаты (Stars или рубли через ЮKassa) —
+    отдельно от users.purchased, куда попадают и бесплатные способы
+    получения разбора (купон, разблокировка по подписке, баланс).
+    Статистика в /admin (выручка, "всего покупок") считается по этой
+    таблице, чтобы промокоды и премиум-безлимит не накручивали выручку.
+    razbor_key=None — оплата премиума. amount_xtr — сумма в звёздах-
+    эквиваленте (для RUB уже нормализована вызывающим кодом)."""
+    await db_pool.execute(
+        'INSERT INTO payments (user_id, razbor_key, amount_xtr, currency) VALUES ($1, $2, $3, $4)',
+        user_id, razbor_key, amount_xtr, currency
+    )
 
 async def premium_stats() -> dict:
     active = await db_pool.fetchval(

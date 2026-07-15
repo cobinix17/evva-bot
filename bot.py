@@ -769,19 +769,23 @@ async def admin_stats(callback: CallbackQuery):
     new_week      = await db.db_pool.fetchval(
         "SELECT COUNT(*) FROM users WHERE created_at >= $1", week_ago
     ) if await _column_exists('users', 'created_at') else '—'
-    rows = await db.db_pool.fetch('SELECT purchased FROM users WHERE user_id != $1', ADMIN_ID)
+    # Считаем по таблице payments (реальные денежные оплаты), а не по
+    # users.purchased — туда попадают и купоны, и разблокировка по
+    # премиум-подписке, которые не приносят выручку и раздували бы цифры.
+    pay_rows = await db.db_pool.fetch(
+        'SELECT user_id, razbor_key, amount_xtr FROM payments WHERE user_id != $1', ADMIN_ID
+    )
     total_purch = 0
     razbory_cnt = {}
-    bought      = 0
+    buyers      = set()
     stars_total = 0
-    for row in rows:
-        p = json.loads(row['purchased'])
-        if p:
-            bought      += 1
-            total_purch += len(p)
-            for r in p:
-                razbory_cnt[r] = razbory_cnt.get(r, 0) + 1
-                stars_total   += PRICES.get(r, 49)
+    for row in pay_rows:
+        stars_total += row['amount_xtr']
+        buyers.add(row['user_id'])
+        if row['razbor_key']:
+            total_purch += 1
+            razbory_cnt[row['razbor_key']] = razbory_cnt.get(row['razbor_key'], 0) + 1
+    bought   = len(buyers)
     top      = sorted(razbory_cnt.items(), key=lambda x: x[1], reverse=True)
     top_text = "\n".join([f"  {TITLES.get(k,k)}: {v}" for k, v in top[:5]]) if top else "  нет"
     prem = await db.premium_stats()
@@ -1466,6 +1470,7 @@ async def successful_payment(message: Message, state: FSMContext):
         else:
             until = utc_now() + timedelta(days=31)
         await db.set_premium(message.from_user.id, until)
+        await db.log_payment(message.from_user.id, None, amount, sp.currency)
 
         # Реф-бонус начисляем только с ПЕРВОЙ оплаты подписки, не с продлений.
         referrer_id = user.get("referred_by")
@@ -1499,6 +1504,7 @@ async def successful_payment(message: Message, state: FSMContext):
             return
         code = secrets.token_hex(4)
         await db.create_gift(code, key, message.from_user.id)
+        await db.log_payment(message.from_user.id, key, amount, sp.currency)
         bot_info = await bot.get_me()
         gift_link = f"https://t.me/{bot_info.username}?start=gift_{code}"
         title = PAID_RAZBORY[key]
@@ -1519,6 +1525,7 @@ async def successful_payment(message: Message, state: FSMContext):
         user["purchased"].append(payload)
     user["waiting"] = payload
     await db.save_user(message.from_user.id, user)
+    await db.log_payment(message.from_user.id, payload, amount, sp.currency)
 
     # Начисляем реферальный бонус пригласившему
     referrer_id = user.get("referred_by")

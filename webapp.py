@@ -691,6 +691,7 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
         base = current_until if current_until and current_until > db.utc_now() else db.utc_now()
         until = base + timedelta(days=31)
         await db.set_premium(user_id, until)
+        await db.log_payment(user_id, None, stars_equiv, "RUB")
 
         referrer_id = user.get("referred_by")
         if referrer_id:
@@ -721,6 +722,7 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
         user["purchased"].append(payload)
     user["waiting"] = payload
     await db.save_user(user_id, user)
+    await db.log_payment(user_id, payload, stars_equiv, "RUB")
 
     referrer_id = user.get("referred_by")
     if referrer_id:
