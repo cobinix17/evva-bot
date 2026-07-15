@@ -32,7 +32,7 @@ from config import (
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT,
     PREMIUM_PRICE_INCREASE, PREMIUM_PRICE_INCREASE_DATE,
-    YOOKASSA_PROVIDER_TOKEN, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE,
+    YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE,
 )
 from ai import ask_ai, is_rude, rude_reply
 from pdf import generate_pdf
@@ -158,6 +158,7 @@ class Form(StatesGroup):
     waiting_feedback         = State()
     waiting_admin_reply      = State()
     waiting_promo            = State()
+    waiting_rub_email        = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1168,28 +1169,54 @@ async def send_invoice(chat_id, title, description, payload, amount):
         prices=[LabeledPrice(label=title, amount=amount)],
     )
 
-async def send_invoice_rub(chat_id, title, description, payload, price_rub):
-    """Оплата разбора рублями через ЮKassa, подключённую как Telegram-провайдер
-    (см. _create_premium_invoice_rub) — тот же принцип, но здесь как обычный
-    invoice-карточка в чате (send_invoice), а не ссылка. receipt в
-    provider_data обязателен для 54-ФЗ (фискальный чек), need_email — Telegram
-    сам спросит почту покупателя перед оплатой."""
-    receipt = {
-        "receipt": {
-            "items": [{
-                "description": title,
-                "quantity": "1.00",
-                "amount": {"value": f"{price_rub}.00", "currency": "RUB"},
-                "vat_code": 1,
-            }]
-        }
-    }
-    await bot.send_invoice(
-        chat_id=chat_id, title=title, description=description,
-        payload=payload, provider_token=YOOKASSA_PROVIDER_TOKEN, currency="RUB",
-        prices=[LabeledPrice(label=title, amount=price_rub * 100)],
-        need_email=True, send_email_to_provider=True,
-        provider_data=json.dumps(receipt),
+async def _ask_rub_email(message_or_callback, state: FSMContext, payload: str, price_rub: int, title: str, description: str):
+    """Первый шаг оплаты рублями — email для чека (54-ФЗ), обязателен для
+    прямого API ЮKassa (в отличие от Telegram Payments, тут его сама
+    Telegram не спрашивает — просим сами)."""
+    await state.update_data(rub_payload=payload, rub_amount=price_rub, rub_title=title, rub_desc=description)
+    await state.set_state(Form.waiting_rub_email)
+    target = message_or_callback.message if isinstance(message_or_callback, CallbackQuery) else message_or_callback
+    await target.answer(
+        f"«{title}» — {price_rub}₽.\n\nВведи email — на него придёт чек об оплате:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
+    )
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+@dp.message(StateFilter(Form.waiting_rub_email))
+async def handle_rub_email(message: Message, state: FSMContext):
+    email = (message.text or "").strip()
+    if not _EMAIL_RE.match(email):
+        await message.answer("❌ Похоже на неверный email — введи ещё раз (например, name@mail.ru):")
+        return
+    data       = await state.get_data()
+    payload    = data.get("rub_payload")
+    price_rub  = data.get("rub_amount")
+    title      = data.get("rub_title")
+    description = data.get("rub_desc")
+    await state.clear()
+    if not payload:
+        await message.answer("❌ Что-то пошло не так — попробуй заново из меню.")
+        return
+    from yookassa_pay import create_payment
+    bot_info = await bot.get_me()
+    try:
+        payment_id, url = await create_payment(
+            amount_rub=price_rub,
+            description=description or title,
+            return_url=f"https://t.me/{bot_info.username}",
+            metadata={"user_id": str(message.from_user.id), "payload": payload},
+            email=email,
+        )
+    except Exception as e:
+        logging.error(f"YooKassa create_payment error: {e}", exc_info=True)
+        await message.answer("❌ Не удалось создать оплату — попробуй чуть позже 🙏")
+        return
+    await message.answer(
+        f"💳 Оплати {price_rub}₽ по ссылке — там будут доступны карта, СБП и другие способы:\n{url}\n\n"
+        "После оплаты доступ откроется автоматически в течение минуты."
     )
 
 async def _start_date_flow(message: Message, state: FSMContext, user: dict, key: str, is_free: bool = False):
@@ -1253,7 +1280,7 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
         price     = PRICES.get(key, 49)
         title     = PAID_RAZBORY[key]
         balance   = user.get("ref_balance", 0)
-        price_rub = rub_price(price) if YOOKASSA_PROVIDER_TOKEN else None
+        price_rub = rub_price(price) if YOOKASSA_SHOP_ID else None
         if balance >= price or price_rub:
             price_line = f"{price} ⭐" + (f" / {price_rub}₽" if price_rub else "")
             await callback.message.answer(
@@ -1280,7 +1307,7 @@ async def buy_preview_cmd(message: Message, state: FSMContext):
         return
     price     = PRICES.get(key, 49)
     title     = PAID_RAZBORY[key]
-    price_rub = rub_price(price) if YOOKASSA_PROVIDER_TOKEN else None
+    price_rub = rub_price(price) if YOOKASSA_SHOP_ID else None
     price_line = f"{price} ⭐" + (f" / {price_rub}₽" if price_rub else "")
     await message.answer(
         f"«{title}» — {price_line}.\n\nКак оплатить?",
@@ -1289,18 +1316,19 @@ async def buy_preview_cmd(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("rub_buy_"))
 async def rub_buy_handler(callback: CallbackQuery, state: FSMContext):
-    """Оплата разбора рублями через ЮKassa (Telegram-провайдер)."""
+    """Оплата разбора рублями через прямой API ЮKassa — сначала email для
+    чека (см. _ask_rub_email/handle_rub_email)."""
     key  = callback.data.replace("rub_buy_", "")
     user = await db.get_user(callback.from_user.id)
     if key in user["purchased"]:
         await _resume_already_purchased(callback, state, user, key)
         return
-    if key in PAID_RAZBORY and YOOKASSA_PROVIDER_TOKEN:
+    if key in PAID_RAZBORY and YOOKASSA_SHOP_ID:
         price     = PRICES.get(key, 49)
         price_rub = rub_price(price)
         title     = PAID_RAZBORY[key]
         desc      = RAZBOR_DESCRIPTIONS.get(key, title)
-        await send_invoice_rub(callback.message.chat.id, title, desc, key, price_rub)
+        await _ask_rub_email(callback, state, key, price_rub, title, desc)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("stars_buy_"))
@@ -1857,37 +1885,6 @@ async def _create_premium_invoice() -> str:
         subscription_period=PREMIUM_PERIOD,
     )
 
-async def _create_premium_invoice_rub() -> str:
-    """Оплата рублями через ЮKassa, подключённую как Telegram-провайдер
-    (BotFather → Payments), а не напрямую через API ЮKassa — платёж идёт
-    тем же путём, что и Stars: тот же successful_payment хендлер, никакого
-    отдельного вебхука не нужно, Telegram сам всё проверяет. В отличие от
-    Stars-подписки, это РАЗОВЫЙ платёж на месяц, не автопродление —
-    payload тот же PREMIUM_PAYLOAD, successful_payment уже умеет его принять
-    (subscription_expiration_date у обычного платежа отсутствует — код
-    подставляет +31 день, см. successful_payment)."""
-    receipt = {
-        "receipt": {
-            "items": [{
-                "description": "Ева Премиум — месяц подписки",
-                "quantity": "1.00",
-                "amount": {"value": f"{PREMIUM_PRICE_RUB}.00", "currency": "RUB"},
-                "vat_code": 1,
-            }]
-        }
-    }
-    return await bot.create_invoice_link(
-        title=PREMIUM_TITLE,
-        description="Безлимитный доступ ко всем разборам, личный прогноз каждое утро и приоритетная генерация.",
-        payload=PREMIUM_PAYLOAD,
-        provider_token=YOOKASSA_PROVIDER_TOKEN,
-        currency="RUB",
-        prices=[LabeledPrice(label="Ева Премиум — месяц", amount=PREMIUM_PRICE_RUB * 100)],
-        need_email=True,
-        send_email_to_provider=True,
-        provider_data=json.dumps(receipt),
-    )
-
 async def _show_premium(target: Message, user: dict):
     if db.is_premium(user):
         until = user["premium_until"].strftime("%d.%m.%Y")
@@ -1904,18 +1901,25 @@ async def _show_premium(target: Message, user: dict):
         logging.error(f"Premium invoice error: {e}", exc_info=True)
         await target.answer("❌ Не удалось открыть оплату — попробуй чуть позже 🙏")
         return
-    rub_link = None
-    if YOOKASSA_PROVIDER_TOKEN:
-        try:
-            rub_link = await _create_premium_invoice_rub()
-        except Exception as e:
-            logging.warning(f"Premium RUB invoice error: {e}")
-    await target.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link, rub_link, PREMIUM_PRICE_RUB))
+    await target.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link, PREMIUM_PRICE_RUB if YOOKASSA_SHOP_ID else None))
 
 @dp.callback_query(F.data == "premium_info")
 async def premium_info_cb(callback: CallbackQuery):
     user = await db.get_user(callback.from_user.id)
     await _show_premium(callback.message, user)
+    await callback.answer()
+
+@dp.callback_query(F.data == "premium_pay_rub")
+async def premium_pay_rub_cb(callback: CallbackQuery, state: FSMContext):
+    """Разовая оплата премиума рублями через прямой API ЮKassa (не
+    авто-подписка, как со Stars) — сначала email для чека."""
+    if not YOOKASSA_SHOP_ID:
+        await callback.answer("Оплата рублями временно недоступна", show_alert=True)
+        return
+    await _ask_rub_email(
+        callback, state, PREMIUM_PAYLOAD, PREMIUM_PRICE_RUB, PREMIUM_TITLE,
+        "Безлимитный доступ ко всем разборам, личный прогноз каждое утро и приоритетная генерация."
+    )
     await callback.answer()
 
 @dp.message(Command("premium_preview"), StateFilter("*"))
@@ -1932,13 +1936,7 @@ async def premium_preview_cmd(message: Message, state: FSMContext):
         logging.error(f"Premium invoice error: {e}", exc_info=True)
         await message.answer("❌ Не удалось открыть оплату — попробуй чуть позже 🙏")
         return
-    rub_link = None
-    if YOOKASSA_PROVIDER_TOKEN:
-        try:
-            rub_link = await _create_premium_invoice_rub()
-        except Exception as e:
-            logging.warning(f"Premium RUB invoice error: {e}")
-    await message.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link, rub_link, PREMIUM_PRICE_RUB))
+    await message.answer(_PREMIUM_OFFER, reply_markup=premium_subscribe_menu(link, PREMIUM_PRICE_RUB if YOOKASSA_SHOP_ID else None))
 
 @dp.message(Command("premium"), StateFilter("*"))
 async def premium_cmd(message: Message, state: FSMContext):

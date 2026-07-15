@@ -11,6 +11,7 @@ import random
 import hashlib
 import asyncio
 import logging
+from datetime import timedelta
 from urllib.parse import parse_qsl
 
 from aiohttp import web
@@ -22,6 +23,7 @@ from config import (
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
+    YOOKASSA_SHOP_ID,
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context
 from keyboards import date_choice_menu
@@ -639,6 +641,82 @@ async def _rate_limit_middleware(request: web.Request, handler):
                 del _rate_buckets[k]
     return await handler(request)
 
+# ── ЮKASSA WEBHOOK (прямой API) ──────────────────────────────────────────────
+async def yookassa_webhook(request: web.Request) -> web.Response:
+    """Уведомление об оплате рублями через прямой API ЮKassa. НЕ доверяем телу
+    вебхука напрямую (его легко подделать POST-запросом на публичный урл) —
+    переспрашиваем статус и сумму у самой ЮKassa по payment_id (fetch_payment,
+    сервер-сервер) и только тогда выдаём премиум/разбор. mark_yookassa_payment —
+    идемпотентность: ЮKassa повторяет вебхук, пока не получит 200, повторная
+    обработка того же payment_id не должна выдать премиум/разбор дважды."""
+    if not YOOKASSA_SHOP_ID:
+        return web.Response(status=200)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.Response(status=400)
+    payment_id = (body.get("object") or {}).get("id")
+    if not payment_id:
+        return web.Response(status=200)
+
+    from yookassa_pay import fetch_payment
+    payment = await fetch_payment(payment_id)
+    if not payment or payment.status != "succeeded":
+        return web.Response(status=200)
+
+    metadata = payment.metadata or {}
+    try:
+        user_id = int(metadata.get("user_id", 0))
+    except (TypeError, ValueError):
+        user_id = 0
+    payload = metadata.get("payload")
+    if not user_id or not payload:
+        logging.warning(f"yookassa webhook без metadata: payment_id={payment_id}")
+        return web.Response(status=200)
+
+    amount_rub = int(float(payment.amount.value))
+    is_new = await db.mark_yookassa_payment(payment_id, user_id, payload, amount_rub)
+    if not is_new:
+        return web.Response(status=200)
+
+    if payload == PREMIUM_PAYLOAD:
+        until = db.utc_now() + timedelta(days=31)
+        await db.set_premium(user_id, until)
+        try:
+            await _bot.send_message(
+                user_id,
+                f"💎 Оплата прошла! Премиум активен до {until.strftime('%d.%m.%Y')} — "
+                "все разборы открыты, генерация без очереди 🌸\n\n"
+                "Это разовый платёж (не автоподписка, как со звёздами) — через "
+                "месяц пришлю напоминание продлить."
+            )
+        except Exception as e:
+            logging.warning(f"yookassa premium notify error: {e}")
+        return web.Response(status=200)
+
+    if payload not in PAID_RAZBORY:
+        logging.warning(f"yookassa webhook с неизвестным payload={payload!r}")
+        return web.Response(status=200)
+
+    user = await db.get_user(user_id)
+    if payload not in user["purchased"]:
+        user["purchased"].append(payload)
+    user["waiting"] = payload
+    await db.save_user(user_id, user)
+    title = PAID_RAZBORY[payload]
+    try:
+        await _bot.send_message(
+            user_id,
+            f"✅ Оплата «{title}» прошла!\n\n"
+            f"Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?"
+            if user.get("birth_date") else
+            f"✅ Оплата «{title}» прошла! Открой чат со мной и укажи дату рождения.",
+            reply_markup=date_choice_menu() if user.get("birth_date") else None
+        )
+    except Exception as e:
+        logging.warning(f"yookassa reading notify error: {e}")
+    return web.Response(status=200)
+
 def setup_webapp_routes(app: web.Application, bot):
     global _bot
     _bot = bot
@@ -653,6 +731,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_post("/api/reading/{key}/regenerate", api_reading_regenerate)
     app.router.add_post("/api/premium/buy", api_premium_buy)
     app.router.add_post("/api/ask", api_ask)
+    app.router.add_post("/webhook/yookassa", yookassa_webhook)
     app.router.add_post("/api/profile_digest", api_profile_digest)
     app.router.add_get("/api/referral", api_referral)
     app.router.add_post("/api/balance/buy/{key}", api_balance_buy)

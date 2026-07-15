@@ -2,7 +2,7 @@
 # Зависит от config.py (TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS).
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_PROVIDER_TOKEN, rub_price
+from config import TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_SHOP_ID, rub_price
 
 CONTACT_URL = "https://t.me/eva_numer"
 
@@ -111,18 +111,18 @@ def profile_menu(notifications_on: bool, purchased_count: int = 0) -> InlineKeyb
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def premium_subscribe_menu(invoice_url: str, rub_invoice_url: str | None = None,
-                            rub_price: int | None = None) -> InlineKeyboardMarkup:
+def premium_subscribe_menu(invoice_url: str, rub_price: int | None = None) -> InlineKeyboardMarkup:
     """Кнопка оплаты подписки — ведёт на invoice-ссылку с subscription_period,
     Telegram сам оформит рекуррентное списание раз в месяц. Вторая кнопка
-    (если передан rub_invoice_url) — оплата рублями через ЮKassa, подключённую
-    как Telegram-провайдер: там это РАЗОВЫЙ платёж на месяц, не автопродление
-    (в отличие от Stars-подписки), поэтому подписан отдельным текстом."""
+    (если передан rub_price) — оплата рублями через прямой API ЮKassa (см.
+    premium_pay_rub_cb в bot.py): там это РАЗОВЫЙ платёж на месяц, не
+    автопродление (в отличие от Stars-подписки), поэтому подписан отдельным
+    текстом. callback, не url — сначала нужно спросить email для чека."""
     buttons = [[InlineKeyboardButton(text="💎 Оформить за 399 ⭐/мес", url=invoice_url)]]
-    if rub_invoice_url:
+    if rub_price:
         buttons.append([InlineKeyboardButton(
             text=f"💳 Оплатить {rub_price}₽ (на месяц)",
-            url=rub_invoice_url
+            callback_data="premium_pay_rub"
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -157,7 +157,7 @@ def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool 
         prefix = ("✅ " if key in purchased else "") if not gift else ""
         price  = PRICES.get(key, 49)
         price_line = f"{price} ⭐"
-        if YOOKASSA_PROVIDER_TOKEN and not gift:
+        if YOOKASSA_SHOP_ID and not gift:
             price_line += f" / {rub_price(price)}₽"
         buttons.append([InlineKeyboardButton(
             text=f"{prefix}{emoji_title} — {price_line}",
