@@ -76,6 +76,8 @@ h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
   animation:octaIn .5s backwards; transition:opacity .15s; touch-action:manipulation; }
 @keyframes octaIn{ from{ opacity:0; transform:scale(.55); } to{ opacity:1; transform:scale(1); } }
 .octa-pt:active{ opacity:.72; }
+.mx-pt{ cursor:pointer; }
+.mx-pt:active{ opacity:.72; }
 @media (prefers-reduced-motion: reduce){ .octa-pt{ animation:none; } }
 
 .octa-hint{ text-align:center; font-size:10.5px; color:var(--accent); opacity:.8; margin:-2px 0 0; }

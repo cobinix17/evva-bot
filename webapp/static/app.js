@@ -166,13 +166,19 @@ function renderMatrix(m, birthDate) {
       <div><div class="spin-t">🎱 Да / Нет</div><div class="spin-d">Задай вопрос — отвечу по твоим числам</div></div>
       <button id="yesno-open-btn">Спросить</button>
     </div>`;
+  const matrixCard = `
+    <div class="spin-card">
+      <div><div class="spin-t">🔷 Матрица судьбы</div><div class="spin-d">Твоя схема арканов по дате рождения — бесплатно</div></div>
+      <button id="destiny-matrix-btn">Открыть</button>
+    </div>`;
   return `
     <div class="topbar">
       <div class="eyebrow">Карта твоих чисел</div>
       <h1>${escapeHtml(ME.first_name || "Твоя матрица")}</h1>
     </div>
     ${dayCard}
-    <div class="section" style="margin-bottom:0">${yesnoCard}</div>
+    <div class="section" style="margin-bottom:0">${matrixCard}</div>
+    <div class="section" style="margin-bottom:0; margin-top:10px;">${yesnoCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${spinCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${digestCard}</div>
     <div class="octawrap">${octagramSVG(points.slice(0, 8), m.destiny)}</div>
@@ -185,6 +191,101 @@ function renderMatrix(m, birthDate) {
     </div>
     <div class="cards">${cards}</div>
   `;
+}
+
+// Цветной ромб «Матрицы судьбы» (Ладини): 8 внешних точек звезды по кругу,
+// 4 внутренних ядра, центральный Аркан предназначения. Тап по точке —
+// значение аркана под схемой.
+let _matrixPoints = [];
+let _matrixOpen = null;
+function destinyMatrixSVG(m) {
+  const cx = 200, cy = 200, Rout = 150, Rin = 78, badge = 24;
+  // 8 внешних точек: чередуем цвета «база / производная»
+  const palette = ["#B08A3E", "#7C5CBF", "#C25E7A", "#4E8C86", "#C99A3E", "#5E7CC2", "#9B5EC2", "#C27A4E"];
+  const pt = (i, r, n) => {
+    const a = (-90 + i * (360 / n)) * Math.PI / 180;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  _matrixPoints = [];
+  let outer = "", inner = "", diamonds = "";
+  // два наложенных квадрата (ромб + прямой) через 8 внешних точек
+  const sq1 = [0,2,4,6].map(i => pt(i, Rout, 8).map(v=>v.toFixed(1)).join(",")).join(" ");
+  const sq2 = [1,3,5,7].map(i => pt(i, Rout, 8).map(v=>v.toFixed(1)).join(",")).join(" ");
+  diamonds += `<polygon points="${sq1}" fill="none" stroke="url(#mg)" stroke-width="1.4"/>`;
+  diamonds += `<polygon points="${sq2}" fill="none" stroke="url(#mg)" stroke-width="1.4"/>`;
+  m.outer.forEach((p, i) => {
+    const [x, y] = pt(i, Rout, 8);
+    const col = palette[i % palette.length];
+    const idx = _matrixPoints.length;
+    _matrixPoints.push(p);
+    outer += `<g class="mx-pt" data-i="${idx}">`
+      + `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badge}" fill="${col}"/>`
+      + `<text x="${x.toFixed(1)}" y="${(y+6).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="20" fill="#fff" style="font-variant-numeric:lining-nums">${p.num}</text>`
+      + `</g>`;
+  });
+  m.inner.forEach((p, i) => {
+    const [x, y] = pt(i, Rin, 4);
+    const idx = _matrixPoints.length;
+    _matrixPoints.push(p);
+    inner += `<g class="mx-pt" data-i="${idx}">`
+      + `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${badge-4}" fill="var(--bg)" stroke="url(#mg)" stroke-width="1.4"/>`
+      + `<text x="${x.toFixed(1)}" y="${(y+5).toFixed(1)}" text-anchor="middle" font-family="Head" font-size="16" fill="var(--head)" style="font-variant-numeric:lining-nums">${p.num}</text>`
+      + `</g>`;
+  });
+  const cIdx = _matrixPoints.length;
+  _matrixPoints.push(m.center);
+  const centerG = `<g class="mx-pt" data-i="${cIdx}">`
+    + `<circle cx="${cx}" cy="${cy}" r="30" fill="#B08A3E"/>`
+    + `<text x="${cx}" y="${cy+9}" text-anchor="middle" font-family="Head" font-size="26" fill="#fff" style="font-variant-numeric:lining-nums">${m.center.num}</text>`
+    + `</g>`;
+  return `<svg viewBox="0 0 400 400" class="octa">
+    <defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#D8BC77"/><stop offset="1" stop-color="#B08A3E"/>
+    </linearGradient></defs>
+    ${diamonds}${outer}${inner}${centerG}
+  </svg>`;
+}
+
+function toggleMatrixPoint(i) {
+  const panel = document.getElementById("mx-info");
+  if (!panel) return;
+  if (_matrixOpen === i) { _matrixOpen = null; panel.classList.remove("open"); return; }
+  _matrixOpen = i;
+  const p = _matrixPoints[i] || {};
+  panel.innerHTML = `<div class="octa-info-t">${escapeHtml(p.label || "")} — ${p.num} · ${escapeHtml(p.name || "")}</div><div class="octa-info-d">${escapeHtml(p.keyword || "")}</div>`;
+  panel.classList.add("open");
+}
+
+async function openDestinyMatrix() {
+  app.innerHTML = `<div class="empty">Строю твою матрицу судьбы…</div>`;
+  try {
+    const r = await api("/api/destiny_matrix");
+    _matrixOpen = null;
+    const cta = r.owned
+      ? `<button id="mx-open-reading">📖 Открыть полный разбор</button>`
+      : `<button id="mx-buy">🔮 Полное толкование матрицы — ${r.price} ⭐${r.price_rub ? ` / ${r.price_rub}₽` : ""}</button>`;
+    app.innerHTML = `
+      <button class="back-btn" id="mx-back">← Назад</button>
+      <div class="topbar"><div class="eyebrow">Матрица судьбы</div><h1>🔷 Твои арканы</h1></div>
+      <div class="octawrap">${destinyMatrixSVG(r.matrix)}</div>
+      <div class="octa-hint">✦ Нажми на аркан, чтобы узнать его значение</div>
+      <div id="mx-info" class="octa-info"></div>
+      <div class="onboard" style="margin-top:8px">
+        <p>Это твоя карта Старших Арканов по дате рождения. Полное толкование —
+        как арканы влияют на судьбу, деньги, отношения и предназначение — в подробном разборе.</p>
+        ${cta}
+      </div>
+    `;
+    document.getElementById("mx-back").addEventListener("click", render);
+    app.querySelectorAll(".mx-pt").forEach(el =>
+      el.addEventListener("click", () => toggleMatrixPoint(parseInt(el.dataset.i, 10)))
+    );
+    document.getElementById("mx-buy")?.addEventListener("click", () => renderPayScreen("matrix_full"));
+    document.getElementById("mx-open-reading")?.addEventListener("click", () => openReading("matrix_full"));
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось построить матрицу");
+    render();
+  }
 }
 
 function renderYesNo() {
@@ -770,6 +871,7 @@ function render() {
     document.getElementById("spin-btn")?.addEventListener("click", spinDaily);
     document.getElementById("digest-btn")?.addEventListener("click", openDigest);
     document.getElementById("yesno-open-btn")?.addEventListener("click", renderYesNo);
+    document.getElementById("destiny-matrix-btn")?.addEventListener("click", openDestinyMatrix);
     app.querySelectorAll(".octa-pt").forEach(el =>
       el.addEventListener("click", () => toggleOctaPoint(parseInt(el.dataset.i, 10)))
     );

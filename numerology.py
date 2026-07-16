@@ -299,6 +299,65 @@ def calculate_challenges(date_str: str) -> list[int]:
     c3 = abs(c1 - c2)
     return [c1, c2, c3]
 
+# ─── ВИЗУАЛЬНАЯ МАТРИЦА СУДЬБЫ (метод Ладини) ───────────────────────────────
+# Разные школы (Ладини, Гладков и последователи) сходятся в базовых 4 точках,
+# но расходятся в трактовке производных по жизненным сферам — берём один
+# консистентный вариант расчёта. Полную трактовку даёт платный разбор
+# matrix_full; бесплатная схема (destiny_matrix) — визуальный лид-магнит.
+
+def calculate_matrix_full(date_str: str) -> dict:
+    """Полная матрица судьбы — 12 точек (метод Ладини), сведённых в диапазон
+    1-22 (Старшие Арканы). Слой 1 (a,b,v,g) — из даты рождения; слои 2-3 —
+    производные суммы соседних точек по кругу."""
+    parts = date_str.strip().split(".")
+    d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+
+    a = _reduce_to_arcana(d)
+    b = _reduce_to_arcana(m)
+    v = _reduce_to_arcana(_digit_sum(y))
+    g = _reduce_to_arcana(a + b + v)
+
+    dd = _reduce_to_arcana(a + b)
+    e  = _reduce_to_arcana(b + v)
+    zh = _reduce_to_arcana(v + g)
+    z  = _reduce_to_arcana(g + a)
+
+    i  = _reduce_to_arcana(dd + e)
+    k  = _reduce_to_arcana(e + zh)
+    l  = _reduce_to_arcana(zh + z)
+    m_ = _reduce_to_arcana(z + dd)
+
+    return {
+        "a": a, "b": b, "v": v, "g": g,
+        "d": dd, "e": e, "zh": zh, "z": z,
+        "i": i, "k": k, "l": l, "m": m_,
+    }
+
+def destiny_matrix(date_str: str) -> dict:
+    """Матрица судьбы для веб-визуала: 8 внешних точек звезды (по кругу, каждая
+    производная стоит между своими «родителями»), 4 внутренние точки ядра и
+    центральный Аркан предназначения (g). К каждому числу — название и краткий
+    архетип Аркана (ARCANA), чтобы бесплатная схема сразу что-то говорила."""
+    mx = calculate_matrix_full(date_str)
+    def pt(num, label):
+        info = arcana_info(num)
+        return {"num": num, "label": label, "name": info["name"], "keyword": info["keyword"]}
+    # Порядок по кругу: каждая производная (d,e,zh,z) стоит между родителями.
+    outer = [
+        pt(mx["a"],  "День"),
+        pt(mx["d"],  "День+Месяц"),
+        pt(mx["b"],  "Месяц"),
+        pt(mx["e"],  "Месяц+Год"),
+        pt(mx["v"],  "Год"),
+        pt(mx["zh"], "Год+Предназн."),
+        pt(mx["g"],  "Предназначение"),
+        pt(mx["z"],  "Предназн.+День"),
+    ]
+    inner = [pt(mx["i"], "Ядро 1"), pt(mx["k"], "Ядро 2"),
+             pt(mx["l"], "Ядро 3"), pt(mx["m"], "Ядро 4")]
+    center = pt(mx["g"], "Предназначение")
+    return {"outer": outer, "inner": inner, "center": center}
+
 # ─── ПОЗИЦИИ В МАТРИЦЕ (упрощённая схема для контекста) ──────────────────────
 
 def _matrix_positions(date_str: str) -> dict:

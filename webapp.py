@@ -645,6 +645,25 @@ _WEB_DESTINY_DAY_NOTES = {
     33: "Твоё число 33 сегодня светит ярче — твоя забота сегодня целительна.",
 }
 
+async def api_destiny_matrix(request: web.Request) -> web.Response:
+    """Бесплатная схема «Матрица судьбы» (ромб/октаграмма Ладини) — лид-магнит.
+    Визуал + краткие значения арканов; полное толкование даёт платный разбор
+    matrix_full (покупается отдельно)."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user = await db.get_user(user_id)
+    if not user.get("birth_date"):
+        return _json_error("Сначала укажи дату рождения", 400)
+    from numerology import destiny_matrix
+    matrix = destiny_matrix(user["birth_date"])
+    return web.json_response({
+        "matrix":     matrix,
+        "owned":      "matrix_full" in user.get("purchased", []),
+        "price":      PRICES.get("matrix_full", 149),
+        "price_rub":  rub_price(PRICES.get("matrix_full", 149)) if YOOKASSA_SHOP_ID else None,
+    })
+
 async def api_yesno(request: web.Request) -> web.Response:
     """Быстрый ответ «Да/Нет» по числам. Бесплатно YESNO_FREE_LIMIT в день,
     премиум — безлимит (та же логика, что в боте)."""
@@ -911,6 +930,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_post("/api/premium/buy", api_premium_buy)
     app.router.add_post("/api/ask", api_ask)
     app.router.add_get("/api/day_number", api_day_number)
+    app.router.add_get("/api/destiny_matrix", api_destiny_matrix)
     app.router.add_post("/api/yesno", api_yesno)
     app.router.add_post("/webhook/yookassa", yookassa_webhook)
     app.router.add_post("/api/profile_digest", api_profile_digest)
