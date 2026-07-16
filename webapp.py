@@ -22,7 +22,7 @@ from config import (
     TITLES, PRICES, PAID_RAZBORY, RAZBOR_DESCRIPTIONS,
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
     ADMIN_ID, REF_BONUS_PERCENT,
-    PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
+    PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, YESNO_FREE_LIMIT,
     PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price,
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny, normalize_date
@@ -117,12 +117,23 @@ async def api_me(request: web.Request) -> web.Response:
         return _json_error("unauthorized", 401)
     user = await db.get_user(user_id)
     matrix = None
+    day_today = None
     if user.get("birth_date"):
         try:
             matrix = numerology_summary(user.get("first_name") or "дорогая", user["birth_date"])
         except Exception as e:
             logging.warning(f"webapp numerology_summary error: {e}")
+        try:
+            from numerology import personal_day_info
+            info = personal_day_info(user["birth_date"])
+            day_today = {"number": info["number"], "energy": info["energy"], "advice": info["advice"]}
+            if db.is_premium(user):
+                dn = user.get("destiny_number") or calculate_destiny(user["birth_date"])
+                day_today["destiny_note"] = _WEB_DESTINY_DAY_NOTES.get(dn, _WEB_DESTINY_DAY_NOTES[9])
+        except Exception as e:
+            logging.warning(f"webapp personal_day_info error: {e}")
     return web.json_response({
+        "day_today":     day_today,
         "user_id":       user_id,
         "bot_username":  await _get_bot_username(),
         "first_name":    user.get("first_name"),
@@ -597,6 +608,75 @@ async def api_ask(request: web.Request) -> web.Response:
         return _json_error("Что-то пошло не так — попробуй ещё раз чуть позже", 500)
     return web.json_response({"answer": answer})
 
+async def api_day_number(request: web.Request) -> web.Response:
+    """Число дня для веб-кабинета: личное число + энергия + совет. Премиум
+    получает ещё персональную строку под число судьбы (как в боте)."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user = await db.get_user(user_id)
+    if not user.get("birth_date"):
+        return _json_error("Сначала укажи дату рождения", 400)
+    from numerology import personal_day_info
+    info = personal_day_info(user["birth_date"])
+    resp = {
+        "number": info["number"],
+        "energy": info["energy"],
+        "advice": info["advice"],
+        "is_premium": db.is_premium(user),
+    }
+    if db.is_premium(user):
+        dn = user.get("destiny_number") or calculate_destiny(user["birth_date"])
+        resp["destiny_note"] = _WEB_DESTINY_DAY_NOTES.get(dn, _WEB_DESTINY_DAY_NOTES[9])
+    return web.json_response(resp)
+
+_WEB_DESTINY_DAY_NOTES = {
+    1:  "Для твоей единицы важно сегодня не ждать разрешения — первый шаг за тобой.",
+    2:  "Твоя двойка сегодня читает людей особенно тонко — доверяй первому впечатлению.",
+    3:  "Твоя тройка сегодня ярче обычного — говори, показывай, будь на виду.",
+    4:  "Твоя четвёрка найдёт опору в делах — то, что заложишь сегодня, будет прочным.",
+    5:  "Твоя пятёрка сегодня тянется к новому — не отказывай себе в перемене.",
+    6:  "Твоя шестёрка сегодня нужна близким — тепло, отданное сегодня, вернётся.",
+    7:  "Твоей семёрке сегодня стоит побыть в тишине — там придёт нужный ответ.",
+    8:  "Твоя восьмёрка сегодня сильна в деньгах и решениях — действуй уверенно.",
+    9:  "Твоя девятка сегодня видит суть — отпусти то, что уже отжило.",
+    11: "Твоё число 11 сегодня резонирует с днём — будь внимательна к знакам и снам.",
+    22: "Твоё число 22 сегодня даёт особую практическую силу — берись за большое.",
+    33: "Твоё число 33 сегодня светит ярче — твоя забота сегодня целительна.",
+}
+
+async def api_yesno(request: web.Request) -> web.Response:
+    """Быстрый ответ «Да/Нет» по числам. Бесплатно YESNO_FREE_LIMIT в день,
+    премиум — безлимит (та же логика, что в боте)."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user = await db.get_user(user_id)
+    if not user.get("birth_date"):
+        return _json_error("Сначала укажи дату рождения", 400)
+    body = await request.json()
+    question = (body.get("question") or "").strip()
+    if len(question) < 3:
+        return _json_error("Напиши вопрос текстом, хотя бы пару слов")
+    if len(question) > ASK_QUESTION_MAX_LEN:
+        return _json_error(f"Вопрос слишком длинный — сократи до {ASK_QUESTION_MAX_LEN} символов")
+    if is_rude(question):
+        return web.json_response({"answer": rude_reply()})
+    if not db.is_premium(user):
+        allowed = await db.yesno_try_consume(user_id, YESNO_FREE_LIMIT)
+        if not allowed:
+            return _json_error(f"На сегодня {YESNO_FREE_LIMIT} вопроса «Да/Нет» уже задано. С премиумом — без ограничений 🌸", 429)
+    try:
+        from generation import answer_yes_no
+        name = user.get("first_name") or "дорогая"
+        answer = await answer_yes_no(name, user["birth_date"], question)
+    except Exception as e:
+        logging.error(f"webapp api_yesno error: {e}", exc_info=True)
+        if not db.is_premium(user):
+            await db.refund_yesno_try(user_id)
+        return _json_error("Что-то пошло не так — попробуй ещё раз чуть позже", 500)
+    return web.json_response({"answer": answer})
+
 # ── ПОРТРЕТ ИЗ КУПЛЕННЫХ РАЗБОРОВ ─────────────────────────────────────────────
 MIN_DIGEST_READINGS = 3
 _DIGEST_KEY = "profile_digest"
@@ -830,6 +910,8 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_post("/api/reading/{key}/generate", api_reading_generate)
     app.router.add_post("/api/premium/buy", api_premium_buy)
     app.router.add_post("/api/ask", api_ask)
+    app.router.add_get("/api/day_number", api_day_number)
+    app.router.add_post("/api/yesno", api_yesno)
     app.router.add_post("/webhook/yookassa", yookassa_webhook)
     app.router.add_post("/api/profile_digest", api_profile_digest)
     app.router.add_get("/api/referral", api_referral)

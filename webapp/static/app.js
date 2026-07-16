@@ -151,12 +151,29 @@ function renderMatrix(m, birthDate) {
         <div><div class="spin-t">📋 Твой портрет</div><div class="spin-d">${ME.digest_ready ? "Готов — выжимка по всем купленным разборам" : "Собери связную выжимку из всех купленных разборов"}</div></div>
         <button id="digest-btn">${ME.digest_ready ? "Открыть" : "Собрать"}</button>
       </div>`;
+  const d = ME.day_today;
+  const dayCard = d ? `
+    <div class="day-card">
+      <div class="day-num">${d.number}</div>
+      <div class="day-body">
+        <div class="day-t">🌟 Число дня — ${d.energy}</div>
+        <div class="day-d">${escapeHtml(d.advice.charAt(0).toUpperCase() + d.advice.slice(1))}.</div>
+        ${d.destiny_note ? `<div class="day-note">💎 ${escapeHtml(d.destiny_note)}</div>` : ""}
+      </div>
+    </div>` : "";
+  const yesnoCard = `
+    <div class="spin-card">
+      <div><div class="spin-t">🎱 Да / Нет</div><div class="spin-d">Задай вопрос — отвечу по твоим числам</div></div>
+      <button id="yesno-open-btn">Спросить</button>
+    </div>`;
   return `
     <div class="topbar">
       <div class="eyebrow">Карта твоих чисел</div>
       <h1>${escapeHtml(ME.first_name || "Твоя матрица")}</h1>
     </div>
-    <div class="section" style="margin-bottom:0">${spinCard}</div>
+    ${dayCard}
+    <div class="section" style="margin-bottom:0">${yesnoCard}</div>
+    <div class="section" style="margin-bottom:0; margin-top:10px;">${spinCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${digestCard}</div>
     <div class="octawrap">${octagramSVG(points.slice(0, 8), m.destiny)}</div>
     <div class="octa-hint">✦ Нажми на число, чтобы узнать больше</div>
@@ -168,6 +185,39 @@ function renderMatrix(m, birthDate) {
     </div>
     <div class="cards">${cards}</div>
   `;
+}
+
+function renderYesNo() {
+  app.innerHTML = `
+    <button class="back-btn" id="yn-back">← Назад</button>
+    <div class="onboard">
+      <div class="eyebrow">🎱 Да / Нет</div>
+      <p>Задай вопрос, на который нужен ответ Да или Нет — отвечу по твоим числам.</p>
+      <div id="yn-answer"></div>
+      <input id="yn-input" placeholder="Например: стоит ли соглашаться?" maxlength="300">
+      <button id="yn-send">Спросить</button>
+    </div>
+  `;
+  document.getElementById("yn-back").addEventListener("click", render);
+  document.getElementById("yn-send").addEventListener("click", askYesNo);
+}
+
+async function askYesNo() {
+  const input = document.getElementById("yn-input");
+  const q = (input?.value || "").trim();
+  if (q.length < 3) { tg?.showAlert("Напиши вопрос текстом 🙂"); return; }
+  const btn = document.getElementById("yn-send");
+  const box = document.getElementById("yn-answer");
+  if (btn) { btn.disabled = true; btn.textContent = "Смотрю в числа…"; }
+  if (box) box.innerHTML = "";
+  try {
+    const r = await api("/api/yesno", { method: "POST", body: JSON.stringify({ question: q }) });
+    if (box) box.innerHTML = `<div class="reading-text" style="margin-bottom:14px">${escapeHtml(r.answer)}</div>`;
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось ответить");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Спросить ещё"; }
+  }
 }
 
 async function openDigest() {
@@ -460,10 +510,16 @@ function renderMine() {
 // ── премиум + AI-чат «Спроси Еву» ─────────────────────────────────────────────
 function renderPremium() {
   const premiumBlock = !ME.is_premium ? `
-      <div class="topbar"><div class="eyebrow">Ева Премиум</div><h1>💎 Открой всё</h1></div>
+      <div class="topbar"><div class="eyebrow">Ева Премиум</div><h1>💎 Я рядом каждый день</h1></div>
       <div class="onboard">
-        <p>До 30 разборов в месяц без поштучной покупки, личный прогноз каждое утро,
-        приоритетная генерация и безлимитный AI-чат «Спроси Еву» по твоим числам.</p>
+        <ul class="prem-list">
+          <li>💬 «Спроси Еву» без лимита — вопросы по числам когда угодно</li>
+          <li>🎱 «Да / Нет» без лимита — а не 3 в день</li>
+          <li>🌟 Число дня с личным толкованием под твоё число судьбы</li>
+          <li>🌅 Личный прогноз каждое утро</li>
+          <li>✨ До 30 разборов в месяц без поштучной покупки</li>
+          <li>⚡ Приоритетная генерация без очереди</li>
+        </ul>
         ${ME.yookassa ? `<input id="pay-email" placeholder="email для чека (для оплаты ₽)" inputmode="email" value="${ME.email ? escapeHtml(ME.email) : ""}" style="margin-bottom:6px">` : ""}
         <button id="premium-buy-btn">⭐ Оформить за 399 ⭐/мес</button>
         ${ME.yookassa ? `
@@ -713,6 +769,7 @@ function render() {
     document.getElementById("ob-submit")?.addEventListener("click", submitBirthdate);
     document.getElementById("spin-btn")?.addEventListener("click", spinDaily);
     document.getElementById("digest-btn")?.addEventListener("click", openDigest);
+    document.getElementById("yesno-open-btn")?.addEventListener("click", renderYesNo);
     app.querySelectorAll(".octa-pt").forEach(el =>
       el.addEventListener("click", () => toggleOctaPoint(parseInt(el.dataset.i, 10)))
     );

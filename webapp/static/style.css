@@ -102,6 +102,22 @@ h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
 .onboard button:active{ transform:translateY(1px); }
 .pay-btns{ display:flex; flex-direction:column; gap:8px; }
 
+.day-card{ display:flex; gap:14px; align-items:center; margin:14px 18px 4px;
+  padding:16px; border-radius:14px; background:var(--bg2); border:1px solid var(--border); }
+.day-num{ flex:0 0 auto; width:54px; height:54px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center; font-family:'Head',serif;
+  font-size:28px; color:var(--head); background:var(--bg);
+  border:1.6px solid var(--accent); font-variant-numeric:lining-nums; }
+.day-body{ flex:1; }
+.day-t{ font-family:'Head',serif; font-size:14px; color:var(--head); margin-bottom:4px; }
+.day-d{ font-size:13px; color:var(--text); line-height:1.4; }
+.day-note{ font-size:12.5px; color:var(--accent); margin-top:6px; line-height:1.4; }
+
+.prem-list{ list-style:none; padding:0; margin:0 0 16px; }
+.prem-list li{ font-size:14px; color:var(--text); line-height:1.5; padding:5px 0;
+  border-bottom:1px solid var(--border); }
+.prem-list li:last-child{ border-bottom:none; }
+
 .cycles{ margin:26px 18px; }
 .cyc-head{ display:flex; align-items:center; gap:12px; margin-bottom:16px; }
 .cyc-rule{ flex:1; height:1px; background:linear-gradient(90deg,transparent,var(--gold2),transparent); }
