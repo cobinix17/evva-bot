@@ -7,9 +7,21 @@ from datetime import date as _date_type, datetime
 
 # ─── ВАЛИДАЦИЯ ДАТЫ ───────────────────────────────────────────────────────────
 
+def normalize_date(text: str) -> str:
+    """Приводит дату к каноничному ДД.ММ.ГГГГ: люди привычно вводят разделитель
+    по-разному (15/03/1995, 15-03-1995, 15 03 1995, 15,03,1995) — заменяем любой
+    из них на точку, чтобы не отказывать в валидации из-за формата. Всё, что ниже
+    по коду, разбивает дату по точке, поэтому нормализуем в точках ввода."""
+    text = (text or "").strip()
+    for sep in ("/", "-", " ", ","):
+        text = text.replace(sep, ".")
+    while ".." in text:
+        text = text.replace("..", ".")
+    return text.strip(".")
+
 def is_valid_date(text: str) -> bool:
     """Проверяет формат ДД.ММ.ГГГГ и реальность даты."""
-    text = text.strip()
+    text = normalize_date(text)
     parts = text.split(".")
     if len(parts) != 3:
         return False

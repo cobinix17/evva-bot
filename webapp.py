@@ -25,7 +25,7 @@ from config import (
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT,
     PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price,
 )
-from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny
+from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny, normalize_date
 from keyboards import date_choice_menu
 from ai import ask_ai, is_rude, rude_reply
 
@@ -175,7 +175,7 @@ async def api_set_birthdate(request: web.Request) -> web.Response:
     if not user_id:
         return _json_error("unauthorized", 401)
     body = await request.json()
-    date_str = (body.get("birth_date") or "").strip()
+    date_str = normalize_date(body.get("birth_date") or "")
     name     = (body.get("first_name") or "").strip()
     if not is_valid_date(date_str):
         return _json_error("Неверная дата. Формат ДД.ММ.ГГГГ")
@@ -456,13 +456,13 @@ async def api_reading_generate(request: web.Request) -> web.Response:
     from generation import generate_single, generate_compat, GenerationBusy
     try:
         if key == "compat":
-            date1 = (body.get("date1") or "").strip()
-            date2 = (body.get("date2") or "").strip()
+            date1 = normalize_date(body.get("date1") or "")
+            date2 = normalize_date(body.get("date2") or "")
             if not is_valid_date(date1) or not is_valid_date(date2):
                 return _json_error("Введи две корректные даты в формате ДД.ММ.ГГГГ", 400)
             title, text, from_cache = await generate_compat(user_id, user, date1, date2)
         else:
-            date_str = (body.get("date") or "").strip()
+            date_str = normalize_date(body.get("date") or "")
             if not date_str and user.get("birth_date"):
                 date_str = user["birth_date"]
             if not is_valid_date(date_str):

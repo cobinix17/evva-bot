@@ -38,7 +38,7 @@ from generation import (
     premium_gen_semaphore, generate_single, generate_compat, _generating,
 )
 from numerology import (
-    calculate_destiny, calculate_day_number, is_valid_date,
+    calculate_destiny, calculate_day_number, is_valid_date, normalize_date,
     build_numerology_context, calculate_personal_month, calculate_personal_day,
 )
 from keyboards import (
@@ -409,7 +409,7 @@ async def free_pick_handler(callback: CallbackQuery, state: FSMContext):
 @dp.message(StateFilter(Form.waiting_free_date))
 async def handle_free_date(message: Message, state: FSMContext):
     user = await db.get_user(message.from_user.id)
-    text = (message.text or "").strip()
+    text = normalize_date(message.text or "")
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
@@ -557,7 +557,7 @@ async def handle_birth_date(message: Message, state: FSMContext):
     В основном флоу дата вводится уже в _ask_date/_process_date,
     этот стейт может остаться только если пользователь добрался
     сюда нестандартным путём."""
-    text = (message.text or "").strip()
+    text = normalize_date(message.text or "")
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
@@ -1625,9 +1625,12 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         await state.clear()
 
 def _parse_two_dates(text: str) -> list[str] | None:
+    # Две даты разделяются запятой; нормализуем КАЖДУЮ дату отдельно (не всю
+    # строку — иначе запятая-разделитель тоже стала бы точкой). Возвращаем уже
+    # нормализованные части, чтобы дальше calculate_destiny разбил их по точке.
     if "," not in text:
         return None
-    parts = [p.strip() for p in text.split(",")]
+    parts = [normalize_date(p) for p in text.split(",")]
     if len(parts) != 2 or not all(is_valid_date(p) for p in parts):
         return None
     return parts
@@ -1740,7 +1743,7 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
 @dp.message(StateFilter(Form.waiting_date))
 async def handle_date(message: Message, state: FSMContext):
     user = await db.get_user(message.from_user.id)
-    text = (message.text or "").strip()
+    text = normalize_date(message.text or "")
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
