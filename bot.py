@@ -28,7 +28,7 @@ from config import (
     TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
-    PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT,
+    PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT, YESNO_FREE_LIMIT,
     PREMIUM_PRICE_INCREASE, PREMIUM_PRICE_INCREASE_DATE,
     YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE,
 )
@@ -40,6 +40,7 @@ from generation import (
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date, normalize_date,
     build_numerology_context, calculate_personal_month, calculate_personal_day,
+    DAY_ENERGY, personal_day_info,
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
@@ -154,6 +155,7 @@ class Form(StatesGroup):
     waiting_coupon           = State()
     waiting_user_search      = State()
     waiting_ai_question      = State()
+    waiting_yesno            = State()
     waiting_followup         = State()
     waiting_rename           = State()
     waiting_feedback         = State()
@@ -2032,6 +2034,170 @@ async def handle_ai_question(message: Message, state: FSMContext):
             pass
         await state.clear()
 
+# ─── ЧИСЛО ДНЯ ───────────────────────────────────────────────────────────────
+# Ежедневный крючок возврата: личное число дня + его энергия. Бесплатно —
+# число, энергия и короткий совет; премиум получает ещё персональную строку
+# под его число судьбы (мягкая воронка). Ничего не хранится — считается из
+# даты рождения и сегодняшней даты (см. numerology.personal_day_info).
+def _day_number_back_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎱 Спросить Да / Нет", callback_data="yesno_start")],
+        [InlineKeyboardButton(text="🔮 Меню разборов",      callback_data="show_menu")],
+    ])
+
+@dp.callback_query(F.data == "day_number")
+async def day_number_cb(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _show_day_number(callback.message, callback.from_user.id)
+    await callback.answer()
+
+@dp.message(Command("today"), StateFilter("*"))
+async def today_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    await _show_day_number(message, message.from_user.id)
+
+async def _show_day_number(target: Message, user_id: int):
+    user = await db.get_user(user_id)
+    if not user.get("birth_date"):
+        await target.answer(
+            "🌟 Чтобы узнать своё число дня, сначала укажи дату рождения — "
+            "выбери любой разбор в меню, и я запомню твои числа 🌸",
+            reply_markup=_day_number_back_menu()
+        )
+        return
+    name = user.get("first_name") or "дорогая"
+    info = personal_day_info(user["birth_date"])
+    today = utc_now().strftime("%d.%m")
+    text = (
+        f"🌟 {name}, твоё число дня на {today} — {info['number']}.\n\n"
+        f"Сегодня у тебя {info['energy']}.\n"
+        f"✨ {info['advice'].capitalize()}."
+    )
+    if db.is_premium(user):
+        dn = user.get("destiny_number") or calculate_destiny(user["birth_date"])
+        note = _DESTINY_DAY_NOTES.get(dn, _DESTINY_DAY_NOTES[9])
+        text += f"\n\n💎 {note}"
+    else:
+        text += (
+            "\n\n💎 С премиумом число дня приходит с личным толкованием под твоё "
+            "число судьбы — и каждое утро само."
+        )
+    await target.answer(text, reply_markup=_day_number_back_menu())
+
+_DESTINY_DAY_NOTES = {
+    1:  "Для твоей единицы важно сегодня не ждать разрешения — первый шаг за тобой.",
+    2:  "Твоя двойка сегодня читает людей особенно тонко — доверяй первому впечатлению.",
+    3:  "Твоя тройка сегодня ярче обычного — говори, показывай, будь на виду.",
+    4:  "Твоя четвёрка найдёт опору в делах — то, что заложишь сегодня, будет прочным.",
+    5:  "Твоя пятёрка сегодня тянется к новому — не отказывай себе в перемене.",
+    6:  "Твоя шестёрка сегодня нужна близким — тепло, отданное сегодня, вернётся.",
+    7:  "Твоей семёрке сегодня стоит побыть в тишине — там придёт нужный ответ.",
+    8:  "Твоя восьмёрка сегодня сильна в деньгах и решениях — действуй уверенно.",
+    9:  "Твоя девятка сегодня видит суть — отпусти то, что уже отжило.",
+    11: "Твоё число 11 сегодня резонирует с днём — будь внимательна к знакам и снам.",
+    22: "Твоё число 22 сегодня даёт особую практическую силу — берись за большое.",
+    33: "Твоё число 33 сегодня светит ярче — твоя забота сегодня целительна.",
+}
+
+# ─── ДА / НЕТ ────────────────────────────────────────────────────────────────
+# Микро-фича: быстрый вопрос → мгновенный ответ Да/Нет по числам. Частый
+# лёгкий крючок. Бесплатно YESNO_FREE_LIMIT в день, премиум — безлимит.
+@dp.callback_query(F.data == "yesno_start")
+async def yesno_start_cb(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(callback.from_user.id)
+    if not user.get("birth_date"):
+        await callback.message.answer(
+            "🎱 Чтобы я отвечала по твоим числам, сначала укажи дату рождения — "
+            "выбери любой разбор в меню 🌸",
+            reply_markup=_day_number_back_menu()
+        )
+        await callback.answer()
+        return
+    await state.set_state(Form.waiting_yesno)
+    await callback.message.answer(
+        "🎱 Задай вопрос, на который нужен ответ Да или Нет.\n"
+        "Например: «стоит ли соглашаться на эту работу?» или «позвонить ему сегодня?»",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
+    )
+    await callback.answer()
+
+@dp.message(Command("yesno"), StateFilter("*"))
+async def yesno_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(message.from_user.id)
+    if not user.get("birth_date"):
+        await message.answer(
+            "🎱 Сначала укажи дату рождения — выбери любой разбор в меню 🌸",
+            reply_markup=_day_number_back_menu()
+        )
+        return
+    await state.set_state(Form.waiting_yesno)
+    await message.answer(
+        "🎱 Задай вопрос, на который нужен ответ Да или Нет 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
+        ])
+    )
+
+def _yesno_again_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎱 Ещё вопрос", callback_data="yesno_start")],
+        [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
+    ])
+
+@dp.message(StateFilter(Form.waiting_yesno))
+async def handle_yesno(message: Message, state: FSMContext):
+    user_id  = message.from_user.id
+    question = (message.text or "").strip()
+    if len(question) < 3:
+        await message.answer("Напиши вопрос текстом, хотя бы пару слов 🙂")
+        return
+    if len(question) > ASK_QUESTION_MAX_LEN:
+        await message.answer(f"Вопрос длинноват — сократи до {ASK_QUESTION_MAX_LEN} символов, пожалуйста.")
+        return
+    user = await db.get_user(user_id)
+    if is_rude(question):
+        await state.clear()
+        await message.answer(rude_reply())
+        return
+    if user_id in _generating:
+        await message.answer("⏳ Дождись, пожалуйста, пока закончится текущая генерация 🔮")
+        return
+    # Премиум — безлимит; бесплатным списываем из дневного лимита.
+    if not db.is_premium(user):
+        allowed = await db.yesno_try_consume(user_id, YESNO_FREE_LIMIT)
+        if not allowed:
+            await state.clear()
+            await message.answer(
+                f"🎱 На сегодня {YESNO_FREE_LIMIT} вопроса «Да/Нет» уже задано.\n\n"
+                "💎 С премиумом можно спрашивать без ограничений — и днём, и ночью 🌸",
+                reply_markup=_yesno_again_menu()
+            )
+            await _show_premium(message, user)
+            return
+    await state.clear()
+    _generating.add(user_id)
+    wait_msg = await message.answer("🎱 Смотрю в твои числа...")
+    try:
+        from generation import answer_yes_no
+        name = user.get("first_name") or "дорогая"
+        answer = await answer_yes_no(name, user["birth_date"], question)
+        await message.answer(answer, reply_markup=_yesno_again_menu())
+    except Exception as e:
+        logging.error(f"YesNo error: {e}", exc_info=True)
+        if not db.is_premium(user):
+            await db.refund_yesno_try(user_id)
+        await message.answer("❌ Что-то пошло не так — попробуй ещё раз чуть позже 🙏", reply_markup=_yesno_again_menu())
+    finally:
+        _generating.discard(user_id)
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+
 # ─── УТОЧНЯЮЩИЕ ВОПРОСЫ ПО КУПЛЕННОМУ РАЗБОРУ ────────────────────────────────
 # FOLLOWUP_LIMIT бесплатных вопросов на каждый разбор — воронка в премиум:
 # после лимита предлагаем безлимитный AI-чат "Спроси Еву" из подписки.
@@ -2412,23 +2578,8 @@ async def balance_cmd(message: Message, state: FSMContext):
     await message.answer("\n".join(lines), reply_markup=_MENU_BACK_MARKUP)
 
 # ─── РАССЫЛКИ ────────────────────────────────────────────────────────────────
-_DAY_ENERGY = {
-    1: ("энергия начала и лидерства", "день для смелых решений и новых стартов — действуй первой"),
-    2: ("энергия интуиции и партнёрства", "день для диалога и прислушивания к себе — доверяй ощущениям"),
-    3: ("энергия творчества и общения", "день для самовыражения и радости — позволь себе быть яркой"),
-    4: ("энергия порядка и созидания", "день для планирования и дел — всё что начнёшь сегодня будет устойчивым"),
-    5: ("энергия перемен и свободы", "день для нового опыта — будь открыта к неожиданному"),
-    6: ("энергия любви и гармонии", "день для близких и заботы о себе — это твоя главная задача сегодня"),
-    7: ("энергия мудрости и глубины", "день для размышлений и тишины — ответы уже внутри тебя"),
-    8: ("энергия силы и изобилия", "день для финансовых решений и амбиций — действуй уверенно"),
-    9: ("энергия завершения и мудрости", "день для отпускания старого — освободи место для нового"),
-    11: ("энергия вдохновения и интуиции", "особый день — твоё чутьё работает на максимуме"),
-    22: ("энергия мастера-строителя", "день для масштабных шагов — делай то что останется надолго"),
-    33: ("энергия высшей любви", "день для сострадания и помощи — твои слова сегодня целительны"),
-}
-
 def _day_message(name: str, destiny_number: int, day_number: int) -> str:
-    day_info = _DAY_ENERGY.get(day_number, _DAY_ENERGY[9])
+    day_info = DAY_ENERGY.get(day_number, DAY_ENERGY[9])
     day_energy, day_advice = day_info
 
     destiny_notes = {

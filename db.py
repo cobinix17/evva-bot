@@ -159,6 +159,8 @@ async def init_db(database_url: str):
         ("prem_month_count","INTEGER DEFAULT 0"),
         ("ask_day",       "DATE"),
         ("ask_day_count", "INTEGER DEFAULT 0"),
+        ("yesno_day",       "DATE"),
+        ("yesno_day_count", "INTEGER DEFAULT 0"),
         ("created_at",    "TIMESTAMP DEFAULT NOW()"),
         ("last_spin_date", "DATE"),
     ]:
@@ -492,6 +494,34 @@ async def refund_ask_try(user_id: int):
     await db_pool.execute(
         '''UPDATE users SET ask_day_count = GREATEST(ask_day_count - 1, 0)
            WHERE user_id = $1 AND ask_day = $2''',
+        user_id, today
+    )
+
+async def yesno_try_consume(user_id: int, daily_limit: int) -> bool:
+    """Атомарно списывает один вопрос из дневного лимита «Да/Нет» — тот же
+    неделимый UPDATE-с-guard, что и ask_try_consume. Премиум лимит не трогает
+    (вызывающий код просто не проверяет его для премиума)."""
+    today = utc_now().date()
+    row = await db_pool.fetchrow(
+        '''
+        UPDATE users SET
+            yesno_day_count = CASE WHEN yesno_day = $2 THEN yesno_day_count + 1 ELSE 1 END,
+            yesno_day       = $2
+        WHERE user_id = $1
+          AND NOT (yesno_day = $2 AND yesno_day_count >= $3)
+        RETURNING yesno_day_count
+        ''',
+        user_id, today, daily_limit
+    )
+    return row is not None
+
+async def refund_yesno_try(user_id: int):
+    """Возвращает списанный вопрос «Да/Нет», если генерация упала — сбой ИИ не
+    должен сжигать дневной лимит."""
+    today = utc_now().date()
+    await db_pool.execute(
+        '''UPDATE users SET yesno_day_count = GREATEST(yesno_day_count - 1, 0)
+           WHERE user_id = $1 AND yesno_day = $2''',
         user_id, today
     )
 

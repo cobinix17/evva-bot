@@ -74,6 +74,24 @@ async def generate_single(user_id: int, user: dict, key: str, date_str: str) -> 
         _generating.discard(user_id)
 
 
+async def answer_yes_no(name: str, birth_date: str, question: str) -> str:
+    """Короткий ответ «Да/Нет» с 1-2 предложениями обоснования по числам —
+    отдельная микро-фича (не структурированный разбор). Не кэшируется и не
+    занимает замок генерации: это лёгкий частый запрос, а не тяжёлый разбор."""
+    context = build_numerology_context(name, birth_date)
+    prompt = (
+        f"Нумерологические данные {name}:\n{context}\n\n"
+        f"Она задаёт вопрос, на который нужен ответ ДА или НЕТ: «{question}»\n\n"
+        "Ответь как Ева: начни РОВНО с одного слова — «Да», «Нет» или «Скорее да» / "
+        "«Скорее нет», затем с новой строки 1-2 коротких предложения обоснования по "
+        "её числам. Без заголовков, без emoji, без воды, тёплым живым тоном. "
+        "Если вопрос не про её жизнь/выбор (просят код, факты, посторонняя тема) — "
+        "не гадай, ответь одним предложением, что это не по твоей части."
+    )
+    async with _gen_semaphore:
+        return await ask_ai(prompt)
+
+
 async def generate_compat(user_id: int, user: dict, date1: str, date2: str) -> tuple[str, str, bool]:
     """То же, что generate_single, но для разбора совместимости (две даты).
     Ключ разбора — 'compat', в кэше даты хранятся как 'date1,date2'."""

@@ -53,6 +53,11 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
             callback_data="premium_info"
         )])
 
+    buttons.append([
+        InlineKeyboardButton(text="🌟 Число дня", callback_data="day_number"),
+        InlineKeyboardButton(text="🎱 Да / Нет",  callback_data="yesno_start"),
+    ])
+
     buttons.append([InlineKeyboardButton(text="── Выбери тему ──", callback_data="noop")])
     buttons.append([InlineKeyboardButton(text="🔮 Судьба и личность",    callback_data="section_destiny")])
     buttons.append([InlineKeyboardButton(text="💰 Деньги и карьера",     callback_data="section_money")])
