@@ -69,7 +69,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         callback_data="my_profile"
     )])
     buttons.append([InlineKeyboardButton(
-        text="🌸 Личный разбор от Евы (за рубли)",
+        text="🌸 Личный разбор от Евы",
         url=CONTACT_URL
     )])
     buttons.append([InlineKeyboardButton(

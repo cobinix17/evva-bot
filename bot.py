@@ -1525,8 +1525,15 @@ async def successful_payment(message: Message, state: FSMContext):
     await _start_date_flow(message, state, user, payload)
 
 # ─── ОБРАБОТКА ДАТ ───────────────────────────────────────────────────────────
+def _repeat_choice_menu(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Показать этот разбор", callback_data=f"showcache_{key}")],
+        [InlineKeyboardButton(text="📅 Сделать на другую дату", callback_data=f"redate_{key}")],
+        [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
+    ])
+
 async def _process_date(message: Message, user_id: int, user: dict, date_str: str,
-                        state: FSMContext, is_free: bool = False):
+                        state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False):
     number  = calculate_destiny(date_str)
     waiting = user.get("waiting")
     name    = user.get("first_name") or "дорогая"
@@ -1534,6 +1541,20 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu_for(message.from_user.id, user))
         await state.clear()
         return
+
+    # Этот разбор на эту же дату уже делали — не перегенерируем (иначе ИИ мог бы
+    # противоречить прошлому тексту), но и не вываливаем старый текст с сухой
+    # оговоркой: спрашиваем заранее — показать тот же или взять другую дату.
+    if not confirmed_repeat:
+        cached = await db.get_reading_text(user_id, waiting)
+        if cached and cached.get("date_str") == date_str:
+            await state.clear()
+            await message.answer(
+                f"🌸 Этот разбор для {date_str} у тебя уже готов — твои числа не меняются, "
+                "поэтому и разбор останется тем же.\n\nОткрыть его снова или сделать на другую дату?",
+                reply_markup=_repeat_choice_menu(waiting)
+            )
+            return
 
     # Замок: не запускаем вторую генерацию пока идёт первая
     if user_id in _generating:
@@ -1572,15 +1593,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     try:
         title, answer, from_cache = await generate_single(user_id, user, waiting, date_str)
         await stop_intermediate()
-        if from_cache:
-            await send_long(
-                message.chat.id,
-                f"{title}\n\n{answer}\n\n"
-                f"ℹ️ Этот разбор на эту дату мы уже делали — показываю тот же текст, "
-                f"чтобы не было противоречий."
-            )
-        else:
-            await send_long(message.chat.id, f"{title}\n\n{answer}")
+        await send_long(message.chat.id, f"{title}\n\n{answer}")
 
         try:
             pdf_bytes = await _generate_pdf_async(
@@ -1626,6 +1639,38 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         await message.answer(retry_text, reply_markup=retry_menu(waiting, is_free=is_free))
         await state.clear()
 
+@dp.callback_query(F.data.startswith("showcache_"))
+async def showcache_cb(callback: CallbackQuery, state: FSMContext):
+    """«Показать этот разбор» из меню повтора — отдаём тот же текст (+PDF,
+    уточнения, апселлы), без перегенерации и без сухой оговорки."""
+    key    = callback.data.replace("showcache_", "")
+    user   = await db.get_user(callback.from_user.id)
+    cached = await db.get_reading_text(callback.from_user.id, key)
+    await callback.answer()
+    if not cached or not cached.get("date_str"):
+        user["waiting"] = key
+        await db.save_user(callback.from_user.id, user)
+        await _start_date_flow(callback.message, state, user, key)
+        return
+    user["waiting"] = key
+    await db.save_user(callback.from_user.id, user)
+    if key == "compat":
+        parts = cached["date_str"].split(",")
+        if len(parts) == 2:
+            await _process_two_dates(callback.message, callback.from_user.id, user, parts, state, confirmed_repeat=True)
+    else:
+        await _process_date(callback.message, callback.from_user.id, user, cached["date_str"], state, confirmed_repeat=True)
+
+@dp.callback_query(F.data.startswith("redate_"))
+async def redate_cb(callback: CallbackQuery, state: FSMContext):
+    """«Сделать на другую дату» из меню повтора — снова спрашиваем дату(-ы)."""
+    key  = callback.data.replace("redate_", "")
+    user = await db.get_user(callback.from_user.id)
+    user["waiting"] = key
+    await db.save_user(callback.from_user.id, user)
+    await callback.answer()
+    await _start_date_flow(callback.message, state, user, key)
+
 def _parse_two_dates(text: str) -> list[str] | None:
     # Две даты разделяются запятой; нормализуем КАЖДУЮ дату отдельно (не всю
     # строку — иначе запятая-разделитель тоже стала бы точкой). Возвращаем уже
@@ -1660,8 +1705,21 @@ async def handle_free_two_dates(message: Message, state: FSMContext):
     await _process_two_dates(message, message.from_user.id, user, parts, state, is_free=True)
 
 async def _process_two_dates(message: Message, user_id: int, user: dict, parts: list[str],
-                              state: FSMContext, is_free: bool = False):
+                              state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False):
     name    = user.get("first_name") or "дорогая"
+
+    # Тот же разбор совместимости на те же две даты уже есть — спрашиваем,
+    # а не перегенерируем (см. _process_date).
+    if not confirmed_repeat:
+        cached = await db.get_reading_text(user_id, "compat")
+        if cached and cached.get("date_str") == f"{parts[0]},{parts[1]}":
+            await state.clear()
+            await message.answer(
+                f"🌸 Разбор совместимости для {parts[0]} и {parts[1]} у тебя уже готов.\n\n"
+                "Открыть его снова или взять другие даты?",
+                reply_markup=_repeat_choice_menu("compat")
+            )
+            return
 
     if user_id in _generating:
         await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
@@ -1693,15 +1751,7 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
         n1 = calculate_destiny(parts[0])
         title, answer, from_cache = await generate_compat(user_id, user, parts[0], parts[1])
         await stop_intermediate()
-        if from_cache:
-            await send_long(
-                message.chat.id,
-                f"{title}\n\n{answer}\n\n"
-                f"ℹ️ Разбор совместимости для этих дат мы уже делали — показываю тот же текст, "
-                f"чтобы не было противоречий."
-            )
-        else:
-            await send_long(message.chat.id, f"{title}\n\n{answer}")
+        await send_long(message.chat.id, f"{title}\n\n{answer}")
 
         try:
             pdf_bytes = await _generate_pdf_async(
