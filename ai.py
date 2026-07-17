@@ -203,18 +203,36 @@ def _header_emoji_of(s: str) -> str | None:
 
 import html as _html_mod
 
+_HEADER_LINE_MAX = 80  # короткая строка-заголовок целиком, не начало абзаца
+
 def bolden_headers(text: str) -> str:
-    """Оборачивает строки-заголовки (начинающиеся с emoji из _HEADER_EMOJI) в
+    """Оборачивает заголовки разделов (начинающиеся с emoji из _HEADER_EMOJI) в
     <b>...</b> для отправки с parse_mode='HTML' — разбор в чате выглядит как
-    документ (жирные заголовки разделов), а не сплошной текст. Экранирует
-    весь текст под HTML ПЕРЕД оборачиванием, чтобы случайные '<'/'>'/'&' в
-    ответе модели не сломали разметку и не терялись как невалидные теги."""
+    документ, а не сплошной текст. Экранирует весь текст под HTML ПЕРЕД
+    оборачиванием, чтобы случайные '<'/'>'/'&' в ответе модели не сломали
+    разметку.
+
+    Модель не всегда переносит заголовок на отдельную строку — иногда пишет
+    его слитно с абзацем ('🗓 Твой Аркан 2026 года — Звезда. Это значит...').
+    Если жирнить всю такую строку целиком, в жирный уйдёт весь абзац —
+    выглядит как стена жирного текста. Поэтому: короткую строку (реальный
+    заголовок) жирним целиком; длинную — только до первого ' — ' в начале
+    (сам заголовок), а если тире нет — не жирним вовсе, чтобы не облажаться."""
     escaped = _html_mod.escape(text)
     lines = escaped.split('\n')
     out = []
     for line in lines:
-        if _is_header(line.strip()) and line.strip():
+        stripped = line.strip()
+        if not stripped or not _is_header(stripped):
+            out.append(line)
+            continue
+        if len(line) <= _HEADER_LINE_MAX:
             out.append(f"<b>{line}</b>")
+            continue
+        dash_pos = line.find(" — ", 0, _HEADER_LINE_MAX)
+        if dash_pos != -1:
+            cut = dash_pos + len(" — ")
+            out.append(f"<b>{line[:cut]}</b>{line[cut:]}")
         else:
             out.append(line)
     return '\n'.join(out)
