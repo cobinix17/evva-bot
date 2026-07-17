@@ -201,6 +201,24 @@ def _header_emoji_of(s: str) -> str | None:
             return e
     return None
 
+import html as _html_mod
+
+def bolden_headers(text: str) -> str:
+    """Оборачивает строки-заголовки (начинающиеся с emoji из _HEADER_EMOJI) в
+    <b>...</b> для отправки с parse_mode='HTML' — разбор в чате выглядит как
+    документ (жирные заголовки разделов), а не сплошной текст. Экранирует
+    весь текст под HTML ПЕРЕД оборачиванием, чтобы случайные '<'/'>'/'&' в
+    ответе модели не сломали разметку и не терялись как невалидные теги."""
+    escaped = _html_mod.escape(text)
+    lines = escaped.split('\n')
+    out = []
+    for line in lines:
+        if _is_header(line.strip()) and line.strip():
+            out.append(f"<b>{line}</b>")
+        else:
+            out.append(line)
+    return '\n'.join(out)
+
 def _fix_langswap(text: str) -> str:
     """Заменяет одиночную латинскую букву, зажатую соседством кириллицы,
     на её кириллический аналог. Не трогает целые латинские слова/фразы —

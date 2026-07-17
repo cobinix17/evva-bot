@@ -32,7 +32,7 @@ from config import (
     PREMIUM_PRICE_INCREASE, PREMIUM_PRICE_INCREASE_DATE,
     YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE,
 )
-from ai import ask_ai, is_rude, rude_reply
+from ai import ask_ai, is_rude, rude_reply, bolden_headers
 from pdf import generate_pdf
 from generation import (
     premium_gen_semaphore, generate_single, generate_compat, _generating,
@@ -125,9 +125,14 @@ async def global_error_handler(event: ErrorEvent):
 
 # ─── РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ ──────────────────────────────────────────────
 async def send_long(chat_id, text: str):
+    # Жирные emoji-заголовки разделов через HTML — разбор в чате читается как
+    # документ, а не сплошной текст (см. ai.bolden_headers). Экранирование под
+    # HTML там же, ДО разбиения — split идёт только по '\n', так что открывающий
+    # и закрывающий <b> одной строки никогда не попадут в разные части.
+    text  = bolden_headers(text)
     limit = 4000
     if len(text) <= limit:
-        await bot.send_message(chat_id, text)
+        await bot.send_message(chat_id, text, parse_mode="HTML")
         return
     parts = []
     while len(text) > limit:
@@ -139,7 +144,7 @@ async def send_long(chat_id, text: str):
     if text:
         parts.append(text)
     for part in parts:
-        await bot.send_message(chat_id, part)
+        await bot.send_message(chat_id, part, parse_mode="HTML")
         await asyncio.sleep(0.3)
 
 # ─── FSM ─────────────────────────────────────────────────────────────────────
