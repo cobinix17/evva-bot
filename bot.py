@@ -1696,6 +1696,21 @@ async def redate_cb(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await _start_date_flow(callback.message, state, user, key)
 
+@dp.callback_query(F.data.startswith("startreading_"))
+async def startreading_cb(callback: CallbackQuery, state: FSMContext):
+    """Универсальный запуск ввода данных для купленного разбора — правильно
+    роутит по типу (дата / две даты / название). Нужен рублёвому вебхуку
+    ЮKassa: там нет FSM-контекста, поэтому даём кнопку, а флоу поднимает бот."""
+    key = callback.data.replace("startreading_", "")
+    user = await db.get_user(callback.from_user.id)
+    if key not in user.get("purchased", []):
+        await callback.answer()
+        return
+    user["waiting"] = key
+    await db.save_user(callback.from_user.id, user)
+    await callback.answer()
+    await _start_date_flow(callback.message, state, user, key)
+
 _SUBJECT_RE = re.compile(r"[\r\n\t]+")
 
 def _sanitize_subject(raw: str) -> str:

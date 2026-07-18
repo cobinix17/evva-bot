@@ -936,15 +936,29 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
             logging.warning(f"yookassa reading ref bonus error: {e}")
 
     title = PAID_RAZBORY[payload]
+    # compat (две даты) и business_name (название) нельзя запускать датным
+    # меню «для себя/другая дата» — им нужен свой ввод. Для них шлём кнопку
+    # «Начать разбор» (startreading_ роутит правильно в bot.py). Обычным
+    # датным разборам оставляем привычное date_choice_menu.
     try:
-        await _bot.send_message(
-            user_id,
-            f"✅ Оплата «{title}» прошла!\n\n"
-            f"Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?"
-            if user.get("birth_date") else
-            f"✅ Оплата «{title}» прошла! Открой чат со мной и укажи дату рождения.",
-            reply_markup=date_choice_menu() if user.get("birth_date") else None
-        )
+        if payload in ("compat", "business_name"):
+            from aiogram.types import InlineKeyboardMarkup as _IKM, InlineKeyboardButton as _IKB
+            await _bot.send_message(
+                user_id,
+                f"✅ Оплата «{title}» прошла! Нажми кнопку, чтобы начать 👇",
+                reply_markup=_IKM(inline_keyboard=[[
+                    _IKB(text="▶️ Начать разбор", callback_data=f"startreading_{payload}")
+                ]])
+            )
+        else:
+            await _bot.send_message(
+                user_id,
+                f"✅ Оплата «{title}» прошла!\n\n"
+                f"Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?"
+                if user.get("birth_date") else
+                f"✅ Оплата «{title}» прошла! Открой чат со мной и укажи дату рождения.",
+                reply_markup=date_choice_menu() if user.get("birth_date") else None
+            )
     except Exception as e:
         logging.warning(f"yookassa reading notify error: {e}")
     return web.Response(status=200)
