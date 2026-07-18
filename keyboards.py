@@ -185,6 +185,7 @@ def section_destiny_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
         ("main_fear",      "😨 Главный страх"),
         ("karma",          "🔴 Кармический долг"),
         ("forecast_2026",  "🗓 Прогноз на 2026 год"),
+        ("name_secret",    "🔤 Тайна твоего имени"),
     ]
     return _section_menu(items, user, gift)
 
@@ -199,6 +200,7 @@ def section_money_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
         ("career",        "💼 Карьерный путь"),
         ("money",         "💰 Денежный код"),
         ("days",          "🌙 Сильные и слабые дни"),
+        ("business_name", "💼 Нумерология названия"),
     ]
     return _section_menu(items, user, gift)
 

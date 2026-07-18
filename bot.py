@@ -1678,6 +1678,11 @@ async def showcache_cb(callback: CallbackQuery, state: FSMContext):
         parts = cached["date_str"].split(",")
         if len(parts) == 2:
             await _process_two_dates(callback.message, callback.from_user.id, user, parts, state, confirmed_repeat=True)
+    elif key == "business_name":
+        # date_str тут хранит название, а не дату — не гоним через _process_date
+        # (там calculate_destiny упал бы). Просто просим название заново
+        # (generate_name отдаст из кэша, если название то же).
+        await _start_date_flow(callback.message, state, user, key)
     else:
         await _process_date(callback.message, callback.from_user.id, user, cached["date_str"], state, confirmed_repeat=True)
 
