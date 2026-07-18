@@ -2,7 +2,9 @@
 # Использует пул соединений asyncpg, создаваемый в init_db().
 # Зависит от config.py (PAID_RAZBORY) для авто-выдачи всех разборов админу.
 import json
+import asyncio
 import logging
+from collections import defaultdict
 from datetime import timedelta, datetime, timezone
 
 import asyncpg
@@ -10,6 +12,16 @@ import asyncpg
 from config import PAID_RAZBORY, ADMIN_ID
 
 db_pool = None
+
+# Пер-пользовательские блокировки для критических секций «прочитать-проверить-
+# списать-сохранить» (оплата балансом). spend_balance атомарен сам по себе, но
+# проверка «ещё не куплено» и сохранение purchased идут отдельными шагами —
+# без этого замка двойной клик мог бы списать баланс дважды за один разбор.
+# Бот и веб в одном процессе, поэтому один и тот же lock их сериализует.
+_user_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+def user_lock(user_id: int) -> asyncio.Lock:
+    return _user_locks[user_id]
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -563,6 +575,19 @@ async def get_reading_text(user_id: int, razbor_key: str) -> dict | None:
         user_id, razbor_key
     )
     return dict(row) if row else None
+
+async def get_reading_texts(user_id: int, keys: list[str]) -> dict[str, dict]:
+    """Пакетно достаёт тексты нескольких разборов одним запросом (вместо N
+    отдельных get_reading_text в цикле — см. api_profile_digest). Возвращает
+    {razbor_key: {title, text, date_str}}."""
+    if not keys:
+        return {}
+    rows = await db_pool.fetch(
+        'SELECT razbor_key, title, text, date_str FROM generated_readings '
+        'WHERE user_id = $1 AND razbor_key = ANY($2)',
+        user_id, keys
+    )
+    return {r["razbor_key"]: dict(r) for r in rows}
 
 async def add_feedback(user_id: int, text: str, category: str = "idea") -> int:
     return await db_pool.fetchval(

@@ -552,13 +552,18 @@ async def api_balance_buy(request: web.Request) -> web.Response:
         return web.json_response({"already_purchased": True})
 
     price = PRICES.get(key, 49)
-    spent = await db.spend_balance(user_id, price)
-    if not spent:
-        return _json_error("Недостаточно звёзд на балансе", 400)
-
-    user = await db.get_user(user_id)  # перечитываем — баланс уже списан
-    user["purchased"].append(key)
-    await db.save_user(user_id, user)
+    # Замок на юзера (см. db.user_lock): двойной клик по кнопке иначе прошёл бы
+    # обе проверки «не куплено» и списал бы баланс дважды за один разбор.
+    async with db.user_lock(user_id):
+        user = await db.get_user(user_id)
+        if key in user.get("purchased", []):
+            return web.json_response({"already_purchased": True})
+        spent = await db.spend_balance(user_id, price)
+        if not spent:
+            return _json_error("Недостаточно звёзд на балансе", 400)
+        user = await db.get_user(user_id)  # перечитываем — баланс уже списан
+        user["purchased"].append(key)
+        await db.save_user(user_id, user)
     # Баланс — бонусные (реферальные) звёзды, а не живые деньги: в выручку
     # не пишем, иначе двойной счёт с покупкой, что этот бонус породила.
     return web.json_response({"ok": True})
@@ -725,9 +730,10 @@ async def api_profile_digest(request: web.Request) -> web.Response:
     if cached and cached.get("date_str") == signature:
         return web.json_response({"title": cached["title"], "text": cached["text"], "cached": True})
 
+    reading_map = await db.get_reading_texts(user_id, purchased)
     texts = []
     for key in purchased:
-        r = await db.get_reading_text(user_id, key)
+        r = reading_map.get(key)
         if r and r.get("text"):
             title = TITLES.get(key, key)
             texts.append(f"### {title}\n{r['text'][:1200]}")
@@ -785,7 +791,10 @@ _rate_buckets: dict[str, list[float]] = {}
 
 @web.middleware
 async def _rate_limit_middleware(request: web.Request, handler):
-    if not request.path.startswith("/api/"):
+    # Лимитируем и /api/*, и вебхук ЮKassa (он вне /api/, но публичный: без
+    # лимита кто угодно мог бы флудить его POST-ами, а бот на каждый дёргал бы
+    # API ЮKassa через fetch_payment).
+    if not (request.path.startswith("/api/") or request.path == "/webhook/yookassa"):
         return await handler(request)
     key = request.headers.get("X-Telegram-Init-Data") or request.remote or "unknown"
     now = time.time()

@@ -1410,15 +1410,21 @@ async def balance_buy_handler(callback: CallbackQuery, state: FSMContext):
         return
 
     price = PRICES.get(key, 49)
-    spent = await db.spend_balance(callback.from_user.id, price)
-    if not spent:
-        await callback.answer("❌ На балансе уже не хватает звёзд — обнови баланс командой /balance.", show_alert=True)
-        return
-
-    user = await db.get_user(callback.from_user.id)  # перечитываем — баланс уже списан
-    user["purchased"].append(key)
-    user["waiting"] = key
-    await db.save_user(callback.from_user.id, user)
+    # Замок на юзера: без него двойной клик прошёл бы обе проверки «не куплено»
+    # и списал бы баланс дважды за один разбор (см. db.user_lock).
+    async with db.user_lock(callback.from_user.id):
+        user = await db.get_user(callback.from_user.id)
+        if key in user["purchased"]:
+            await _resume_already_purchased(callback, state, user, key)
+            return
+        spent = await db.spend_balance(callback.from_user.id, price)
+        if not spent:
+            await callback.answer("❌ На балансе уже не хватает звёзд — обнови баланс командой /balance.", show_alert=True)
+            return
+        user = await db.get_user(callback.from_user.id)  # перечитываем — баланс уже списан
+        user["purchased"].append(key)
+        user["waiting"] = key
+        await db.save_user(callback.from_user.id, user)
     await callback.answer(f"✅ Оплачено балансом! Списано {price} ⭐")
     await _start_date_flow(callback.message, state, user, key)
 
@@ -1432,9 +1438,10 @@ async def successful_payment(message: Message, state: FSMContext):
     sp      = message.successful_payment
     payload = sp.invoice_payload
     # total_amount — минимальные единицы валюты: для Stars (XTR) это сами
-    # звёзды, для RUB — копейки. Реф-бонус считаем в звёздах-эквиваленте,
-    # иначе на рублёвых платежах бонус считался бы из копеек и был бы
-    # в сотни раз больше положенного.
+    # звёзды, для RUB — копейки. Реф-бонус считаем в звёздах-эквиваленте.
+    # Сейчас сюда приходят ТОЛЬКО Stars-платежи (все наши Telegram-инвойсы —
+    # currency="XTR"); рубли идут мимо, через отдельный вебхук ЮKassa. Ветку RUB
+    # оставляем защитно — на случай если когда-то вернём Telegram-инвойс в рублях.
     if sp.currency == "RUB":
         amount = round(sp.total_amount / 100 / STARS_TO_RUB_RATE)
     else:
