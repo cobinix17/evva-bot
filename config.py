@@ -37,6 +37,8 @@ TITLES = {
     "future_portal":  "🌟 Прогноз на 3 года",
     "turning_point":  "🔄 Поворотные точки судьбы",
     "ancestor_code":  "🌳 Родовой код",
+    "name_secret":    "🔤 Тайна твоего имени",
+    "business_name":  "💼 Нумерология названия",
 }
 
 PRICES = {
@@ -74,12 +76,16 @@ PRICES = {
     "future_portal": 149,
     "turning_point": 79,
     "ancestor_code": 99,
+    "name_secret":   79,
+    "business_name": 99,
 }
 
 PAID_RAZBORY  = {k: v for k, v in TITLES.items() if k != "free"}
 
-# Разборы которые могут быть бесплатными (до 99⭐ включительно)
-FREE_ELIGIBLE = {k for k, v in PRICES.items() if v <= 99}
+# Разборы которые могут быть бесплатными (до 99⭐ включительно).
+# name_secret/business_name исключены: это новые премиум-фичи, и business_name
+# идёт по своему текстовому флоу (не date), где бесплатная логика не заведена.
+FREE_ELIGIBLE = {k for k, v in PRICES.items() if v <= 99 and k not in ("name_secret", "business_name")}
 
 UPSELLS = {
     "matrix_full":    ("forecast_2026", "mission"),
@@ -116,11 +122,13 @@ UPSELLS = {
     "future_portal":  ("turning_point",  "forecast_2026"),
     "turning_point":  ("future_portal",  "past_life"),
     "ancestor_code":  ("past_life",      "karma"),
+    "name_secret":    ("matrix_full",    "mission"),
+    "business_name":  ("own_business",   "finance"),
 }
 
 # Разделы меню
-SECTION_DESTINY = ["matrix_full", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026"]
-SECTION_MONEY   = ["finance", "wealth_blocks", "freedom_path", "calling", "promotion", "own_business", "career", "money", "days"]
+SECTION_DESTINY = ["matrix_full", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026", "name_secret"]
+SECTION_MONEY   = ["finance", "wealth_blocks", "freedom_path", "calling", "promotion", "own_business", "career", "money", "days", "business_name"]
 SECTION_LOVE    = ["compat", "when", "portrait", "unlucky", "ex", "cold", "toxic", "lonely", "breakup"]
 SECTION_HEALTH  = ["health_code", "energy_drain", "body_message", "stress_number", "intuition"]
 SECTION_PAST    = ["past_life", "future_portal", "turning_point", "ancestor_code"]
@@ -210,5 +218,7 @@ RAZBOR_DESCRIPTIONS = {
     "future_portal": "Подробный прогноз на ближайшие 3 года.",
     "turning_point": "Когда наступит следующий поворотный момент судьбы.",
     "ancestor_code": "Родовые программы — что досталось от предков и как это использовать.",
+    "name_secret":   "Что скрывает твоё имя: число имени, души и впечатления — характер, сильные стороны и как имя влияет на судьбу.",
+    "business_name": "Притягивает ли твоё название деньги и успех: разбор бренда/бизнеса по числам + рекомендации.",
 }
  

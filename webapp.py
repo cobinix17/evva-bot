@@ -464,7 +464,7 @@ async def api_reading_generate(request: web.Request) -> web.Response:
     except Exception:
         body = {}
 
-    from generation import generate_single, generate_compat, GenerationBusy
+    from generation import generate_single, generate_compat, generate_name, GenerationBusy
     try:
         if key == "compat":
             date1 = normalize_date(body.get("date1") or "")
@@ -472,6 +472,12 @@ async def api_reading_generate(request: web.Request) -> web.Response:
             if not is_valid_date(date1) or not is_valid_date(date2):
                 return _json_error("Введи две корректные даты в формате ДД.ММ.ГГГГ", 400)
             title, text, from_cache = await generate_compat(user_id, user, date1, date2)
+        elif key == "business_name":
+            # Разбор по НАЗВАНИЮ бизнеса — текст, а не дата (см. generate_name).
+            subject = re.sub(r"[\r\n\t]+", " ", (body.get("subject") or "")).strip()[:50]
+            if len(subject) < 2:
+                return _json_error("Введи название бизнеса/бренда", 400)
+            title, text, from_cache = await generate_name(user_id, user, "business_name", subject)
         else:
             date_str = normalize_date(body.get("date") or "")
             if not date_str and user.get("birth_date"):

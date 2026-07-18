@@ -506,6 +506,21 @@ def build_numerology_context(name: str, date_str: str) -> str:
 
     return "\n".join(lines)
 
+def build_name_context(subject: str) -> str:
+    """Контекст для разборов, которые считаются по ИМЕНИ/НАЗВАНИЮ, а не по дате
+    (разбор имени, нумерология названия бизнеса). Даты нет — только числа,
+    выведенные из букв: число имени (все буквы), число души (гласные) и число
+    впечатления/личности (согласные). Вставляется в промпт через {context}."""
+    n    = calculate_name_number(subject)
+    soul = calculate_soul_number(subject)
+    pers = calculate_personality_number(subject)
+    return "\n".join([
+        f"Анализируемое имя/название: «{subject}»",
+        f"Число имени (сумма всех букв): {n} — {_DESTINY_MEANING.get(n, '')}",
+        f"Число души (по гласным, внутренняя суть): {soul} — {_SOUL_MEANING.get(soul, '')}",
+        f"Число впечатления (по согласным, как воспринимают со стороны): {pers} — {_PERSONALITY_MEANING.get(pers, '')}",
+    ])
+
 # ─── СТРУКТУРИРОВАННЫЙ КОНТЕКСТ ДЛЯ PDF ──────────────────────────────────────
 # Те же данные, что и build_numerology_context, но как dict с готовыми
 # карточками — используется в pdf.py для страницы "карта твоих чисел".

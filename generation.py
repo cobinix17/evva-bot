@@ -14,7 +14,7 @@ from datetime import datetime
 import db
 from readings import PROMPTS
 from config import TITLES
-from numerology import build_numerology_context, calculate_destiny
+from numerology import build_numerology_context, build_name_context, calculate_destiny
 from ai import ask_ai
 
 # Юзеры, у которых прямо сейчас идёт генерация — защита от параллельного запуска
@@ -69,6 +69,30 @@ async def generate_single(user_id: int, user: dict, key: str, date_str: str) -> 
         async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
         await db.save_reading_text(user_id, key, title, answer, date_str)
+        return title, answer, False
+    finally:
+        _generating.discard(user_id)
+
+
+async def generate_name(user_id: int, user: dict, key: str, subject: str) -> tuple[str, str, bool]:
+    """Генерирует разбор, который считается по ИМЕНИ/НАЗВАНИЮ, а не по дате
+    (name_secret, business_name). subject — имя или название бизнеса. Контекст
+    строится из букв (build_name_context), не из даты. Кэш ключа хранит subject
+    в поле date_str — повтор на то же название отдаёт тот же текст."""
+    if user_id in _generating:
+        raise GenerationBusy()
+    _generating.add(user_id)
+    try:
+        title = TITLES.get(key, "🔮 Разбор")
+        cached = await db.get_reading_text(user_id, key)
+        if cached and cached.get("date_str") == subject:
+            return title, cached["text"], True
+        name    = user.get("first_name") or "дорогая"
+        context = build_name_context(subject)
+        prompt  = build_prompt(key, name=name, subject=subject, context=context)
+        async with premium_gen_semaphore(user):
+            answer = await ask_ai(prompt)
+        await db.save_reading_text(user_id, key, title, answer, subject)
         return title, answer, False
     finally:
         _generating.discard(user_id)

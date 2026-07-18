@@ -35,12 +35,12 @@ from config import (
 from ai import ask_ai, is_rude, rude_reply, bolden_headers
 from pdf import generate_pdf
 from generation import (
-    premium_gen_semaphore, generate_single, generate_compat, _generating,
+    premium_gen_semaphore, generate_single, generate_compat, generate_name, _generating,
 )
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date, normalize_date,
     build_numerology_context, calculate_personal_month, calculate_personal_day,
-    DAY_ENERGY, personal_day_info,
+    DAY_ENERGY, personal_day_info, calculate_name_number,
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
@@ -161,6 +161,7 @@ class Form(StatesGroup):
     waiting_user_search      = State()
     waiting_ai_question      = State()
     waiting_yesno            = State()
+    waiting_business_name    = State()
     waiting_followup         = State()
     waiting_rename           = State()
     waiting_feedback         = State()
@@ -1234,6 +1235,13 @@ async def _start_date_flow(message: Message, state: FSMContext, user: dict, key:
     if key == "compat":
         await message.answer("💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
         await state.set_state(Form.waiting_free_second_date if is_free else Form.waiting_second_date)
+    elif key == "business_name":
+        # Разбор по НАЗВАНИЮ, а не по дате — просим текст, а не дату рождения.
+        await message.answer(
+            "💼 Введи название бизнеса, бренда или проекта, которое разобрать:\n"
+            "Например: Ромашка, EvaShop, Мой салон"
+        )
+        await state.set_state(Form.waiting_business_name)
     else:
         await _ask_date(message, user, key=key)
         await state.set_state(Form.waiting_free_date if is_free else Form.waiting_date)
@@ -1682,6 +1690,64 @@ async def redate_cb(callback: CallbackQuery, state: FSMContext):
     await db.save_user(callback.from_user.id, user)
     await callback.answer()
     await _start_date_flow(callback.message, state, user, key)
+
+_SUBJECT_RE = re.compile(r"[\r\n\t]+")
+
+def _sanitize_subject(raw: str) -> str:
+    """Название бизнеса/бренда для разбора business_name. В отличие от имени
+    человека тут допустимы цифры и латиница (EvaShop, Студия 5), поэтому режем
+    только переводы строк (защита промпта) и длину. Само название идёт в промпт
+    в кавычках «{subject}»."""
+    cleaned = _SUBJECT_RE.sub(" ", raw or "").strip()
+    return re.sub(r"\s{2,}", " ", cleaned)[:50]
+
+@dp.message(StateFilter(Form.waiting_business_name))
+async def handle_business_name(message: Message, state: FSMContext):
+    """Разбор нумерологии названия бизнеса — считается по введённому названию,
+    а не по дате (см. generation.generate_name / _start_date_flow)."""
+    user_id = message.from_user.id
+    subject = _sanitize_subject(message.text or "")
+    if len(subject) < 2:
+        await message.answer("Введи название текстом — хотя бы пару букв 🙂")
+        return
+    user = await db.get_user(user_id)
+    if user_id in _generating:
+        await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
+        return
+    wait_msg = await message.answer("⏳ Ева разбирает название по числам... Подожди немного ✨")
+    try:
+        title, answer, _ = await generate_name(user_id, user, "business_name", subject)
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        await send_long(message.chat.id, f"{title} «{subject}»\n\n{answer}")
+        try:
+            pdf_bytes = await _generate_pdf_async(
+                f"{title} «{subject}»", answer,
+                user_name=user.get("first_name") or "", destiny_number=calculate_name_number(subject),
+                birth_date=subject, upsells=_build_upsells("business_name", user),
+                ref_bonus_percent=REF_BONUS_PERCENT,
+            )
+            pdf_file = BufferedInputFile(pdf_bytes, filename="Нумерология названия.pdf")
+            await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
+        except Exception as pdf_err:
+            logging.warning(f"PDF business_name error: {pdf_err}")
+        await message.answer(
+            "❓ Остались вопросы по этому разбору? Уточни у меня напрямую 👇",
+            reply_markup=_followup_menu("business_name")
+        )
+        user["waiting"] = None
+        await db.save_user(user_id, user)
+        await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("business_name", user))
+        await state.clear()
+    except Exception as e:
+        logging.error(f"business_name error: {e}", exc_info=True)
+        await message.answer(
+            "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇",
+            reply_markup=retry_menu("business_name")
+        )
+        await state.clear()
 
 def _parse_two_dates(text: str) -> list[str] | None:
     # Две даты разделяются запятой; нормализуем КАЖДУЮ дату отдельно (не всю

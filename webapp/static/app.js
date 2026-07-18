@@ -447,7 +447,12 @@ function renderReadingDateForm(key, forceNew) {
   const title = item ? item.title : "Разбор";
   const isCompat = key === "compat";
   let inner;
-  if (isCompat) {
+  if (key === "business_name") {
+    inner = `
+      <p>Введи название бизнеса, бренда или проекта — Ева разберёт его по числам.</p>
+      <input id="rd-subject" placeholder="Например: Ромашка, EvaShop" maxlength="50">
+    `;
+  } else if (isCompat) {
     inner = `
       <p>Введи две даты рождения — Ева составит разбор совместимости.</p>
       <input id="rd-date1" placeholder="Твоя дата: ДД.ММ.ГГГГ" inputmode="numeric" value="${(!forceNew && ME.birth_date) ? escapeHtml(ME.birth_date) : ""}">
@@ -474,7 +479,11 @@ function renderReadingDateForm(key, forceNew) {
 
 async function generateReading(key) {
   let body;
-  if (key === "compat") {
+  if (key === "business_name") {
+    const s = document.getElementById("rd-subject").value.trim();
+    if (s.length < 2) { tg?.showAlert("Введи название 🌸"); return; }
+    body = { subject: s };
+  } else if (key === "compat") {
     const d1 = document.getElementById("rd-date1").value.trim();
     const d2 = document.getElementById("rd-date2").value.trim();
     if (!d1 || !d2) { tg?.showAlert("Введи обе даты 🌸"); return; }
