@@ -2621,6 +2621,33 @@ async def my_profile_cb(callback: CallbackQuery, state: FSMContext):
     await _show_profile(callback.message, user)
     await callback.answer()
 
+async def _show_achievements(target: Message, user_id: int):
+    from achievements import compute_achievements, achievements_summary
+    user  = await db.get_user(user_id)
+    stats = await db.get_referral_stats(user_id)
+    digest = await db.get_reading_text(user_id, "profile_digest")
+    purchased_paid = [k for k in user.get("purchased", []) if k in PAID_RAZBORY]
+    items = compute_achievements(
+        purchased_count=len(purchased_paid),
+        ref_count=stats["count"],
+        is_premium=db.is_premium(user),
+        has_birthdate=bool(user.get("birth_date")),
+        has_spun=user.get("last_spin_date") is not None,
+        digest_ready=bool(digest),
+    )
+    await target.answer(achievements_summary(items), reply_markup=_MENU_BACK_MARKUP)
+
+@dp.message(Command("achievements"), StateFilter("*"))
+async def achievements_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    await _show_achievements(message, message.from_user.id)
+
+@dp.callback_query(F.data == "my_achievements")
+async def my_achievements_cb(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _show_achievements(callback.message, callback.from_user.id)
+    await callback.answer()
+
 # ─── РЕФЕРАЛЬНАЯ СИСТЕМА ─────────────────────────────────────────────────────
 @dp.callback_query(F.data == "ref_promo")
 async def ref_promo_callback(callback: CallbackQuery):

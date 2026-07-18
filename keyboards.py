@@ -107,6 +107,7 @@ def profile_menu(notifications_on: bool, purchased_count: int = 0) -> InlineKeyb
             callback_data="my_readings"
         )])
     buttons += [
+        [InlineKeyboardButton(text="🏆 Достижения", callback_data="my_achievements")],
         [InlineKeyboardButton(text="👥 Реферальная ссылка", callback_data="ref_promo")],
         [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="promo_start")],
         [InlineKeyboardButton(text="🎁 Подарить разбор подруге", callback_data="gift_start")],

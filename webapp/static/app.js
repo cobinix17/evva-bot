@@ -171,6 +171,11 @@ function renderMatrix(m, birthDate) {
       <div><div class="spin-t">🔷 Матрица судьбы</div><div class="spin-d">Твоя схема арканов по дате рождения — бесплатно</div></div>
       <button id="destiny-matrix-btn">Открыть</button>
     </div>`;
+  const achieveCard = `
+    <div class="spin-card">
+      <div><div class="spin-t">🏆 Достижения</div><div class="spin-d">Открывай значки за активность</div></div>
+      <button id="achieve-btn">Открыть</button>
+    </div>`;
   return `
     <div class="topbar">
       <div class="eyebrow">Карта твоих чисел</div>
@@ -180,6 +185,7 @@ function renderMatrix(m, birthDate) {
     <div class="section" style="margin-bottom:0">${matrixCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${yesnoCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${spinCard}</div>
+    <div class="section" style="margin-bottom:0; margin-top:10px;">${achieveCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${digestCard}</div>
     <div class="octawrap">${octagramSVG(points.slice(0, 8), m.destiny)}</div>
     <div class="octa-hint">✦ Нажми на число, чтобы узнать больше</div>
@@ -284,6 +290,29 @@ async function openDestinyMatrix() {
     document.getElementById("mx-open-reading")?.addEventListener("click", () => openReading("matrix_full"));
   } catch (e) {
     tg?.showAlert(e.message || "Не удалось построить матрицу");
+    render();
+  }
+}
+
+async function openAchievements() {
+  app.innerHTML = `<div class="empty">Загружаю достижения…</div>`;
+  try {
+    const r = await api("/api/achievements");
+    const earned = r.items.filter(a => a.earned).length;
+    const grid = r.items.map(a => `
+      <div class="ach ${a.earned ? "ach-on" : "ach-off"}">
+        <div class="ach-emoji">${a.earned ? a.emoji : "🔒"}</div>
+        <div class="ach-t">${escapeHtml(a.title)}</div>
+        <div class="ach-d">${escapeHtml(a.desc)}</div>
+      </div>`).join("");
+    app.innerHTML = `
+      <button class="back-btn" id="ach-back">← Назад</button>
+      <div class="topbar"><div class="eyebrow">Открыто ${earned} из ${r.items.length}</div><h1>🏆 Достижения</h1></div>
+      <div class="ach-grid">${grid}</div>
+    `;
+    document.getElementById("ach-back").addEventListener("click", render);
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось загрузить");
     render();
   }
 }
@@ -881,6 +910,7 @@ function render() {
     document.getElementById("digest-btn")?.addEventListener("click", openDigest);
     document.getElementById("yesno-open-btn")?.addEventListener("click", renderYesNo);
     document.getElementById("destiny-matrix-btn")?.addEventListener("click", openDestinyMatrix);
+    document.getElementById("achieve-btn")?.addEventListener("click", openAchievements);
     app.querySelectorAll(".octa-pt").forEach(el =>
       el.addEventListener("click", () => toggleOctaPoint(parseInt(el.dataset.i, 10)))
     );

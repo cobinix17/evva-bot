@@ -519,6 +519,26 @@ async def api_premium_buy(request: web.Request) -> web.Response:
     )
     return web.json_response({"invoice_url": link})
 
+async def api_achievements(request: web.Request) -> web.Response:
+    """Значки-достижения (лёгкая геймификация) — считаются на лету из данных
+    пользователя (см. achievements.compute_achievements)."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user  = await db.get_user(user_id)
+    stats = await db.get_referral_stats(user_id)
+    digest = await _digest_status(user_id, user)
+    from achievements import compute_achievements
+    items = compute_achievements(
+        purchased_count=len(user.get("purchased", [])),
+        ref_count=stats["count"],
+        is_premium=db.is_premium(user),
+        has_birthdate=bool(user.get("birth_date")),
+        has_spun=user.get("last_spin_date") is not None,
+        digest_ready=bool(digest.get("digest_ready")),
+    )
+    return web.json_response({"items": items})
+
 async def api_referral(request: web.Request) -> web.Response:
     user_id = await _authed_user_id(request)
     if not user_id:
@@ -950,6 +970,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_post("/webhook/yookassa", yookassa_webhook)
     app.router.add_post("/api/profile_digest", api_profile_digest)
     app.router.add_get("/api/referral", api_referral)
+    app.router.add_get("/api/achievements", api_achievements)
     app.router.add_post("/api/balance/buy/{key}", api_balance_buy)
     app.router.add_post("/api/me/name", api_set_name)
     app.router.add_post("/api/me/notifications", api_set_notifications)
