@@ -2101,8 +2101,11 @@ async def _start_ask_eva(target: Message, state: FSMContext, user: dict):
         await target.answer("Сначала укажи дату рождения — выбери любой разбор в меню, чтобы я узнала твои числа 🔮")
         return
     await target.answer(
-        "💬 Спроси меня о чём угодно — по твоим числам отвечу лично.\n"
-        "Например: «что с деньгами в марте?» или «стоит ли сейчас менять работу?»",
+        "💬 Спроси меня о чём угодно — отвечу лично по твоим числам и тому, "
+        "какой сейчас у тебя период.\n\n"
+        "Любовь, деньги, работа, переезд, важное решение — пиши как близкой подруге, "
+        "я помню, о чём мы говорили. Например: «что с деньгами в марте?» или "
+        "«стоит ли сейчас менять работу?»",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
         ])
@@ -2159,17 +2162,8 @@ async def handle_ai_question(message: Message, state: FSMContext):
     _generating.add(user_id)
     wait_msg = await message.answer("⏳ Ева думает над ответом...")
     try:
-        name    = user.get("first_name") or "дорогая"
-        context = build_numerology_context(name, user["birth_date"])
-        prompt  = (
-            f"Вот нумерологические данные {name}:\n{context}\n\n"
-            f"Она задаёт тебе личный вопрос в переписке: «{question}»\n\n"
-            "Ответь как Ева — тепло, конкретно, опираясь на её числа. Это часть живого "
-            "диалога, а не отдельный разбор: не используй emoji-заголовки, не структурируй "
-            "ответ на блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
-        )
-        async with premium_gen_semaphore(user):
-            answer = await ask_ai(prompt)
+        from generation import answer_ask
+        answer = await answer_ask(user_id, user, question)
         await message.answer(answer, reply_markup=_ask_again_menu())
     except Exception as e:
         logging.error(f"Ask Eva error: {e}", exc_info=True)

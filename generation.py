@@ -9,13 +9,87 @@
 # вебе одновременно не запустится.
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime
 
 import db
 from readings import PROMPTS
 from config import TITLES
-from numerology import build_numerology_context, build_name_context, calculate_destiny
+from numerology import (
+    build_numerology_context, build_name_context, calculate_destiny,
+    calculate_personal_year, calculate_personal_month,
+)
 from ai import ask_ai
+
+# Память диалога «Спроси Еву»: последние реплики на пользователя, чтобы фича
+# ощущалась как настоящий чат («а почему?» → Ева продолжает мысль), а не набор
+# разовых ответов. Общая для бота и веба (один процесс). В памяти, а не в БД:
+# при рестарте очищается — для живого диалога это допустимо.
+_ASK_HISTORY: dict[int, deque] = {}
+_ASK_HISTORY_MAX = 8  # 8 сообщений = 4 пары «вопрос-ответ»
+
+_RU_MONTHS = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле",
+              "августе", "сентябре", "октябре", "ноябре", "декабре"]
+
+
+def reset_ask_history(user_id: int) -> None:
+    """Сбросить память диалога (например, когда пользователь заходит в фичу заново)."""
+    _ASK_HISTORY.pop(user_id, None)
+
+
+async def answer_ask(user_id: int, user: dict, question: str) -> str:
+    """Ответ Евы на личный премиум-вопрос («Спроси Еву»).
+
+    Отличия от простого промпта: (1) персонализация под ТЕКУЩИЙ период —
+    личный год + все 12 личных месяцев этого года, чтобы на «что с деньгами в
+    марте?» Ева отвечала по реальному личному месяцу, а не гадала; (2) память
+    последних реплик — держим живой диалог. Общая функция для бота и веба."""
+    name = user.get("first_name") or "дорогая"
+    bd   = user["birth_date"]
+    context = build_numerology_context(name, bd)
+
+    now = datetime.now()
+    py_now  = calculate_personal_year(bd, now.year)
+    py_next = calculate_personal_year(bd, now.year + 1)
+    months  = ", ".join(
+        f"{_RU_MONTHS[m - 1]} — {calculate_personal_month(bd, now.year, m)}"
+        for m in range(1, 13)
+    )
+    period = (
+        f"Сейчас {now.day} {_RU_MONTHS[now.month - 1]} {now.year} года.\n"
+        f"Её личный год сейчас — {py_now} (в {now.year + 1} будет {py_next}).\n"
+        f"Личные месяцы {now.year} года по числам: {months}.\n"
+        "Личный месяц — это реальная помесячная энергия; опирайся на него, "
+        "когда вопрос про конкретное время."
+    )
+
+    hist = _ASK_HISTORY.get(user_id)
+    history_block = ""
+    if hist:
+        history_block = (
+            "Вы уже общаетесь, вот последние реплики (учитывай контекст, "
+            "если это продолжение разговора):\n" + "\n".join(hist) + "\n\n"
+        )
+
+    prompt = (
+        f"Вот нумерологические данные {name}:\n{context}\n\n"
+        f"{period}\n\n"
+        f"{history_block}"
+        f"Она задаёт тебе личный вопрос в переписке: «{question}»\n\n"
+        "Ответь как Ева — тепло, конкретно, опираясь на её числа и текущий личный "
+        "период (год и нужный личный месяц). Если вопрос про конкретный месяц или "
+        "срок — привяжись к её личному месяцу на это время и назови его. Это часть "
+        "живого диалога, а не отдельный разбор: не используй emoji-заголовки, не "
+        "структурируй ответ на блоки, пиши связным тёплым текстом. 3-6 предложений, "
+        "по делу, без воды."
+    )
+    async with premium_gen_semaphore(user):
+        answer = await ask_ai(prompt)
+
+    dq = _ASK_HISTORY.setdefault(user_id, deque(maxlen=_ASK_HISTORY_MAX))
+    dq.append(f"Она: {question}")
+    dq.append(f"Ева: {answer}")
+    return answer
 
 # Юзеры, у которых прямо сейчас идёт генерация — защита от параллельного запуска
 # (двойное списание слота премиума, гонки на кэше). Общий для бота и веба.

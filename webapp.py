@@ -621,18 +621,10 @@ async def api_ask(request: web.Request) -> web.Response:
     if not allowed:
         return _json_error(f"На сегодня использовано {ASK_DAILY_LIMIT} вопросов — дневной лимит. Возвращайся завтра 🌸", 429)
 
-    name    = user.get("first_name") or "дорогая"
-    context = build_numerology_context(name, user["birth_date"])
-    prompt  = (
-        f"Вот нумерологические данные {name}:\n{context}\n\n"
-        f"Она задаёт тебе личный вопрос в переписке: «{question}»\n\n"
-        "Ответь как Ева — тепло, конкретно, опираясь на её числа. Это часть живого "
-        "диалога, а не отдельный разбор: не используй emoji-заголовки, не структурируй "
-        "ответ на блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
-    )
     try:
+        from generation import answer_ask
         async with _web_gen_semaphore:
-            answer = await ask_ai(prompt)
+            answer = await answer_ask(user_id, user, question)
     except Exception as e:
         logging.error(f"webapp api_ask error: {e}", exc_info=True)
         await db.refund_ask_try(user_id)
