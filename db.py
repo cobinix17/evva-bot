@@ -589,6 +589,16 @@ async def get_reading_texts(user_id: int, keys: list[str]) -> dict[str, dict]:
     )
     return {r["razbor_key"]: dict(r) for r in rows}
 
+async def get_all_reading_texts(user_id: int) -> list[dict]:
+    """Все сохранённые разборы пользователя (для «Спроси Еву» как памяти о том,
+    что уже разбирали). Свежие сверху."""
+    rows = await db_pool.fetch(
+        'SELECT razbor_key, title, text, date_str, updated_at FROM generated_readings '
+        'WHERE user_id = $1 ORDER BY updated_at DESC',
+        user_id
+    )
+    return [dict(r) for r in rows]
+
 async def add_feedback(user_id: int, text: str, category: str = "idea") -> int:
     return await db_pool.fetchval(
         'INSERT INTO feedback (user_id, text, category) VALUES ($1, $2, $3) RETURNING id',
