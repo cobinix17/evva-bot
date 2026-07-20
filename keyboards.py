@@ -84,6 +84,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
 def admin_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика",        callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🤖 Модели ИИ",         callback_data="admin_models")],
         [InlineKeyboardButton(text="📨 Рассылка",          callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🎟 Создать купон",     callback_data="admin_coupon_create")],
         [InlineKeyboardButton(text="📋 Список купонов",    callback_data="admin_coupon_list")],

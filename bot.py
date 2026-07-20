@@ -791,6 +791,20 @@ async def admin_stats(callback: CallbackQuery):
     )
     await callback.answer()
 
+@dp.callback_query(F.data == "admin_models")
+async def admin_models(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    from ai import model_usage_report
+    await callback.message.answer(
+        model_usage_report(),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")]
+        ])
+    )
+    await callback.answer()
+
 async def _column_exists(table: str, column: str) -> bool:
     try:
         result = await db.db_pool.fetchval(

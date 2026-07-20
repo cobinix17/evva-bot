@@ -7,6 +7,7 @@ import re
 import time
 import logging
 import asyncio
+from collections import Counter, deque
 from datetime import datetime
 import httpx
 
@@ -163,6 +164,39 @@ OPENROUTER_MODELS  = [
 ]
 
 MAX_FOREIGN_RATIO = 0.03
+
+# ── УЧЁТ, КАКАЯ МОДЕЛЬ РЕАЛЬНО ОТВЕТИЛА (для /admin) ─────────────────────────
+# Каждый провайдер на успехе кладёт сюда конкретную модель, а ask_ai при приёме
+# ответа фиксирует её в статистику. Данные в памяти процесса (сбрасываются при
+# рестарте) — этого достаточно для оперативного контроля, что пишет Claude, а
+# не запасные модели.
+MODEL_STATS: Counter = Counter()          # {"OpenRouter · claude-haiku-4.5": 42, ...}
+RECENT_MODELS: deque = deque(maxlen=15)   # [(ts, "OpenRouter · claude-haiku-4.5"), ...]
+_LAST_MODEL: dict[str, str] = {}          # последняя модель на провайдера
+
+def _record_model(provider: str) -> None:
+    label = f"{provider} · {_LAST_MODEL.get(provider, '?')}"
+    MODEL_STATS[label] += 1
+    RECENT_MODELS.append((time.time(), label))
+
+def model_usage_report(recent_n: int = 8) -> str:
+    """Готовый текст для /admin: распределение по моделям + последние ответы."""
+    total = sum(MODEL_STATS.values())
+    if not total:
+        return "🤖 Модели ИИ: пока нет данных (после рестарта). Задай Еве вопрос."
+    lines = ["🤖 <b>Кто писал за Еву</b> (с рестарта):", ""]
+    for label, cnt in MODEL_STATS.most_common():
+        pct = cnt * 100 // total
+        lines.append(f"• {label} — {cnt} ({pct}%)")
+    recent = list(RECENT_MODELS)[-recent_n:][::-1]
+    if recent:
+        lines.append("")
+        lines.append("<b>Последние ответы:</b>")
+        for ts, label in recent:
+            hhmm = datetime.fromtimestamp(ts).strftime("%H:%M")
+            short = label.split(" · ", 1)[-1]
+            lines.append(f"  {hhmm} — {short}")
+    return "\n".join(lines)
 
 # ── ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ПОСТОБРАБОТКИ ────────────────────────────────────
 _HEADER_EMOJI = (
@@ -553,7 +587,9 @@ async def _try_cerebras(prompt: str) -> str | None:
         if not raw:
             logging.warning("Cerebras — пустой content в ответе"); return None
         result = await asyncio.to_thread(_finalize, raw, "Cerebras")
-        if result: logging.info(f"Cerebras ответил успешно за {time.perf_counter()-t0:.1f}с")
+        if result:
+            _LAST_MODEL["Cerebras"] = CEREBRAS_MODEL
+            logging.info(f"Cerebras ответил успешно за {time.perf_counter()-t0:.1f}с")
         return result
     except Exception as e:
         logging.warning(f"Cerebras failed: {e}"); return None
@@ -588,6 +624,7 @@ async def _try_groq(prompt: str) -> str | None:
                 raw    = r.json()["choices"][0]["message"]["content"]
                 result = await asyncio.to_thread(_finalize, raw, f"Groq {model}")
                 if result is None: continue
+                _LAST_MODEL["Groq"] = model.split("/")[-1]
                 logging.info(f"Groq {model} ответил успешно за {time.perf_counter()-t0:.1f}с")
                 return result
             except Exception as e:
@@ -628,7 +665,9 @@ async def _try_openrouter(prompt: str) -> str | None:
         raw        = body["choices"][0]["message"]["content"]
         model_used = body.get("model", "unknown")
         result     = await asyncio.to_thread(_finalize, raw, "OpenRouter")
-        if result: logging.info(f"OpenRouter ответил успешно за {time.perf_counter()-t0:.1f}с (модель: {model_used})")
+        if result:
+            _LAST_MODEL["OpenRouter"] = model_used.split("/")[-1]
+            logging.info(f"OpenRouter ответил успешно за {time.perf_counter()-t0:.1f}с (модель: {model_used})")
         return result
     except Exception as e:
         logging.warning(f"OpenRouter failed: {e}"); return None
@@ -665,6 +704,7 @@ async def ask_ai(prompt: str) -> str:
             if not result:
                 break  # этот провайдер недоступен вовсе — переходим к следующему
             if is_structure_complete(prompt, result) and ends_properly(result):
+                _record_model(name)
                 logging.info(f"ask_ai завершён за {time.perf_counter()-t0:.1f}с ({name})")
                 return result
             reason = "оборвался на полуслове" if is_structure_complete(prompt, result) else "неполный по структуре"
