@@ -719,16 +719,27 @@ async function sendAskQuestion() {
   if (question.length < 3) { tg?.showAlert("Напиши вопрос текстом, хотя бы пару слов 🙂"); return; }
   btn.disabled = true;
   btn.textContent = "Ева думает…";
-  out.innerHTML = "";
+  // Лента диалога: НЕ затираем предыдущие реплики, а добавляем пузырьками —
+  // видно всю переписку, пока болтаешь с Евой.
+  out.insertAdjacentHTML("beforeend", `<div class="ask-bubble ask-user">${escapeHtml(question)}</div>`);
+  const think = document.createElement("div");
+  think.className = "ask-bubble ask-think";
+  think.textContent = "Ева думает…";
+  out.appendChild(think);
+  input.value = "";
+  think.scrollIntoView({ behavior: "smooth", block: "end" });
   try {
     const res = await api("/api/ask", { method: "POST", body: JSON.stringify({ question }) });
-    out.innerHTML = `<div class="ask-bubble">${escapeHtml(res.answer)}</div>`;
-    input.value = "";
+    think.classList.remove("ask-think");
+    think.textContent = res.answer;
   } catch (e) {
-    out.innerHTML = `<div class="ask-bubble ask-error">${escapeHtml(e.message || "Ошибка")}</div>`;
+    think.classList.remove("ask-think");
+    think.classList.add("ask-error");
+    think.textContent = e.message || "Ошибка";
   } finally {
     btn.disabled = false;
     btn.textContent = "Спросить";
+    think.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 }
 

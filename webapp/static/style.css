@@ -205,9 +205,17 @@ h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
 #reading-regen-btn:active{ background:var(--bg2); color:var(--head); }
 
 /* ── премиум / AI-чат ── */
-.ask-bubble{ margin:14px 0; padding:14px 16px; background:var(--bg); border:1px solid var(--border);
-  border-radius:12px; font-size:14px; line-height:1.55; white-space:pre-wrap; box-shadow:var(--shadow); }
+.ask-bubble{ margin:10px 0; padding:13px 15px; background:var(--bg); border:1px solid var(--border);
+  border-radius:14px; font-size:14px; line-height:1.55; white-space:pre-wrap; box-shadow:var(--shadow);
+  max-width:88%; }
+/* вопрос пользователя — справа, акцентным фоном */
+.ask-bubble.ask-user{ margin-left:auto; background:linear-gradient(135deg,var(--bar1),var(--bar2));
+  color:#fff; border-color:transparent; border-bottom-right-radius:4px; }
+/* ответ Евы — слева */
+.ask-bubble:not(.ask-user){ border-bottom-left-radius:4px; }
+.ask-bubble.ask-think{ color:var(--accent); font-style:italic; }
 .ask-bubble.ask-error{ color:#c0645f; border-color:rgba(192,100,95,.35); }
+#ask-answer{ display:flex; flex-direction:column; }
 #ask-send-btn:disabled{ opacity:.6; }
 
 .ref-stats{ display:flex; gap:8px; margin:14px 0; }
