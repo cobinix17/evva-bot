@@ -453,6 +453,28 @@ def _similar_enough(a, b):
         return False
     return _edit_distance(a, b) == 1
 
+# Точечные подмены слов, которые модель регулярно путает, а обычный
+# спелчекер не ловит (это реальные слова, просто не те по смыслу). В контексте
+# бота (нумерология/поддержка для женщин) исходные слова законно не встречаются,
+# поэтому замена безопасна. Ключ — regex с границами слова, значение — замена
+# с сохранением заглавной буквы.
+_WORD_SWAPS = {
+    r"[Бб]леешь":  "блистаешь",
+    r"[Бб]леет":   "блистает",
+    r"[Бб]леют":   "блистают",
+    r"[Бб]лею\b":  "блистаю",
+    r"[Бб]леял":   "блистал",
+}
+
+def _fix_known_words(text: str) -> str:
+    """Заменяет частые смысловые осечки модели (напр. «блеешь» → «блистаешь»)."""
+    for pat, repl in _WORD_SWAPS.items():
+        def _sub(m, repl=repl):
+            w = m.group(0)
+            return repl[0].upper() + repl[1:] if w[0].isupper() else repl
+        text = re.sub(pat, _sub, text)
+    return text
+
 def _fix_spelling(text: str) -> str:
     """Проверяет каждое кириллическое слово длиннее 4 букв через hunspell;
     если слово отсутствует в словаре и первый вариант исправления отличается
@@ -496,7 +518,7 @@ def _finalize(raw: str, source: str) -> str | None:
         logging.warning(f"{source} — пустой текст после очистки"); return None
     if ratio > MAX_FOREIGN_RATIO:
         logging.warning(f"{source} — {ratio:.1%} иностранных символов"); return None
-    return _fix_spelling(cleaned)
+    return _fix_known_words(_fix_spelling(cleaned))
 
 # ── CEREBRAS ──────────────────────────────────────────────────────────────────
 async def _try_cerebras(prompt: str) -> str | None:
