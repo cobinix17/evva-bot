@@ -793,11 +793,24 @@ async def api_matrix(request: web.Request) -> web.Response:
         return _json_error("Ошибка расчёта", 500)
 
 # ── СТАТИКА ───────────────────────────────────────────────────────────────────
+# Версия статики = момент старта процесса. Подставляется в ссылки app.js/style.css
+# как ?v=..., поэтому после каждого деплоя Telegram-вебвью видит НОВЫЙ url и
+# перекачивает файлы — больше не нужно вручную закрывать Mini App, чтобы
+# подтянулись обновления. Сам index.html отдаём с no-cache по той же причине.
+_STATIC_VERSION = str(int(time.time()))
+
 async def index(request: web.Request) -> web.Response:
     path = os.path.join(WEBAPP_DIR, "index.html")
     if not os.path.exists(path):
         return web.Response(text="webapp not built", status=404)
-    return web.FileResponse(path)
+    with open(path, encoding="utf-8") as f:
+        html = f.read()
+    html = html.replace('/app/static/style.css', f'/app/static/style.css?v={_STATIC_VERSION}')
+    html = html.replace('/app/static/app.js',    f'/app/static/app.js?v={_STATIC_VERSION}')
+    return web.Response(
+        text=html, content_type="text/html",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 # ── RATE LIMIT ────────────────────────────────────────────────────────────────
 # Простой in-memory sliding-window лимитер на /api/*. Ключ — X-Telegram-Init-Data
@@ -904,11 +917,14 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
         logging.warning(f"yookassa webhook с неизвестным payload={payload!r}")
         return web.Response(status=200)
 
-    user = await db.get_user(user_id)
-    if payload not in user["purchased"]:
-        user["purchased"].append(payload)
-    user["waiting"] = payload
-    await db.save_user(user_id, user)
+    # Под user_lock: та же покупка могла идти параллельно через баланс/бот —
+    # read-modify-write без замка мог бы затереть их изменения.
+    async with db.user_lock(user_id):
+        user = await db.get_user(user_id)
+        if payload not in user["purchased"]:
+            user["purchased"].append(payload)
+        user["waiting"] = payload
+        await db.save_user(user_id, user)
     await db.log_payment(user_id, payload, stars_equiv, "RUB")
 
     referrer_id = user.get("referred_by")
