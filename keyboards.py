@@ -95,12 +95,14 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Главное меню",      callback_data="show_menu")],
     ])
 
-def profile_menu(notifications_on: bool, purchased_count: int = 0) -> InlineKeyboardMarkup:
+def profile_menu(notifications_on: bool, purchased_count: int = 0,
+                 is_male: bool = False) -> InlineKeyboardMarkup:
     """Единая точка входа во всё, что раньше было раскидано по главному меню
     и отдельным командам: мои разборы, рефералка, промокод, подарок, имя,
-    уведомления."""
+    уведомления, обращение."""
     notif_text = "🔕 Отключить уведомления" if notifications_on else "🔔 Включить уведомления"
     notif_cb   = "notif_off" if notifications_on else "notif_on"
+    gender_text = "🙋‍♂️ Обращение: мужское" if is_male else "🙋‍♀️ Обращение: женское"
     buttons = []
     if purchased_count:
         buttons.append([InlineKeyboardButton(
@@ -111,8 +113,9 @@ def profile_menu(notifications_on: bool, purchased_count: int = 0) -> InlineKeyb
         [InlineKeyboardButton(text="🏆 Достижения", callback_data="my_achievements")],
         [InlineKeyboardButton(text="👥 Реферальная ссылка", callback_data="ref_promo")],
         [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="promo_start")],
-        [InlineKeyboardButton(text="🎁 Подарить разбор подруге", callback_data="gift_start")],
+        [InlineKeyboardButton(text="🎁 Подарить разбор", callback_data="gift_start")],
         [InlineKeyboardButton(text="✏️ Изменить имя", callback_data="name_start")],
+        [InlineKeyboardButton(text=gender_text, callback_data="gender_toggle")],
         [InlineKeyboardButton(text=notif_text, callback_data=notif_cb)],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="show_menu")],
     ]

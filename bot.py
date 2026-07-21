@@ -542,22 +542,46 @@ async def handle_name(message: Message, state: FSMContext):
     user = await db.get_user(message.from_user.id)
     user["first_name"] = name
     await db.save_user(message.from_user.id, user)
+    await state.clear()
 
+    # Один лёгкий вопрос про обращение — чтобы Ева говорила с мужчинами в
+    # мужском роде. Кнопки, не текст: онбординг почти не удлиняется.
+    await message.answer(
+        f"Приятно познакомиться, {name}! 🌸\n\n"
+        "Подскажи, как мне к тебе обращаться?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🙋‍♀️ Я девушка", callback_data="gender_f"),
+             InlineKeyboardButton(text="🙋‍♂️ Я мужчина", callback_data="gender_m")],
+        ])
+    )
+
+async def _continue_after_gender(message: Message, state: FSMContext, user: dict):
+    """Продолжение онбординга после выбора обращения — тот же путь, что раньше
+    шёл сразу после имени."""
     if not user.get("free_used"):
         await message.answer(
-            f"Приятно познакомиться, {name}! 🌸\n\n"
             "🎁 Выбери любой разбор — он будет бесплатным!\n\n"
             "Это твой подарок за подписку на канал 💫",
             reply_markup=free_choose_menu()
         )
         return
-
     await message.answer(
-        f"Приятно познакомиться, {name}! 🌸\n\n"
         "Введи свою дату рождения в формате ДД.ММ.ГГГГ\n"
         "Например: 15.03.1995"
     )
     await state.set_state(Form.waiting_birth_date)
+
+@dp.callback_query(F.data.in_({"gender_f", "gender_m"}))
+async def gender_cb(callback: CallbackQuery, state: FSMContext):
+    gender = "m" if callback.data == "gender_m" else "f"
+    await db.set_gender(callback.from_user.id, gender)
+    user = await db.get_user(callback.from_user.id)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("Запомнила 🌸" if gender == "f" else "Запомнила 🙌")
+    await _continue_after_gender(callback.message, state, user)
 
 @dp.message(StateFilter(Form.waiting_birth_date))
 async def handle_birth_date(message: Message, state: FSMContext):
@@ -1493,7 +1517,7 @@ async def successful_payment(message: Message, state: FSMContext):
 
         if getattr(sp, "is_first_recurring", False) or not getattr(sp, "is_recurring", False):
             await message.answer(
-                f"💎 Добро пожаловать в Премиум, {user.get('first_name') or 'дорогая'}!\n\n"
+                f"💎 Добро пожаловать в Премиум, {db.default_name(user)}!\n\n"
                 f"Все разборы открыты до {until.strftime('%d.%m.%Y')}, каждое утро будет "
                 "приходить твой личный прогноз, а генерация идёт без очереди 🌸\n\n"
                 "Выбирай любой разбор 👇",
@@ -1543,12 +1567,13 @@ async def successful_payment(message: Message, state: FSMContext):
         bonus = max(1, round(amount * REF_BONUS_PERCENT / 100))
         try:
             await db.add_ref_bonus(referrer_id, message.from_user.id, bonus, payload)
-            buyer_name = user.get("first_name") or "Подруга"
+            buyer_name = user.get("first_name") or ("Друг" if db.is_male(user) else "Подруга")
+            bought_verb = "купил" if db.is_male(user) else "купила"
             title      = TITLES.get(payload, "разбор")
             await bot.send_message(
                 referrer_id,
                 f"🎉 +{bonus} ⭐ на твой баланс!\n\n"
-                f"{buyer_name} купила «{title}» по твоей реферальной ссылке.\n"
+                f"{buyer_name} {bought_verb} «{title}» по твоей реферальной ссылке.\n"
                 f"Проверить баланс: /balance"
             )
         except Exception as e:
@@ -1570,7 +1595,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
                         state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False):
     number  = calculate_destiny(date_str)
     waiting = user.get("waiting")
-    name    = user.get("first_name") or "дорогая"
+    name    = db.default_name(user)
     if not waiting:
         await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu_for(message.from_user.id, user))
         await state.clear()
@@ -1818,7 +1843,7 @@ async def handle_free_two_dates(message: Message, state: FSMContext):
 
 async def _process_two_dates(message: Message, user_id: int, user: dict, parts: list[str],
                               state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False):
-    name    = user.get("first_name") or "дорогая"
+    name    = db.default_name(user)
 
     # Тот же разбор совместимости на те же две даты уже есть — спрашиваем,
     # а не перегенерируем (см. _process_date).
@@ -2118,8 +2143,8 @@ async def _start_ask_eva(target: Message, state: FSMContext, user: dict):
         "💬 Спроси меня о чём угодно — я твой личный нумеролог.\n\n"
         "Я знаю твои числа, твой период и все разборы, что делала для тебя, и помню "
         "наш разговор. Любовь, деньги, работа, переезд, важное решение — пиши как "
-        "близкой подруге. Например: «что с деньгами в марте?» или «стоит ли сейчас "
-        "менять работу?»",
+        + ("близкому другу" if db.is_male(user) else "близкой подруге")
+        + ". Например: «что с деньгами в марте?» или «стоит ли сейчас менять работу?»",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
         ])
@@ -2222,7 +2247,7 @@ async def _show_day_number(target: Message, user_id: int):
             reply_markup=_day_number_back_menu()
         )
         return
-    name = user.get("first_name") or "дорогая"
+    name = db.default_name(user)
     info = personal_day_info(user["birth_date"])
     today = utc_now().strftime("%d.%m")
     text = (
@@ -2340,8 +2365,8 @@ async def handle_yesno(message: Message, state: FSMContext):
     wait_msg = await message.answer("🎱 Смотрю в твои числа...")
     try:
         from generation import answer_yes_no
-        name = user.get("first_name") or "дорогая"
-        answer = await answer_yes_no(name, user["birth_date"], question)
+        name = db.default_name(user)
+        answer = await answer_yes_no(name, user["birth_date"], question, male=db.is_male(user))
         await message.answer(answer, reply_markup=_yesno_again_menu())
     except Exception as e:
         logging.error(f"YesNo error: {e}", exc_info=True)
@@ -2425,7 +2450,7 @@ async def handle_followup(message: Message, state: FSMContext):
     _generating.add(user_id)
     wait_msg = await message.answer("⏳ Ева думает над ответом...")
     try:
-        name     = user.get("first_name") or "дорогая"
+        name     = db.default_name(user)
         title    = TITLES.get(key, "разбор")
         context  = build_numerology_context(name, user["birth_date"])
         saved    = await db.get_reading_text(user_id, key)
@@ -2616,9 +2641,30 @@ async def _show_profile(target: Message, user: dict):
         f"{premium_line}\n"
         f"🔔 Уведомления: {'включены' if notif_on else 'отключены'}\n\n"
         f"✨ Кстати, во вкладке «Матрица» веб-кабинета (кнопка «🔮 Кабинет» "
-        f"под полем ввода) есть ежедневный бонус звёзд — загляни, если ещё не пробовала."
+        f"под полем ввода) есть ежедневный бонус звёзд — загляни, если ещё не "
+        + ("пробовал." if db.is_male(user) else "пробовала.")
     )
-    await target.answer(text, reply_markup=profile_menu(notif_on, len(user.get("purchased", []))))
+    await target.answer(text, reply_markup=profile_menu(
+        notif_on, len(user.get("purchased", [])), is_male=db.is_male(user)))
+
+@dp.callback_query(F.data == "gender_toggle")
+async def gender_toggle_cb(callback: CallbackQuery):
+    """Переключатель обращения в профиле — для существующих пользователей,
+    которым не задавали вопрос при онбординге."""
+    user = await db.get_user(callback.from_user.id)
+    new_gender = "f" if db.is_male(user) else "m"
+    await db.set_gender(callback.from_user.id, new_gender)
+    user["gender"] = new_gender
+    await callback.answer(
+        "Теперь обращаюсь в мужском роде 🙌" if new_gender == "m"
+        else "Теперь обращаюсь в женском роде 🌸"
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=profile_menu(
+            user.get("notifications", True), len(user.get("purchased", [])),
+            is_male=(new_gender == "m")))
+    except Exception:
+        pass
 
 @dp.message(Command("revoke_premium"), StateFilter("*"))
 async def revoke_premium_cmd(message: Message, state: FSMContext):
@@ -2776,7 +2822,7 @@ def _day_message(name: str, destiny_number: int, day_number: int) -> str:
         7:  "Твоя семёрка углубляется в этот день — дай себе время побыть наедине с мыслями.",
         8:  "Твоя восьмёрка усиливается сегодня — смело берись за важные дела.",
         9:  "Твоя девятка видит дальше других — доверяй этому взгляду сегодня.",
-        11: "Твоё мастер-число 11 резонирует с этим днём — будь внимательна к знакам.",
+        11: "Твоё мастер-число 11 резонирует с этим днём — обращай внимание на знаки.",
         22: "Твоё мастер-число 22 даёт тебе сегодня особую практическую силу.",
         33: "Твоё мастер-число 33 сегодня светит ярче — позволь себе быть тем светом.",
     }
@@ -2823,7 +2869,7 @@ def _power_day_message(name: str, destiny_number: int) -> str:
         "Такое бывает всего пару раз в месяц: энергия дня и твоя внутренняя "
         "энергия звучат в унисон, поэтому всё, что ты начнёшь или решишь "
         "сегодня, пойдёт легче и с меньшим сопротивлением.\n\n"
-        "Используй этот день для того, что откладывала — важного разговора, "
+        "Используй этот день для того, что давно ждёт своего часа — важного разговора, "
         "решения, первого шага. Момент редкий, не трать его на мелочи 🌸\n\n"
         "💎 Все разборы открыты — /menu"
     )
@@ -2840,14 +2886,14 @@ async def send_daily_horoscope():
             today      = date.today()
             day_number = calculate_day_number(today)
             rows = await db.db_pool.fetch(
-                'SELECT user_id, first_name, destiny_number, birth_date, premium_until FROM users '
+                'SELECT user_id, first_name, destiny_number, birth_date, premium_until, gender FROM users '
                 'WHERE birth_date IS NOT NULL AND destiny_number IS NOT NULL '
                 'AND notifications = TRUE'
             )
             now_naive = utc_now()
             for row in rows:
                 try:
-                    name    = row['first_name'] or "дорогая"
+                    name    = row['first_name'] or ("дорогой" if (row['gender'] or 'f') == 'm' else "дорогая")
                     number  = row['destiny_number']
                     premium = row['premium_until'] is not None and row['premium_until'] > now_naive
                     if premium and calculate_personal_day(row['birth_date'], today) == number:

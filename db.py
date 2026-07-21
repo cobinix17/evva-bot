@@ -175,6 +175,7 @@ async def init_db(database_url: str):
         ("yesno_day_count", "INTEGER DEFAULT 0"),
         ("created_at",    "TIMESTAMP DEFAULT NOW()"),
         ("last_spin_date", "DATE"),
+        ("gender",        "TEXT"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -251,6 +252,21 @@ async def save_user(user_id: int, user: dict):
         user.get('referred_by'),
         user_id
     )
+
+async def set_gender(user_id: int, gender: str):
+    """Пол для обращений: 'f' (по умолчанию) или 'm'. Отдельный setter, как
+    set_email — чтобы save_user из вебхуков/старых флоу не затирал значение."""
+    await db_pool.execute('UPDATE users SET gender = $1 WHERE user_id = $2', gender, user_id)
+
+def is_male(user: dict) -> bool:
+    """Мужское обращение. NULL/отсутствие колонки = женское (основная аудитория,
+    существующие пользователи ничего не заметят)."""
+    return (user.get("gender") or "f") == "m"
+
+def default_name(user: dict) -> str:
+    """Имя для обращения с фолбэком по полу — вместо разбросанных по коду
+    `user.get("first_name") or "дорогая"`."""
+    return user.get("first_name") or ("дорогой" if is_male(user) else "дорогая")
 
 async def set_email(user_id: int, email: str):
     """Сохраняет email для чеков ЮKassa — чтобы не спрашивать заново на

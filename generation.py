@@ -44,8 +44,9 @@ async def answer_ask(user_id: int, user: dict, question: str) -> str:
     личный год + все 12 личных месяцев этого года, чтобы на «что с деньгами в
     марте?» Ева отвечала по реальному личному месяцу, а не гадала; (2) память
     последних реплик — держим живой диалог. Общая функция для бота и веба."""
-    name = user.get("first_name") or "дорогая"
+    name = _default_name(user)
     bd   = user["birth_date"]
+    male = db.is_male(user)
     context = build_numerology_context(name, bd)
 
     now = datetime.now()
@@ -91,7 +92,13 @@ async def answer_ask(user_id: int, user: dict, question: str) -> str:
             "если это продолжение разговора):\n" + "\n".join(hist) + "\n\n"
         )
 
+    gender_line = (
+        "КЛИЕНТ — МУЖЧИНА: обращайся к нему только в мужском роде, а все "
+        "местоимения «она/её/ей» в этой инструкции читай как «он/его/ему».\n\n"
+    ) if male else ""
+    writes = "Он пишет тебе" if male else "Она пишет тебе"
     prompt = (
+        f"{gender_line}"
         f"Ты — Ева, тёплый личный нумеролог {name} и одновременно опытный, чуткий "
         f"психолог. Ты знаешь её числа, текущий период и разборы, которые уже для неё "
         f"делала.\n\n"
@@ -99,7 +106,7 @@ async def answer_ask(user_id: int, user: dict, question: str) -> str:
         f"{period}\n\n"
         f"{readings_block}"
         f"{history_block}"
-        f"Она пишет тебе: «{question}»\n\n"
+        f"{writes}: «{question}»\n\n"
         "Ответь как живая помощница: РЕАГИРУЙ ИМЕННО НА ТО, ЧТО ОНА НАПИСАЛА. "
         "Если это осмысленный вопрос — ответь на него по делу, привлекая её числа и "
         "личный период ТОЛЬКО там, где это реально помогает (если вопрос про "
@@ -130,7 +137,7 @@ async def answer_ask(user_id: int, user: dict, question: str) -> str:
         answer = await ask_ai(prompt)
 
     dq = _ASK_HISTORY.setdefault(user_id, deque(maxlen=_ASK_HISTORY_MAX))
-    dq.append(f"Она: {question}")
+    dq.append(f"{'Он' if male else 'Она'}: {question}")
     dq.append(f"Ева: {answer}")
     return answer
 
@@ -166,6 +173,21 @@ class GenerationBusy(Exception):
     """У этого пользователя уже идёт генерация — второй запуск отклонён."""
 
 
+def _default_name(user: dict) -> str:
+    return user.get("first_name") or ("дорогой" if db.is_male(user) else "дорогая")
+
+
+def _gender_note(user: dict) -> str:
+    """Префикс к промпту для мужчин. SYSTEM_PROMPT по умолчанию требует женский
+    род, но содержит явное исключение по этой фразе — все шаблоны разборов
+    остаются без изменений, род переключается одной строкой."""
+    if db.is_male(user):
+        return ("ВАЖНО: клиент — мужчина. Обращайся к нему только в мужском роде "
+                "('ты родился', 'ты пришёл', 'ты сильный'), о партнёре пиши в "
+                "женском роде ('твоя партнёрша', 'твоя женщина').\n\n")
+    return ""
+
+
 async def generate_single(user_id: int, user: dict, key: str, date_str: str) -> tuple[str, str, bool]:
     """Генерирует (или достаёт из кэша) одиночный разбор. Возвращает
     (title, text, from_cache). from_cache=True — тот же текст на ту же дату мы
@@ -176,13 +198,13 @@ async def generate_single(user_id: int, user: dict, key: str, date_str: str) -> 
         raise GenerationBusy()
     _generating.add(user_id)
     try:
-        name  = user.get("first_name") or "дорогая"
+        name  = _default_name(user)
         title = TITLES.get(key, "🔮 Разбор")
         cached = await db.get_reading_text(user_id, key)
         if cached and cached.get("date_str") == date_str:
             return title, cached["text"], True
         context = build_numerology_context(name, date_str)
-        prompt  = build_prompt(key, name=name, context=context, date=date_str)
+        prompt  = _gender_note(user) + build_prompt(key, name=name, context=context, date=date_str)
         async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
         await db.save_reading_text(user_id, key, title, answer, date_str)
@@ -204,9 +226,9 @@ async def generate_name(user_id: int, user: dict, key: str, subject: str) -> tup
         cached = await db.get_reading_text(user_id, key)
         if cached and cached.get("date_str") == subject:
             return title, cached["text"], True
-        name    = user.get("first_name") or "дорогая"
+        name    = _default_name(user)
         context = build_name_context(subject)
-        prompt  = build_prompt(key, name=name, subject=subject, context=context)
+        prompt  = _gender_note(user) + build_prompt(key, name=name, subject=subject, context=context)
         async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
         await db.save_reading_text(user_id, key, title, answer, subject)
@@ -215,18 +237,21 @@ async def generate_name(user_id: int, user: dict, key: str, subject: str) -> tup
         _generating.discard(user_id)
 
 
-async def answer_yes_no(name: str, birth_date: str, question: str) -> str:
+async def answer_yes_no(name: str, birth_date: str, question: str, male: bool = False) -> str:
     """Короткий ответ «Да/Нет» с 1-2 предложениями обоснования по числам —
     отдельная микро-фича (не структурированный разбор). Не кэшируется и не
     занимает замок генерации: это лёгкий частый запрос, а не тяжёлый разбор."""
     context = build_numerology_context(name, birth_date)
+    p3 = "Он" if male else "Она"
+    poss = "его" if male else "её"
+    note = ("ВАЖНО: клиент — мужчина, обращайся в мужском роде.\n" if male else "")
     prompt = (
-        f"Нумерологические данные {name}:\n{context}\n\n"
-        f"Она задаёт вопрос, на который нужен ответ ДА или НЕТ: «{question}»\n\n"
+        f"{note}Нумерологические данные {name}:\n{context}\n\n"
+        f"{p3} задаёт вопрос, на который нужен ответ ДА или НЕТ: «{question}»\n\n"
         "Ответь как Ева: начни РОВНО с одного слова — «Да», «Нет» или «Скорее да» / "
         "«Скорее нет», затем с новой строки 1-2 коротких предложения обоснования по "
-        "её числам. Без заголовков, без emoji, без воды, тёплым живым тоном. "
-        "Если вопрос не про её жизнь/выбор (просят код, факты, посторонняя тема) — "
+        f"{poss} числам. Без заголовков, без emoji, без воды, тёплым живым тоном. "
+        f"Если вопрос не про {poss} жизнь/выбор (просят код, факты, посторонняя тема) — "
         "не гадай, ответь одним предложением, что это не по твоей части."
     )
     async with _gen_semaphore:
@@ -240,7 +265,7 @@ async def generate_compat(user_id: int, user: dict, date1: str, date2: str) -> t
         raise GenerationBusy()
     _generating.add(user_id)
     try:
-        name  = user.get("first_name") or "дорогая"
+        name  = _default_name(user)
         title = "💑 Совместимость"
         compat_date_str = f"{date1},{date2}"
         cached = await db.get_reading_text(user_id, "compat")
@@ -248,7 +273,7 @@ async def generate_compat(user_id: int, user: dict, date1: str, date2: str) -> t
             return title, cached["text"], True
         n2 = calculate_destiny(date2)
         context = build_numerology_context(name, date1)
-        prompt  = build_prompt("compat", name=name, context=context, date1=date1, date2=date2, n2=n2)
+        prompt  = _gender_note(user) + build_prompt("compat", name=name, context=context, date1=date1, date2=date2, n2=n2)
         async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
         await db.save_reading_text(user_id, "compat", title, answer, compat_date_str)

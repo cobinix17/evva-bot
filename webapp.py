@@ -120,7 +120,7 @@ async def api_me(request: web.Request) -> web.Response:
     day_today = None
     if user.get("birth_date"):
         try:
-            matrix = numerology_summary(user.get("first_name") or "дорогая", user["birth_date"])
+            matrix = numerology_summary(db.default_name(user), user["birth_date"])
         except Exception as e:
             logging.warning(f"webapp numerology_summary error: {e}")
         try:
@@ -137,6 +137,7 @@ async def api_me(request: web.Request) -> web.Response:
         "user_id":       user_id,
         "bot_username":  await _get_bot_username(),
         "first_name":    user.get("first_name"),
+        "gender":        user.get("gender") or "f",
         "birth_date":    user.get("birth_date"),
         "destiny_number": user.get("destiny_number"),
         "purchased":     user.get("purchased", []),
@@ -710,8 +711,8 @@ async def api_yesno(request: web.Request) -> web.Response:
             return _json_error(f"На сегодня {YESNO_FREE_LIMIT} вопроса «Да/Нет» уже задано. С премиумом — без ограничений 🌸", 429)
     try:
         from generation import answer_yes_no
-        name = user.get("first_name") or "дорогая"
-        answer = await answer_yes_no(name, user["birth_date"], question)
+        name = db.default_name(user)
+        answer = await answer_yes_no(name, user["birth_date"], question, male=db.is_male(user))
     except Exception as e:
         logging.error(f"webapp api_yesno error: {e}", exc_info=True)
         if not db.is_premium(user):
@@ -758,7 +759,7 @@ async def api_profile_digest(request: web.Request) -> web.Response:
     if len(texts) < MIN_DIGEST_READINGS:
         return _json_error("Разборы ещё готовятся — попробуй чуть позже 🌸", 409)
 
-    name = user.get("first_name") or "дорогая"
+    name = db.default_name(user)
     prompt = (
         f"Вот тексты {len(texts)} разборов, которые уже получила {name} по своим числам:\n\n"
         + "\n\n".join(texts) +
@@ -932,12 +933,13 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
         bonus = max(1, round(stars_equiv * REF_BONUS_PERCENT / 100))
         try:
             await db.add_ref_bonus(referrer_id, user_id, bonus, payload)
-            buyer_name = user.get("first_name") or "Подруга"
+            buyer_name = user.get("first_name") or ("Друг" if db.is_male(user) else "Подруга")
+            bought_verb = "купил" if db.is_male(user) else "купила"
             title_ref  = TITLES.get(payload, "разбор")
             await _bot.send_message(
                 referrer_id,
                 f"🎉 +{bonus} ⭐ на твой баланс!\n\n"
-                f"{buyer_name} купила «{title_ref}» по твоей реферальной ссылке.\n"
+                f"{buyer_name} {bought_verb} «{title_ref}» по твоей реферальной ссылке.\n"
                 f"Проверить баланс: /balance"
             )
         except Exception as e:
