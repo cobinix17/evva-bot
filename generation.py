@@ -258,25 +258,26 @@ async def answer_yes_no(name: str, birth_date: str, question: str, male: bool = 
         return await ask_ai(prompt)
 
 
-async def generate_compat(user_id: int, user: dict, date1: str, date2: str) -> tuple[str, str, bool]:
-    """То же, что generate_single, но для разбора совместимости (две даты).
-    Ключ разбора — 'compat', в кэше даты хранятся как 'date1,date2'."""
+async def generate_compat(user_id: int, user: dict, date1: str, date2: str, key: str = "compat") -> tuple[str, str, bool]:
+    """То же, что generate_single, но для разборов на ДВЕ даты (совместимость).
+    key различает разные разборы этого рода (романтическая 'compat' vs дружеская
+    'friend_compat') — каждый со своим промптом, кэшем и заголовком."""
     if user_id in _generating:
         raise GenerationBusy()
     _generating.add(user_id)
     try:
         name  = _default_name(user)
-        title = "💑 Совместимость"
+        title = TITLES.get(key, "💑 Совместимость")
         compat_date_str = f"{date1},{date2}"
-        cached = await db.get_reading_text(user_id, "compat")
+        cached = await db.get_reading_text(user_id, key)
         if cached and cached.get("date_str") == compat_date_str:
             return title, cached["text"], True
         n2 = calculate_destiny(date2)
         context = build_numerology_context(name, date1)
-        prompt  = _gender_note(user) + build_prompt("compat", name=name, context=context, date1=date1, date2=date2, n2=n2)
+        prompt  = _gender_note(user) + build_prompt(key, name=name, context=context, date1=date1, date2=date2, n2=n2)
         async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
-        await db.save_reading_text(user_id, "compat", title, answer, compat_date_str)
+        await db.save_reading_text(user_id, key, title, answer, compat_date_str)
         return title, answer, False
     finally:
         _generating.discard(user_id)

@@ -19,7 +19,7 @@ from aiogram.types import LabeledPrice
 
 import db
 from config import (
-    TITLES, PRICES, PAID_RAZBORY, RAZBOR_DESCRIPTIONS,
+    TITLES, PRICES, PAID_RAZBORY, RAZBOR_DESCRIPTIONS, TWO_DATE_KEYS,
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, YESNO_FREE_LIMIT,
@@ -467,12 +467,12 @@ async def api_reading_generate(request: web.Request) -> web.Response:
 
     from generation import generate_single, generate_compat, generate_name, GenerationBusy
     try:
-        if key == "compat":
+        if key in TWO_DATE_KEYS:
             date1 = normalize_date(body.get("date1") or "")
             date2 = normalize_date(body.get("date2") or "")
             if not is_valid_date(date1) or not is_valid_date(date2):
                 return _json_error("Введи две корректные даты в формате ДД.ММ.ГГГГ", 400)
-            title, text, from_cache = await generate_compat(user_id, user, date1, date2)
+            title, text, from_cache = await generate_compat(user_id, user, date1, date2, key=key)
         elif key == "business_name":
             # Разбор по НАЗВАНИЮ бизнеса — текст, а не дата (см. generate_name).
             subject = re.sub(r"[\r\n\t]+", " ", (body.get("subject") or "")).strip()[:50]
@@ -951,7 +951,7 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
     # «Начать разбор» (startreading_ роутит правильно в bot.py). Обычным
     # датным разборам оставляем привычное date_choice_menu.
     try:
-        if payload in ("compat", "business_name"):
+        if payload in TWO_DATE_KEYS or payload == "business_name":
             from aiogram.types import InlineKeyboardMarkup as _IKM, InlineKeyboardButton as _IKB
             await _bot.send_message(
                 user_id,

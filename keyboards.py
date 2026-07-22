@@ -190,6 +190,7 @@ def section_destiny_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
         ("karma",          "🔴 Кармический долг"),
         ("forecast_2026",  "🗓 Прогноз на 2026 год"),
         ("name_secret",    "🔤 Тайна твоего имени"),
+        ("friend_compat",  "🤝 Совместимость с подругой"),
     ]
     return _section_menu(items, user, gift)
 

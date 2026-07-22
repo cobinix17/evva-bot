@@ -25,7 +25,7 @@ from aiohttp import web
 
 import db
 from config import (
-    TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS,
+    TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, TWO_DATE_KEYS,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT, YESNO_FREE_LIMIT,
@@ -1270,8 +1270,9 @@ async def _start_date_flow(message: Message, state: FSMContext, user: dict, key:
     доступен пользователю (куплен, оплачен балансом, взят по купону/бесплатно).
     is_free переключает на free_-состояния, чтобы неудачная генерация не
     сжигала платный счёт за бесплатную попытку (см. _process_date/_process_two_dates)."""
-    if key == "compat":
-        await message.answer("💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
+    if key in TWO_DATE_KEYS:
+        intro = "🤝 Введи свою дату и дату подруги через запятую" if key == "friend_compat" else "💑 Введи две даты через запятую"
+        await message.answer(f"{intro}:\nНапример: 15.03.1995, 22.07.1998")
         await state.set_state(Form.waiting_free_second_date if is_free else Form.waiting_second_date)
     elif key == "business_name":
         # Разбор по НАЗВАНИЮ, а не по дате — просим текст, а не дату рождения.
@@ -1579,7 +1580,7 @@ async def successful_payment(message: Message, state: FSMContext):
         except Exception as e:
             logging.warning(f"Ref bonus error for referrer {referrer_id}: {e}")
 
-    if payload == "compat":
+    if payload in TWO_DATE_KEYS:
         await message.answer("✅ Оплата прошла!")
     await _start_date_flow(message, state, user, payload)
 
@@ -1713,10 +1714,10 @@ async def showcache_cb(callback: CallbackQuery, state: FSMContext):
         return
     user["waiting"] = key
     await db.save_user(callback.from_user.id, user)
-    if key == "compat":
+    if key in TWO_DATE_KEYS:
         parts = cached["date_str"].split(",")
         if len(parts) == 2:
-            await _process_two_dates(callback.message, callback.from_user.id, user, parts, state, confirmed_repeat=True)
+            await _process_two_dates(callback.message, callback.from_user.id, user, parts, state, confirmed_repeat=True, key=key)
     elif key == "business_name":
         # date_str тут хранит название, а не дату — не гоним через _process_date
         # (там calculate_destiny упал бы). Просто просим название заново
@@ -1827,7 +1828,8 @@ async def handle_two_dates(message: Message, state: FSMContext):
     if parts is None:
         await message.answer("❌ Введи две даты через запятую.\nНапример: 15.03.1995, 22.07.1998")
         return
-    await _process_two_dates(message, message.from_user.id, user, parts, state, is_free=False)
+    key = user.get("waiting") if user.get("waiting") in TWO_DATE_KEYS else "compat"
+    await _process_two_dates(message, message.from_user.id, user, parts, state, is_free=False, key=key)
 
 @dp.message(StateFilter(Form.waiting_free_second_date))
 async def handle_free_two_dates(message: Message, state: FSMContext):
@@ -1839,22 +1841,26 @@ async def handle_free_two_dates(message: Message, state: FSMContext):
         return
     # free_used выставляется в _process_two_dates только при успехе —
     # тот же принцип, что и в одиночном бесплатном флоу (см. _process_date).
-    await _process_two_dates(message, message.from_user.id, user, parts, state, is_free=True)
+    key = user.get("waiting") if user.get("waiting") in TWO_DATE_KEYS else "compat"
+    await _process_two_dates(message, message.from_user.id, user, parts, state, is_free=True, key=key)
 
 async def _process_two_dates(message: Message, user_id: int, user: dict, parts: list[str],
-                              state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False):
+                              state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False,
+                              key: str = "compat"):
     name    = db.default_name(user)
+    title_default = TITLES.get(key, "💑 Совместимость")
+    wait_word = "дружбы" if key == "friend_compat" else "энергетику двух людей"
 
     # Тот же разбор совместимости на те же две даты уже есть — спрашиваем,
     # а не перегенерируем (см. _process_date).
     if not confirmed_repeat:
-        cached = await db.get_reading_text(user_id, "compat")
+        cached = await db.get_reading_text(user_id, key)
         if cached and cached.get("date_str") == f"{parts[0]},{parts[1]}":
             await state.clear()
             await message.answer(
-                f"🌸 Разбор совместимости для {parts[0]} и {parts[1]} у тебя уже готов.\n\n"
+                f"🌸 Разбор для {parts[0]} и {parts[1]} у тебя уже готов.\n\n"
                 "Открыть его снова или взять другие даты?",
-                reply_markup=_repeat_choice_menu("compat")
+                reply_markup=_repeat_choice_menu(key)
             )
             return
 
@@ -1862,13 +1868,13 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
         await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
         return
 
-    wait_msg = await message.answer("⏳ Ева составляет разбор совместимости...")
+    wait_msg = await message.answer(f"⏳ Ева составляет {title_default.split(' ', 1)[-1].lower()}...")
 
     async def send_intermediate():
         await asyncio.sleep(20)
         try:
             await bot.edit_message_text(
-                "⏳ Разбираю энергетику двух людей... Ещё немного 🔮",
+                f"⏳ Разбираю {wait_word}... Ещё немного 🔮",
                 chat_id=message.chat.id,
                 message_id=wait_msg.message_id
             )
@@ -1886,27 +1892,27 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
 
     try:
         n1 = calculate_destiny(parts[0])
-        title, answer, from_cache = await generate_compat(user_id, user, parts[0], parts[1])
+        title, answer, from_cache = await generate_compat(user_id, user, parts[0], parts[1], key=key)
         await stop_intermediate()
         await send_long(message.chat.id, f"{title}\n\n{answer}")
 
         try:
             pdf_bytes = await _generate_pdf_async(
-                "💑 Совместимость", answer, user_name=name, destiny_number=n1,
-                birth_date=parts[0], upsells=_build_upsells("compat", user),
+                title_default, answer, user_name=name, destiny_number=n1,
+                birth_date=parts[0], upsells=_build_upsells(key, user),
                 ref_bonus_percent=REF_BONUS_PERCENT,
             )
-            pdf_file  = BufferedInputFile(pdf_bytes, filename="Совместимость.pdf")
+            pdf_file  = BufferedInputFile(pdf_bytes, filename=f"{title_default.split(' ', 1)[-1]}.pdf")
             await bot.send_document(message.chat.id, pdf_file, caption="📄 Разбор в PDF — сохрани себе!")
         except Exception as pdf_err:
-            logging.warning(f"PDF compat error: {pdf_err}")
+            logging.warning(f"PDF {key} error: {pdf_err}")
 
         await message.answer(
             "❓ Остались вопросы по этому разбору? Уточни у меня напрямую 👇",
-            reply_markup=_followup_menu("compat")
+            reply_markup=_followup_menu(key)
         )
 
-        kb = upsell_menu("compat", user)
+        kb = upsell_menu(key, user)
         has_upsells = any(
             btn.callback_data and btn.callback_data.startswith("buy_")
             for row in kb.inline_keyboard for btn in row
@@ -1920,13 +1926,13 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
         await state.clear()
     except Exception as e:
         await stop_intermediate()
-        logging.error(f"Compat error: {e}", exc_info=True)
+        logging.error(f"Compat error ({key}): {e}", exc_info=True)
         retry_text = (
             "❌ Что-то пошло не так. Твоя бесплатная попытка не сгорела — "
             "нажми кнопку и попробуй снова 👇" if is_free else
             "❌ Что-то пошло не так. Твоя покупка сохранена — нажми кнопку и попробуй снова 👇"
         )
-        await message.answer(retry_text, reply_markup=retry_menu("compat", is_free=is_free))
+        await message.answer(retry_text, reply_markup=retry_menu(key, is_free=is_free))
         await state.clear()
 
 @dp.message(StateFilter(Form.waiting_date))

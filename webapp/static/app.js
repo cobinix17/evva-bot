@@ -515,10 +515,13 @@ function renderReadingResult(key, title, text) {
   document.getElementById("reading-regen-btn").addEventListener("click", () => renderReadingDateForm(key, true));
 }
 
+// Разборы на ДВЕ даты — тот же список, что TWO_DATE_KEYS в config.py.
+const TWO_DATE_KEYS = new Set(["compat", "friend_compat"]);
+
 function renderReadingDateForm(key, forceNew) {
   const item = findCatalogItem(key);
   const title = item ? item.title : "Разбор";
-  const isCompat = key === "compat";
+  const isCompat = TWO_DATE_KEYS.has(key);
   let inner;
   if (key === "business_name") {
     inner = `
@@ -526,10 +529,11 @@ function renderReadingDateForm(key, forceNew) {
       <input id="rd-subject" placeholder="Например: Ромашка, EvaShop" maxlength="50">
     `;
   } else if (isCompat) {
+    const partnerLabel = key === "friend_compat" ? "Дата подруги: ДД.ММ.ГГГГ" : "Дата партнёра: ДД.ММ.ГГГГ";
     inner = `
-      <p>Введи две даты рождения — Ева составит разбор совместимости.</p>
+      <p>Введи две даты рождения — Ева составит разбор.</p>
       <input id="rd-date1" placeholder="Твоя дата: ДД.ММ.ГГГГ" inputmode="numeric" value="${(!forceNew && ME.birth_date) ? escapeHtml(ME.birth_date) : ""}">
-      <input id="rd-date2" placeholder="Дата партнёра: ДД.ММ.ГГГГ" inputmode="numeric" style="margin-top:10px">
+      <input id="rd-date2" placeholder="${partnerLabel}" inputmode="numeric" style="margin-top:10px">
     `;
   } else {
     const prefill = (!forceNew && ME.birth_date) ? escapeHtml(ME.birth_date) : "";
@@ -556,7 +560,7 @@ async function generateReading(key) {
     const s = document.getElementById("rd-subject").value.trim();
     if (s.length < 2) { tg?.showAlert("Введи название 🌸"); return; }
     body = { subject: s };
-  } else if (key === "compat") {
+  } else if (TWO_DATE_KEYS.has(key)) {
     const d1 = document.getElementById("rd-date1").value.trim();
     const d2 = document.getElementById("rd-date2").value.trim();
     if (!d1 || !d2) { tg?.showAlert("Введи обе даты 🌸"); return; }
