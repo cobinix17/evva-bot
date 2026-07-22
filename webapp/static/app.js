@@ -143,10 +143,12 @@ function renderMatrix(m, birthDate) {
     `<div class="pin pin-tap" data-i="${i}"><div class="pin-n">${p.value}</div><div class="pin-a">${p.age} лет</div></div>`
   ).join("");
   const cardList = [...(m.cards || [])];
-  if (m.life_arcana) cardList.push({ value: m.life_arcana.num, label: `Аркан — ${m.life_arcana.name}` });
-  if (m.year_arcana) cardList.push({ value: m.year_arcana.num, label: `Аркан года — ${m.year_arcana.name}` });
-  const cards = cardList.map(c =>
-    `<div class="card"><div class="big">${c.value}</div><div class="lbl">${c.label}</div></div>`
+  if (m.life_arcana) cardList.push({ value: m.life_arcana.num, label: `Аркан — ${m.life_arcana.name}`, desc: m.life_arcana.keyword });
+  if (m.year_arcana) cardList.push({ value: m.year_arcana.num, label: `Аркан года — ${m.year_arcana.name}`, desc: m.year_arcana.keyword });
+  _cardDescs = cardList;
+  _cardOpenIndex = null;
+  const cards = cardList.map((c, i) =>
+    `<div class="card card-tap" data-i="${i}"><div class="big">${c.value}</div><div class="lbl">${c.label}</div></div>`
   ).join("");
   const spinCard = ME.can_spin
     ? `<div class="spin-card">
@@ -211,8 +213,22 @@ function renderMatrix(m, birthDate) {
       <div class="pins">${pins}</div>
       <div id="pin-info" class="octa-info"></div>
     </div>
+    <div class="octa-hint" style="margin:22px 0 -6px">✦ Нажми на карточку, чтобы узнать больше</div>
     <div class="cards">${cards}</div>
+    <div id="card-info" class="octa-info" style="margin:8px 24px 4px"></div>
   `;
+}
+
+let _cardDescs = [];
+let _cardOpenIndex = null;
+function toggleCard(i) {
+  const panel = document.getElementById("card-info");
+  if (!panel) return;
+  if (_cardOpenIndex === i) { _cardOpenIndex = null; panel.classList.remove("open"); return; }
+  _cardOpenIndex = i;
+  const c = _cardDescs[i] || {};
+  panel.innerHTML = `<div class="octa-info-t">${escapeHtml(c.label || "")} — ${c.value}</div><div class="octa-info-d">${escapeHtml(c.desc || "Нет описания")}</div>`;
+  panel.classList.add("open");
 }
 
 let _pinDescs = [];
@@ -957,6 +973,9 @@ function render() {
     );
     app.querySelectorAll(".pin-tap").forEach(el =>
       el.addEventListener("click", () => togglePin(parseInt(el.dataset.i, 10)))
+    );
+    app.querySelectorAll(".card-tap").forEach(el =>
+      el.addEventListener("click", () => toggleCard(parseInt(el.dataset.i, 10)))
     );
   } else if (currentTab === "catalog") {
     app.innerHTML = renderCatalog();
