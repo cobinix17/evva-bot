@@ -126,8 +126,21 @@ function renderMatrix(m, birthDate) {
   while (points.length < 8) { points.push([m.destiny, "—"]); descs.push({ label: "—", desc: "" }); }
   _octaDescs = descs;
   _octaOpenIndex = null;
-  const pins = (m.pinnacles || []).map((n, i) =>
-    `<div class="pin"><div class="pin-n">${n}</div><div class="pin-a">${PIN_AGES[i] || ""} лет</div></div>`
+
+  // Если число повторяется среди 8 точек октаграммы 3+ раза — это не баг, а
+  // усиленная энергия (так трактуют повторы в нумерологии). Озвучиваем явно,
+  // иначе выглядит как «сломанный» расчёт.
+  const freq = {};
+  points.forEach(([n]) => { freq[n] = (freq[n] || 0) + 1; });
+  const repeated = Object.entries(freq).find(([, c]) => c >= 3);
+  const repeatNote = repeated
+    ? `<div class="octa-repeat">✨ Число ${repeated[0]} повторяется у тебя ${repeated[1]} раза в матрице — эта энергия усилена</div>`
+    : "";
+
+  _pinDescs = m.pinnacles_info || (m.pinnacles || []).map((n, i) => ({ value: n, age: PIN_AGES[i] || "", desc: "" }));
+  _pinOpenIndex = null;
+  const pins = _pinDescs.map((p, i) =>
+    `<div class="pin pin-tap" data-i="${i}"><div class="pin-n">${p.value}</div><div class="pin-a">${p.age} лет</div></div>`
   ).join("");
   const cardList = [...(m.cards || [])];
   if (m.life_arcana) cardList.push({ value: m.life_arcana.num, label: `Аркан — ${m.life_arcana.name}` });
@@ -191,12 +204,27 @@ function renderMatrix(m, birthDate) {
     <div class="octa-hint">✦ Нажми на число, чтобы узнать больше</div>
     <div id="octa-info" class="octa-info"></div>
     <div class="destiny-line">${m.destiny_title || ""}</div>
+    ${repeatNote}
     <div class="cycles">
       <div class="cyc-head"><span class="cyc-rule"></span><span class="cyc-t">Жизненные циклы</span><span class="cyc-rule"></span></div>
+      <div class="octa-hint" style="margin:-2px 0 10px">✦ Нажми на цикл, чтобы узнать больше</div>
       <div class="pins">${pins}</div>
+      <div id="pin-info" class="octa-info"></div>
     </div>
     <div class="cards">${cards}</div>
   `;
+}
+
+let _pinDescs = [];
+let _pinOpenIndex = null;
+function togglePin(i) {
+  const panel = document.getElementById("pin-info");
+  if (!panel) return;
+  if (_pinOpenIndex === i) { _pinOpenIndex = null; panel.classList.remove("open"); return; }
+  _pinOpenIndex = i;
+  const p = _pinDescs[i] || {};
+  panel.innerHTML = `<div class="octa-info-t">Цикл ${i + 1} · ${p.age} лет — число ${p.value}</div><div class="octa-info-d">${escapeHtml(p.desc || "Нет описания")}</div>`;
+  panel.classList.add("open");
 }
 
 // Цветной ромб «Матрицы судьбы» (Ладини): 8 внешних точек звезды по кругу,
@@ -926,6 +954,9 @@ function render() {
     document.getElementById("achieve-btn")?.addEventListener("click", openAchievements);
     app.querySelectorAll(".octa-pt").forEach(el =>
       el.addEventListener("click", () => toggleOctaPoint(parseInt(el.dataset.i, 10)))
+    );
+    app.querySelectorAll(".pin-tap").forEach(el =>
+      el.addEventListener("click", () => togglePin(parseInt(el.dataset.i, 10)))
     );
   } else if (currentTab === "catalog") {
     app.innerHTML = renderCatalog();

@@ -414,6 +414,18 @@ _KARMIC_MEANING = {
     9: "отпустить прошлое и служить другим",
 }
 
+_PINNACLE_MEANING = {
+    1: "период самостоятельности — учишься опираться на себя, начинаешь новое",
+    2: "период отношений и сотрудничества — рядом важны союзники, а не соло-рывки",
+    3: "период творчества и общения — энергия идёт через самовыражение и связи",
+    4: "период труда и фундамента — то, что строишь сейчас, держит тебя дальше",
+    5: "период перемен и движения — новый опыт важнее стабильности",
+    6: "период дома и ответственности — в центре семья и забота о близких",
+    7: "период внутренней работы — глубина и уединение дают больше, чем суета",
+    8: "период результатов — власть, деньги и статус выходят на первый план",
+    9: "период завершения — отпускаешь старое, чтобы освободить место новому",
+}
+
 _SOUL_MEANING = {
     1: "жажда независимости и признания",
     2: "потребность в любви, гармонии и близости",
@@ -567,12 +579,19 @@ def numerology_summary(name: str, date_str: str) -> dict:
     life_arc = arcana_info(calculate_life_arcana(date_str))
     year_arc = arcana_info(calculate_year_arcana(date_str, year))
 
+    _pin_ages = ["0–32", "32–41", "41–50", "50+"]
+    pinnacles_info = [
+        {"value": p, "age": _pin_ages[i], "desc": _PINNACLE_MEANING.get(p, "").capitalize()}
+        for i, p in enumerate(pinnacles)
+    ]
+
     return {
         "destiny":       pos["destiny"],
         "destiny_title": destiny_title,
         "destiny_desc":  f"Число судьбы — {destiny_words}. Это главное число всей твоей матрицы.",
         "cards":         cards[:6],
         "pinnacles":     pinnacles,
+        "pinnacles_info": pinnacles_info,
         "challenges":    challenges,
         "personal_month":      pers_month,
         "personal_month_label": pers_month_label,
