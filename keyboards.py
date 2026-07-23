@@ -187,6 +187,7 @@ def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool 
 def section_destiny_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
     items = [
         ("matrix_full",    "🔮 Матрица судьбы"),
+        ("psychomatrix",   "🔲 Квадрат Пифагора"),
         ("mission",        "🌟 Предназначение и миссия"),
         ("hidden_talents", "✨ Скрытые таланты"),
         ("strong_weak",    "⚖️ Сильная/слабая сторона"),

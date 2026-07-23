@@ -688,6 +688,26 @@ async def api_destiny_matrix(request: web.Request) -> web.Response:
         "price_rub":  rub_price(PRICES.get("matrix_full", 149)) if YOOKASSA_SHOP_ID else None,
     })
 
+async def api_psychomatrix(request: web.Request) -> web.Response:
+    """Бесплатный визуал «Квадрат Пифагора» (психоматрица) — лид-магнит.
+    Таблица 3×3 с качествами и их силой; полное толкование даёт платный
+    разбор psychomatrix (покупается отдельно)."""
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user = await db.get_user(user_id)
+    if not user.get("birth_date"):
+        return _json_error("Сначала укажи дату рождения", 400)
+    from numerology import psychomatrix_view
+    view = psychomatrix_view(user["birth_date"])
+    return web.json_response({
+        "cells":     view["cells"],
+        "lines":     view["lines"],
+        "owned":     "psychomatrix" in user.get("purchased", []),
+        "price":     PRICES.get("psychomatrix", 99),
+        "price_rub": rub_price(PRICES.get("psychomatrix", 99)) if YOOKASSA_SHOP_ID else None,
+    })
+
 async def api_yesno(request: web.Request) -> web.Response:
     """Быстрый ответ «Да/Нет» по числам. Бесплатно YESNO_FREE_LIMIT в день,
     премиум — безлимит (та же логика, что в боте)."""
@@ -990,6 +1010,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_post("/api/ask", api_ask)
     app.router.add_get("/api/day_number", api_day_number)
     app.router.add_get("/api/destiny_matrix", api_destiny_matrix)
+    app.router.add_get("/api/psychomatrix", api_psychomatrix)
     app.router.add_post("/api/yesno", api_yesno)
     app.router.add_post("/webhook/yookassa", yookassa_webhook)
     app.router.add_post("/api/profile_digest", api_profile_digest)

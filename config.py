@@ -39,6 +39,7 @@ TITLES = {
     "ancestor_code":  "🌳 Родовой код",
     "name_secret":    "🔤 Тайна твоего имени",
     "business_name":  "💼 Нумерология названия",
+    "psychomatrix":   "🔲 Психопортрет по квадрату Пифагора",
 }
 
 PRICES = {
@@ -78,6 +79,7 @@ PRICES = {
     "ancestor_code": 99,
     "name_secret":   79,
     "business_name": 99,
+    "psychomatrix":  99,
 }
 
 PAID_RAZBORY  = {k: v for k, v in TITLES.items() if k != "free"}
@@ -124,6 +126,7 @@ UPSELLS = {
     "ancestor_code":  ("past_life",      "karma"),
     "name_secret":    ("matrix_full",    "mission"),
     "business_name":  ("own_business",   "finance"),
+    "psychomatrix":   ("matrix_full",    "strong_weak"),
 }
 
 # Разделы меню
@@ -133,7 +136,7 @@ UPSELLS = {
 # правок в каждом месте вручную.
 TWO_DATE_KEYS = {"compat"}
 
-SECTION_DESTINY = ["matrix_full", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026", "name_secret"]
+SECTION_DESTINY = ["matrix_full", "psychomatrix", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026", "name_secret"]
 SECTION_MONEY   = ["finance", "wealth_blocks", "freedom_path", "calling", "promotion", "own_business", "career", "money", "days", "business_name"]
 SECTION_LOVE    = ["compat", "when", "portrait", "unlucky", "ex", "cold", "toxic", "lonely", "breakup"]
 SECTION_HEALTH  = ["health_code", "energy_drain", "body_message", "stress_number", "intuition"]
@@ -227,5 +230,6 @@ RAZBOR_DESCRIPTIONS = {
     "ancestor_code": "Родовые программы — что досталось от предков и как это использовать.",
     "name_secret":   "Что скрывает твоё имя: число имени, души и впечатления — характер, сильные стороны и как имя влияет на судьбу.",
     "business_name": "Притягивает ли твоё название деньги и успех: разбор бренда/бизнеса по числам + рекомендации.",
+    "psychomatrix":  "Квадрат Пифагора: характер, разложенный на 9 качеств с их силой — воля, энергия, логика, талант, и что стоит развивать.",
 }
  

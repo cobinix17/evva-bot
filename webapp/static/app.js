@@ -186,6 +186,11 @@ function renderMatrix(m, birthDate) {
       <div><div class="spin-t">🔷 Матрица судьбы</div><div class="spin-d">Твоя схема арканов по дате рождения — бесплатно</div></div>
       <button id="destiny-matrix-btn">Открыть</button>
     </div>`;
+  const psychoCard = `
+    <div class="spin-card">
+      <div><div class="spin-t">🔲 Квадрат Пифагора</div><div class="spin-d">Твой характер по цифрам даты рождения — бесплатно</div></div>
+      <button id="psycho-btn">Открыть</button>
+    </div>`;
   const achieveCard = `
     <div class="spin-card">
       <div><div class="spin-t">🏆 Достижения</div><div class="spin-d">Открывай значки за активность</div></div>
@@ -198,6 +203,7 @@ function renderMatrix(m, birthDate) {
     </div>
     ${dayCard}
     <div class="section" style="margin-bottom:0">${matrixCard}</div>
+    <div class="section" style="margin-bottom:0; margin-top:10px;">${psychoCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${yesnoCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${spinCard}</div>
     <div class="section" style="margin-bottom:0; margin-top:10px;">${achieveCard}</div>
@@ -334,6 +340,75 @@ async function openDestinyMatrix() {
     document.getElementById("mx-open-reading")?.addEventListener("click", () => openReading("matrix_full"));
   } catch (e) {
     tg?.showAlert(e.message || "Не удалось построить матрицу");
+    render();
+  }
+}
+
+// ── Квадрат Пифагора (психоматрица) ─────────────────────────────────────────
+let _psychoCells = [];
+let _psychoOpen = null;
+function togglePsychoCell(i) {
+  const panel = document.getElementById("psy-info");
+  if (!panel) return;
+  if (_psychoOpen === i) { _psychoOpen = null; panel.classList.remove("open"); return; }
+  _psychoOpen = i;
+  const c = _psychoCells[i] || {};
+  panel.innerHTML = `<div class="octa-info-t">${escapeHtml(c.title || "")} — цифра ${c.digit} (${c.count})</div><div class="octa-info-d">${escapeHtml(c.desc || "")}</div>`;
+  panel.classList.add("open");
+}
+
+async function openPsychomatrix() {
+  app.innerHTML = `<div class="empty">Строю твой квадрат Пифагора…</div>`;
+  try {
+    const r = await api("/api/psychomatrix");
+    _psychoCells = r.cells;
+    _psychoOpen = null;
+    // Ячейки идут по цифрам 1..9; классическая раскладка столбцами:
+    //   1 4 7 / 2 5 8 / 3 6 9. cells[digit-1] соответствует цифре.
+    const idx = d => d - 1;
+    const cell = d => {
+      const c = r.cells[idx(d)];
+      const filled = c.count > 0;
+      return `<div class="psy-cell ${filled ? "psy-filled" : "psy-empty"}" data-i="${idx(d)}">
+        <div class="psy-rep">${filled ? escapeHtml(c.repeat) : "—"}</div>
+        <div class="psy-lbl">${escapeHtml(c.title)}</div>
+      </div>`;
+    };
+    const grid = `<div class="psy-grid">
+      ${cell(1)}${cell(4)}${cell(7)}
+      ${cell(2)}${cell(5)}${cell(8)}
+      ${cell(3)}${cell(6)}${cell(9)}
+    </div>`;
+    const lines = r.lines.map(l =>
+      `<div class="psy-line"><span class="psy-line-t">${escapeHtml(l.title)}</span><span class="psy-line-n">${l.count}</span></div>`
+    ).join("");
+    const cta = r.owned
+      ? `<button id="psy-open-reading">📖 Открыть полный психопортрет</button>`
+      : `<button id="psy-buy">🔲 Подробный психопортрет — ${r.price} ⭐${r.price_rub ? ` / ${r.price_rub}₽` : ""}</button>`;
+    app.innerHTML = `
+      <button class="back-btn" id="psy-back">← Назад</button>
+      <div class="topbar"><div class="eyebrow">Квадрат Пифагора</div><h1>🔲 Твой характер по цифрам</h1></div>
+      ${grid}
+      <div class="octa-hint">✦ Нажми на ячейку, чтобы узнать значение</div>
+      <div id="psy-info" class="octa-info"></div>
+      <div class="cycles">
+        <div class="cyc-head"><span class="cyc-rule"></span><span class="cyc-t">Линии характера</span><span class="cyc-rule"></span></div>
+        <div class="psy-lines">${lines}</div>
+      </div>
+      <div class="onboard" style="margin-top:8px">
+        <p>Это твой характер, разложенный на 9 качеств по силе. Полный психопортрет —
+        что делать с сильными и слабыми сторонами, темперамент и отношения — в подробном разборе.</p>
+        ${cta}
+      </div>
+    `;
+    document.getElementById("psy-back").addEventListener("click", render);
+    app.querySelectorAll(".psy-cell").forEach(el =>
+      el.addEventListener("click", () => togglePsychoCell(parseInt(el.dataset.i, 10)))
+    );
+    document.getElementById("psy-buy")?.addEventListener("click", () => renderPayScreen("psychomatrix"));
+    document.getElementById("psy-open-reading")?.addEventListener("click", () => openReading("psychomatrix"));
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось построить квадрат");
     render();
   }
 }
@@ -955,6 +1030,7 @@ function render() {
     document.getElementById("digest-btn")?.addEventListener("click", openDigest);
     document.getElementById("yesno-open-btn")?.addEventListener("click", renderYesNo);
     document.getElementById("destiny-matrix-btn")?.addEventListener("click", openDestinyMatrix);
+    document.getElementById("psycho-btn")?.addEventListener("click", openPsychomatrix);
     document.getElementById("achieve-btn")?.addEventListener("click", openAchievements);
     app.querySelectorAll(".octa-pt").forEach(el =>
       el.addEventListener("click", () => toggleOctaPoint(parseInt(el.dataset.i, 10)))

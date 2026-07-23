@@ -17,7 +17,7 @@ from readings import PROMPTS
 from config import TITLES
 from numerology import (
     build_numerology_context, build_name_context, calculate_destiny,
-    calculate_personal_year, calculate_personal_month,
+    calculate_personal_year, calculate_personal_month, build_psychomatrix_context,
 )
 from ai import ask_ai
 
@@ -209,6 +209,10 @@ async def generate_single(user_id: int, user: dict, key: str, date_str: str,
         if cached and cached.get("date_str") == date_str:
             return title, cached["text"], True
         context = build_numerology_context(name, date_str)
+        # Психопортрет по квадрату Пифагора: дописываем в контекст готовую
+        # раскладку психоматрицы, чтобы ИИ объяснял реальные цифры, а не гадал.
+        if key == "psychomatrix":
+            context += "\n\n" + build_psychomatrix_context(date_str)
         prompt  = _gender_note(user) + build_prompt(key, name=name, context=context, date=date_str)
         async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
