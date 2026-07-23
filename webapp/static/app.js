@@ -728,12 +728,9 @@ function renderPremium() {
       `;
     })();
 
-  return premiumBlock + `
-    <div class="cycles">
-      <div class="cyc-head"><span class="cyc-rule"></span><span class="cyc-t">Реферальная программа</span><span class="cyc-rule"></span></div>
-    </div>
-    <div id="ref-block" class="onboard"><p>Загрузка…</p></div>
-  `;
+  // Вкладка «Ева» — только AI-раздел «Спроси Еву» / оффер премиума.
+  // Реферальная программа перенесена в «Ещё» (см. renderMore).
+  return premiumBlock;
 }
 
 async function loadReferralBlock() {
@@ -827,12 +824,10 @@ function renderMore() {
   return `
     <div class="topbar"><div class="eyebrow">Настройки</div><h1>⚙️ Ещё</h1></div>
 
-    <div class="onboard">
-      <div class="section-t" style="margin-bottom:10px">Имя</div>
-      <p>Сейчас я называю тебя «${escapeHtml(ME.first_name || "не указано")}».</p>
-      <input id="name-input" placeholder="Новое имя" maxlength="30">
-      <button id="name-save-btn">Сохранить</button>
+    <div class="cycles">
+      <div class="cyc-head"><span class="cyc-rule"></span><span class="cyc-t">Реферальная программа</span><span class="cyc-rule"></span></div>
     </div>
+    <div id="ref-block" class="onboard"><p>Загрузка…</p></div>
 
     <div class="onboard">
       <div class="toggle-row">
@@ -871,18 +866,8 @@ function renderMore() {
   `;
 }
 
-async function saveName() {
-  const input = document.getElementById("name-input");
-  const name = input.value.trim();
-  if (name.length < 2) { tg?.showAlert("Введи имя — от 2 символов 🙂"); return; }
-  try {
-    await api("/api/me/name", { method: "POST", body: JSON.stringify({ name }) });
-    tg?.showAlert("Готово! 🌸");
-    await boot();
-  } catch (e) {
-    tg?.showAlert(e.message || "Ошибка");
-  }
-}
+// Смена имени убрана из веба — имя для чужого разбора теперь спрашивается в
+// боте при вводе другой даты, а смена своего имени осталась в профиле бота.
 
 async function toggleNotifications(e) {
   try {
@@ -992,10 +977,9 @@ function render() {
     document.getElementById("premium-card-btn")?.addEventListener("click", () => buyPremiumRub("bank_card"));
     document.getElementById("premium-sbp-btn")?.addEventListener("click", () => buyPremiumRub("sbp"));
     document.getElementById("ask-send-btn")?.addEventListener("click", sendAskQuestion);
-    loadReferralBlock();
   } else if (currentTab === "more") {
     app.innerHTML = renderMore();
-    document.getElementById("name-save-btn").addEventListener("click", saveName);
+    loadReferralBlock();
     document.getElementById("notif-toggle").addEventListener("change", toggleNotifications);
     document.getElementById("promo-check-btn").addEventListener("click", checkPromo);
     document.getElementById("feedback-idea-btn").addEventListener("click", () => chooseFeedbackCategory("idea"));

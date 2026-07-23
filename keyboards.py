@@ -65,6 +65,10 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
     buttons.append([InlineKeyboardButton(text="🌙 Здоровье и энергия",   callback_data="section_health")])
     buttons.append([InlineKeyboardButton(text="✨ Прошлое и будущее",    callback_data="section_past")])
     buttons.append([InlineKeyboardButton(
+        text="👥 Пригласить подругу — +25% ⭐",
+        callback_data="ref_promo"
+    )])
+    buttons.append([InlineKeyboardButton(
         text="👤 Мой профиль",
         callback_data="my_profile"
     )])
