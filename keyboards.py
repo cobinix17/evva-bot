@@ -74,7 +74,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         callback_data="my_profile"
     )])
     buttons.append([InlineKeyboardButton(
-        text="📢 Наш канал — числа дня и прогнозы",
+        text="📢 Наш канал",
         url=CHANNEL_URL
     )])
     buttons.append([InlineKeyboardButton(
