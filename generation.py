@@ -188,17 +188,22 @@ def _gender_note(user: dict) -> str:
     return ""
 
 
-async def generate_single(user_id: int, user: dict, key: str, date_str: str) -> tuple[str, str, bool]:
+async def generate_single(user_id: int, user: dict, key: str, date_str: str,
+                          subject_name: str | None = None) -> tuple[str, str, bool]:
     """Генерирует (или достаёт из кэша) одиночный разбор. Возвращает
     (title, text, from_cache). from_cache=True — тот же текст на ту же дату мы
     уже делали, показываем его без перегенерации, чтобы не было противоречий.
     Бросает GenerationBusy если у юзера уже идёт генерация. Замок/кэш/сохранение
-    здесь; доставка (сообщение или веб-рендер) — на вызывающем коде."""
+    здесь; доставка (сообщение или веб-рендер) — на вызывающем коде.
+
+    subject_name — когда разбор не для владельца аккаунта, а для кого-то ещё
+    (флоу «другая дата»): без этого числа имени/души/личности считались бы по
+    имени владельца аккаунта на ЧУЖУЮ дату рождения — числовая мешанина."""
     if user_id in _generating:
         raise GenerationBusy()
     _generating.add(user_id)
     try:
-        name  = _default_name(user)
+        name  = subject_name or _default_name(user)
         title = TITLES.get(key, "🔮 Разбор")
         cached = await db.get_reading_text(user_id, key)
         if cached and cached.get("date_str") == date_str:

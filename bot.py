@@ -168,6 +168,7 @@ class Form(StatesGroup):
     waiting_admin_reply      = State()
     waiting_promo            = State()
     waiting_rub_email        = State()
+    waiting_other_name       = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1177,7 +1178,36 @@ async def use_my_date(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "use_new_date")
 async def use_new_date(callback: CallbackQuery, state: FSMContext):
+    # Другая дата = чужой разбор — числа имени (душа/личность/имя) в контексте
+    # промпта иначе считались бы по ИМЕНИ ВЛАДЕЛЬЦА АККАУНТА, а не того, о ком
+    # разбор. Раньше это молча пролезало (см. _process_date): бот писал "разбор
+    # для Руслана" даже когда дату вводили для другого человека.
     await callback.answer()
+    await callback.message.answer(
+        "👤 Для кого этот разбор? Введи имя.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Без имени", callback_data="other_name_skip")]
+        ])
+    )
+    await state.set_state(Form.waiting_other_name)
+
+@dp.message(StateFilter(Form.waiting_other_name))
+async def handle_other_name(message: Message, state: FSMContext):
+    name = sanitize_name(message.text or "")
+    if len(name) < 2 or len(name) > 30:
+        await message.answer("Введи имя текстом — только буквы, от 2 до 30 символов, или нажми «Без имени» 😊")
+        return
+    await state.update_data(other_name=name)
+    await message.answer("📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
+    await state.set_state(Form.waiting_date)
+
+@dp.callback_query(F.data == "other_name_skip")
+async def other_name_skip_cb(callback: CallbackQuery, state: FSMContext):
+    # Явно ставим нейтральное имя — иначе db.default_name(user) вернул бы
+    # РЕАЛЬНОЕ имя владельца аккаунта (у него есть first_name), и разбор для
+    # чужой даты снова подписался бы, например, «Руслан».
+    await callback.answer()
+    await state.update_data(other_name="дорогая")
     await callback.message.answer("📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
     await state.set_state(Form.waiting_date)
 
@@ -1596,7 +1626,9 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
                         state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False):
     number  = calculate_destiny(date_str)
     waiting = user.get("waiting")
-    name    = db.default_name(user)
+    fsm_data = await state.get_data()
+    subject_name = fsm_data.get("other_name")
+    name    = subject_name or db.default_name(user)
     if not waiting:
         await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu_for(message.from_user.id, user))
         await state.clear()
@@ -1651,7 +1683,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             pass
 
     try:
-        title, answer, from_cache = await generate_single(user_id, user, waiting, date_str)
+        title, answer, from_cache = await generate_single(user_id, user, waiting, date_str, subject_name=subject_name)
         await stop_intermediate()
         await send_long(message.chat.id, f"{title}\n\n{answer}")
 
