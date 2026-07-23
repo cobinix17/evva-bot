@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_SHOP_ID, rub_price
 
 CONTACT_URL = "https://t.me/eva_numer"
+CHANNEL_URL = "https://t.me/eva_numerologg"
 
 def check_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -71,6 +72,10 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
     buttons.append([InlineKeyboardButton(
         text="👤 Мой профиль",
         callback_data="my_profile"
+    )])
+    buttons.append([InlineKeyboardButton(
+        text="📢 Наш канал — числа дня и прогнозы",
+        url=CHANNEL_URL
     )])
     buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы",
