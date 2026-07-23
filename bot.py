@@ -2998,6 +2998,86 @@ async def send_daily_channel_post():
             logging.error(f"Channel post error: {e}")
         await asyncio.sleep(60)
 
+async def send_monthly_days_post():
+    """1-го числа каждого месяца, UTC 8:00 = Москва 11:00 — пост «числа месяца»:
+    сильные/осторожные дни + денежный день и день отношений. Считается
+    детерминированно по числу дня (calculate_day_number), без ИИ — стабильно и
+    бесплатно. Люди сохраняют такой пост и возвращаются к нему весь месяц."""
+    import calendar
+    _MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+                  "августа", "сентября", "октября", "ноября", "декабря"]
+    # Числа дня по энергии: сильные — для стартов/действий, осторожные — переждать.
+    STRONG = {1, 3, 5, 6, 8}   # начало, творчество, движение, гармония, результат
+    CAREFUL = {4, 7, 9}        # труд/рутина, пауза, завершение — не для новых дел
+    while True:
+        now    = utc_now()
+        target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        # ближайшее 1-е число месяца в 08:00 UTC
+        if now.day == 1 and now < target:
+            pass
+        else:
+            y, m = (now.year + 1, 1) if now.month == 12 else (now.year, now.month + 1)
+            target = target.replace(year=y, month=m, day=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            y, m = target.year, target.month
+            ndays = calendar.monthrange(y, m)[1]
+            strong, careful, money_day, love_day = [], [], None, None
+            for d in range(1, ndays + 1):
+                dn = calculate_day_number(date(y, m, d))
+                if dn in STRONG:
+                    strong.append(d)
+                elif dn in CAREFUL:
+                    careful.append(d)
+                if dn == 8 and money_day is None:
+                    money_day = d
+                if dn == 6 and love_day is None:
+                    love_day = d
+            mn = _MONTHS_RU[m - 1]
+            text = (
+                f"📅 ЧИСЛА {mn.upper()} — когда действовать, а когда переждать\n\n"
+                f"🟢 Сильные дни (начинай важное, проси, действуй):\n"
+                f"{', '.join(map(str, strong[:8]))}\n\n"
+                f"🔴 Осторожные дни (не начинай нового, отдыхай):\n"
+                f"{', '.join(map(str, careful[:6]))}\n\n"
+                + (f"💰 Денежный день месяца: {money_day} {mn} — проси повышение, запускай продажи\n" if money_day else "")
+                + (f"❤️ День для отношений: {love_day} {mn} — важные разговоры пройдут мягко\n" if love_day else "")
+                + f"\n🔖 Сохрани, чтобы не забыть\n\n"
+                f"✨ Твой персональный календарь дней — в боте @nnumerology_bot"
+            )
+            await bot.send_message(CHANNEL, text)
+        except Exception as e:
+            logging.error(f"Monthly days post error: {e}")
+        await asyncio.sleep(60)
+
+async def send_weekly_poll():
+    """Пятница, UTC 9:00 = Москва 12:00 — опрос в канал: и вовлечение (реакции
+    поднимают охват), и исследование — что аудитории интереснее разбирать."""
+    while True:
+        now    = utc_now()
+        target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        # weekday(): понедельник=0 … пятница=4
+        days_ahead = (4 - now.weekday()) % 7
+        target += timedelta(days=days_ahead)
+        if target <= now:
+            target += timedelta(days=7)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            await bot.send_poll(
+                CHANNEL,
+                question="🔮 Какую тему разобрать на следующей неделе?",
+                options=[
+                    "💑 Любовь и отношения",
+                    "💰 Деньги и карьера",
+                    "🔮 Характер и предназначение",
+                    "🌙 Здоровье и энергия",
+                ],
+                is_anonymous=True,
+            )
+        except Exception as e:
+            logging.error(f"Weekly poll error: {e}")
+        await asyncio.sleep(60)
+
 # ─── WEB ─────────────────────────────────────────────────────────────────────
 async def healthcheck(request):
     return web.Response(text="OK")
@@ -3061,6 +3141,8 @@ async def main():
     asyncio.create_task(run_web())
     asyncio.create_task(send_daily_horoscope())
     asyncio.create_task(send_daily_channel_post())
+    asyncio.create_task(send_monthly_days_post())
+    asyncio.create_task(send_weekly_poll())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
