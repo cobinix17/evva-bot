@@ -275,6 +275,39 @@ def bolden_headers(text: str) -> str:
             out.append(line)
     return '\n'.join(out)
 
+_CYR_UPPER_RE = re.compile(r'[А-ЯЁ]')
+_CYR_LOWER_RE = re.compile(r'[а-яё]')
+_SENTENCE_SPLIT_RE = re.compile(r'([.!?\n]+\s*)')
+_EVA_RE = re.compile(r'\bева\b', re.IGNORECASE)
+
+def _fix_allcaps(text: str) -> str:
+    """Изредка провайдер (чаще запасной, не Claude) отдаёт ответ ЦЕЛИКОМ
+    капсом — ни один наш промпт этого не просит, и это не стилевой приём:
+    в PDF/боте выглядит как баг, не как акцент. Детектим по доле заглавных
+    кириллических букв и приводим к обычному регистру предложений."""
+    upper = len(_CYR_UPPER_RE.findall(text))
+    lower = len(_CYR_LOWER_RE.findall(text))
+    total = upper + lower
+    if total < 20 or upper / total < 0.7:
+        return text
+    parts = _SENTENCE_SPLIT_RE.split(text.lower())
+    fixed = []
+    capitalize_next = True
+    for part in parts:
+        if _SENTENCE_SPLIT_RE.fullmatch(part):
+            fixed.append(part)
+            capitalize_next = True
+            continue
+        if capitalize_next and part:
+            m = re.search(r'[а-яёa-z]', part)
+            if m:
+                i = m.start()
+                part = part[:i] + part[i].upper() + part[i + 1:]
+            capitalize_next = False
+        fixed.append(part)
+    result = ''.join(fixed)
+    return _EVA_RE.sub('Ева', result)
+
 def _fix_langswap(text: str) -> str:
     """Заменяет одиночную латинскую букву, зажатую соседством кириллицы,
     на её кириллический аналог. Не трогает целые латинские слова/фразы —
@@ -556,6 +589,7 @@ def _finalize(raw: str, source: str) -> str | None:
         logging.warning(f"{source} — пустой текст после очистки"); return None
     if ratio > MAX_FOREIGN_RATIO:
         logging.warning(f"{source} — {ratio:.1%} иностранных символов"); return None
+    cleaned = _fix_allcaps(cleaned)
     return _fix_known_words(_fix_spelling(cleaned))
 
 # ── CEREBRAS ──────────────────────────────────────────────────────────────────

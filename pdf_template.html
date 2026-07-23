@@ -19,7 +19,8 @@
 
   @page { size: A4; margin: 0; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family:'Body', serif; color:#3E2F58; }
+  body { font-family:'Body', serif; color:#3E2F58;
+    font-variant-numeric:lining-nums; font-feature-settings:"lnum" 1, "pnum" 1; }
 
   /* min-height + overflow:visible (не height + overflow:hidden) — защита от
      потери текста: если оценка объёма в _paginate() всё же ошиблась и секции
@@ -100,7 +101,7 @@
   .sec-t  { font-family:'Head',serif; font-weight:600; font-size:20px; letter-spacing:.04em;
     color:#4A2E6B; text-transform:uppercase; }
   .sec-rule { flex:1; height:1px; background:linear-gradient(90deg,#D8BC77,transparent); }
-  .sec-p  { font-family:'Body',serif; font-size:17px; line-height:1.7; color:#3E2F58; }
+  .sec-p  { font-family:'Body',serif; font-size:18.5px; line-height:1.75; color:#3E2F58; }
   .sec-end { text-align:center; margin-top:14px; color:#C7A64E; opacity:.75; }
   .sec-end svg { width:11px; height:11px; }
 
@@ -129,24 +130,28 @@
   <div class="pad" style="padding:64px 52px 58px; display:flex; flex-direction:column; align-items:center; text-align:center;">
     <div class="eyebrow" style="font-size:10.5px;">Персональный нумерологический разбор</div>
 
-    <svg viewBox="0 0 120 120" fill="none" stroke="{{ accent | default('#B08A3E') }}" style="width:128px;height:128px;margin:34px 0 26px;">
-      <g stroke-width="0.7" opacity="0.8">
-        <line x1="60" y1="1" x2="60" y2="8"/>
-        <line x1="60" y1="1" x2="60" y2="8" transform="rotate(45 60 60)"/>
-        <line x1="60" y1="1" x2="60" y2="8" transform="rotate(90 60 60)"/>
-        <line x1="60" y1="1" x2="60" y2="8" transform="rotate(135 60 60)"/>
-        <line x1="60" y1="1" x2="60" y2="8" transform="rotate(180 60 60)"/>
-        <line x1="60" y1="1" x2="60" y2="8" transform="rotate(225 60 60)"/>
-        <line x1="60" y1="1" x2="60" y2="8" transform="rotate(270 60 60)"/>
-        <line x1="60" y1="1" x2="60" y2="8" transform="rotate(315 60 60)"/>
-      </g>
-      <circle cx="60" cy="60" r="53" stroke-width="0.8"/><circle cx="60" cy="60" r="45" stroke-width="1"/>
-      <rect x="27" y="27" width="66" height="66" stroke-width="1"/>
-      <rect x="27" y="27" width="66" height="66" transform="rotate(45 60 60)" stroke-width="1"/>
-      <circle cx="60" cy="60" r="8" stroke-width="1.1"/>
-    </svg>
+    <div style="position:relative; width:150px; height:150px; margin:30px 0 24px; display:flex; align-items:center; justify-content:center;">
+      <div style="position:absolute; inset:-20px; border-radius:50%;
+        background:radial-gradient(circle, rgba(157,117,196,.24), transparent 70%);"></div>
+      <svg viewBox="0 0 120 120" fill="none" stroke="{{ accent | default('#B08A3E') }}" style="position:relative; width:128px;height:128px;">
+        <g stroke-width="0.7" opacity="0.8">
+          <line x1="60" y1="1" x2="60" y2="8"/>
+          <line x1="60" y1="1" x2="60" y2="8" transform="rotate(45 60 60)"/>
+          <line x1="60" y1="1" x2="60" y2="8" transform="rotate(90 60 60)"/>
+          <line x1="60" y1="1" x2="60" y2="8" transform="rotate(135 60 60)"/>
+          <line x1="60" y1="1" x2="60" y2="8" transform="rotate(180 60 60)"/>
+          <line x1="60" y1="1" x2="60" y2="8" transform="rotate(225 60 60)"/>
+          <line x1="60" y1="1" x2="60" y2="8" transform="rotate(270 60 60)"/>
+          <line x1="60" y1="1" x2="60" y2="8" transform="rotate(315 60 60)"/>
+        </g>
+        <circle cx="60" cy="60" r="53" stroke-width="0.8"/><circle cx="60" cy="60" r="45" stroke-width="1"/>
+        <rect x="27" y="27" width="66" height="66" stroke-width="1"/>
+        <rect x="27" y="27" width="66" height="66" transform="rotate(45 60 60)" stroke-width="1"/>
+        <circle cx="60" cy="60" r="8" stroke-width="1.1"/>
+      </svg>
+    </div>
 
-    <h1 style="font-size:38px; line-height:1.18; letter-spacing:.02em; max-width:420px;">{{ reading_title }}</h1>
+    <h1 style="font-size:41px; line-height:1.16; letter-spacing:.02em; max-width:420px;">{{ reading_title }}</h1>
 
     <div style="margin:22px 0 0;">
       <span style="display:inline-block; width:56px; height:1px; background:{{ accent | default('#B08A3E') }}; vertical-align:middle;"></span>
@@ -169,16 +174,20 @@
 
     {% if name %}
     <div class="eyebrow" style="font-size:10px; margin-bottom:12px;">Подготовлено для</div>
-    <div style="font-family:'Head',serif; font-weight:600; font-size:38px; color:#4A2E6B; line-height:1;">{{ name }}</div>
+    <div style="font-family:'Head',serif; font-weight:600; font-size:43px; color:#4A2E6B; line-height:1;">{{ name }}</div>
     {% endif %}
-    {% if birthdate %}<div style="font-size:13px; color:#7B6997; letter-spacing:.06em; margin-top:6px;">{{ birthdate }}</div>{% endif %}
+    {% if birthdate %}<div style="font-size:13.5px; color:#7B6997; letter-spacing:.06em; margin-top:7px;">{{ birthdate }}</div>{% endif %}
 
     {% if destiny_number is not none %}
-    <div class="medal" style="width:132px; height:132px; margin-top:30px;">
-      <svg viewBox="0 0 120 120" fill="none" stroke="{{ accent | default('#B08A3E') }}"><circle cx="60" cy="60" r="57" stroke-width="1.1"/><circle cx="60" cy="60" r="50" stroke-width="0.6"/></svg>
-      <span class="num" style="font-size:66px;">{{ destiny_number }}</span>
+    <div style="position:relative; width:150px; height:150px; margin-top:28px; display:flex; align-items:center; justify-content:center;">
+      <div style="position:absolute; inset:-18px; border-radius:50%;
+        background:radial-gradient(circle, rgba(216,188,119,.28), transparent 72%);"></div>
+      <div class="medal" style="position:relative; width:144px; height:144px;">
+        <svg viewBox="0 0 120 120" fill="none" stroke="{{ accent | default('#B08A3E') }}"><circle cx="60" cy="60" r="57" stroke-width="1.1"/><circle cx="60" cy="60" r="50" stroke-width="0.6"/></svg>
+        <span class="num" style="font-size:74px;">{{ destiny_number }}</span>
+      </div>
     </div>
-    <div class="eyebrow" style="font-size:10px; color:#8A5CB4; margin-top:14px;">Число судьбы</div>
+    <div class="eyebrow" style="font-size:10px; color:#8A5CB4; margin-top:16px;">Число судьбы</div>
     {% endif %}
   </div>
 </div>
