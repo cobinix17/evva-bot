@@ -15,7 +15,6 @@ TITLES = {
     "forecast_2026":  "🗓 Прогноз на 2026 год",
     "strong_weak":    "⚖️ Сильная и слабая сторона",
     "compat":         "💑 Совместимость двух людей",
-    "friend_compat":  "🤝 Совместимость с подругой",
     "when":           "💘 Когда встретишь того самого",
     "portrait":       "💍 Портрет идеального партнёра",
     "unlucky":        "💔 Почему не везёт в любви",
@@ -50,7 +49,6 @@ PRICES = {
     "mission":       99,
     "karma":         99,
     "compat":        99,
-    "friend_compat": 79,
     "own_business":  99,
     "finance":       99,
     "promotion":     99,
@@ -104,7 +102,6 @@ UPSELLS = {
     "promotion":      ("career",         "own_business"),
     "own_business":   ("freedom_path",   "finance"),
     "compat":         ("when",           "portrait"),
-    "friend_compat":  ("compat",         "mission"),
     "when":           ("portrait",       "compat"),
     "portrait":       ("when",           "unlucky"),
     "unlucky":        ("ex",             "lonely"),
@@ -134,9 +131,9 @@ UPSELLS = {
 # флоу ввода "дата1, дата2" в bot.py/webapp.py маршрутизируется по этому набору,
 # а не по жёсткому "== compat", чтобы новые разборы такого рода не требовали
 # правок в каждом месте вручную.
-TWO_DATE_KEYS = {"compat", "friend_compat"}
+TWO_DATE_KEYS = {"compat"}
 
-SECTION_DESTINY = ["matrix_full", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026", "name_secret", "friend_compat"]
+SECTION_DESTINY = ["matrix_full", "mission", "hidden_talents", "strong_weak", "main_fear", "karma", "forecast_2026", "name_secret"]
 SECTION_MONEY   = ["finance", "wealth_blocks", "freedom_path", "calling", "promotion", "own_business", "career", "money", "days", "business_name"]
 SECTION_LOVE    = ["compat", "when", "portrait", "unlucky", "ex", "cold", "toxic", "lonely", "breakup"]
 SECTION_HEALTH  = ["health_code", "energy_drain", "body_message", "stress_number", "intuition"]
@@ -206,7 +203,6 @@ RAZBOR_DESCRIPTIONS = {
     "forecast_2026": "Подробный прогноз на 2026 год: любовь, деньги, рост, лучшие месяцы.",
     "strong_weak":   "Твои сильные и слабые стороны — честно и по числам.",
     "compat":        "Совместимость с конкретным человеком: сильные стороны пары и зоны риска.",
-    "friend_compat": "Дружеская совместимость: как дополняете друг друга и где точки трения — не про романтику.",
     "when":          "Когда встретишь своего человека и каким он будет.",
     "portrait":      "Нумерологический портрет твоего идеального партнёра.",
     "unlucky":       "Истинная причина неудач в любви и как разорвать паттерн.",

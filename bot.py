@@ -1271,7 +1271,7 @@ async def _start_date_flow(message: Message, state: FSMContext, user: dict, key:
     is_free переключает на free_-состояния, чтобы неудачная генерация не
     сжигала платный счёт за бесплатную попытку (см. _process_date/_process_two_dates)."""
     if key in TWO_DATE_KEYS:
-        intro = "🤝 Введи свою дату и дату подруги через запятую" if key == "friend_compat" else "💑 Введи две даты через запятую"
+        intro = "💑 Введи две даты через запятую"
         await message.answer(f"{intro}:\nНапример: 15.03.1995, 22.07.1998")
         await state.set_state(Form.waiting_free_second_date if is_free else Form.waiting_second_date)
     elif key == "business_name":
@@ -1849,7 +1849,7 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
                               key: str = "compat"):
     name    = db.default_name(user)
     title_default = TITLES.get(key, "💑 Совместимость")
-    wait_word = "дружбы" if key == "friend_compat" else "энергетику двух людей"
+    wait_word = "энергетику двух людей"
 
     # Тот же разбор совместимости на те же две даты уже есть — спрашиваем,
     # а не перегенерируем (см. _process_date).

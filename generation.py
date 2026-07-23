@@ -260,8 +260,8 @@ async def answer_yes_no(name: str, birth_date: str, question: str, male: bool = 
 
 async def generate_compat(user_id: int, user: dict, date1: str, date2: str, key: str = "compat") -> tuple[str, str, bool]:
     """То же, что generate_single, но для разборов на ДВЕ даты (совместимость).
-    key различает разные разборы этого рода (романтическая 'compat' vs дружеская
-    'friend_compat') — каждый со своим промптом, кэшем и заголовком."""
+    key различает разные разборы этого рода, если появятся ещё варианты на две
+    даты — каждый со своим промптом, кэшем и заголовком."""
     if user_id in _generating:
         raise GenerationBusy()
     _generating.add(user_id)

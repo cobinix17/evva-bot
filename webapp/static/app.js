@@ -516,7 +516,7 @@ function renderReadingResult(key, title, text) {
 }
 
 // Разборы на ДВЕ даты — тот же список, что TWO_DATE_KEYS в config.py.
-const TWO_DATE_KEYS = new Set(["compat", "friend_compat"]);
+const TWO_DATE_KEYS = new Set(["compat"]);
 
 function renderReadingDateForm(key, forceNew) {
   const item = findCatalogItem(key);
@@ -529,11 +529,10 @@ function renderReadingDateForm(key, forceNew) {
       <input id="rd-subject" placeholder="Например: Ромашка, EvaShop" maxlength="50">
     `;
   } else if (isCompat) {
-    const partnerLabel = key === "friend_compat" ? "Дата подруги: ДД.ММ.ГГГГ" : "Дата партнёра: ДД.ММ.ГГГГ";
     inner = `
-      <p>Введи две даты рождения — Ева составит разбор.</p>
+      <p>Введи две даты рождения — Ева составит разбор совместимости.</p>
       <input id="rd-date1" placeholder="Твоя дата: ДД.ММ.ГГГГ" inputmode="numeric" value="${(!forceNew && ME.birth_date) ? escapeHtml(ME.birth_date) : ""}">
-      <input id="rd-date2" placeholder="${partnerLabel}" inputmode="numeric" style="margin-top:10px">
+      <input id="rd-date2" placeholder="Дата партнёра: ДД.ММ.ГГГГ" inputmode="numeric" style="margin-top:10px">
     `;
   } else {
     const prefill = (!forceNew && ME.birth_date) ? escapeHtml(ME.birth_date) : "";
