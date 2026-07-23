@@ -357,12 +357,26 @@ function togglePsychoCell(i) {
   panel.classList.add("open");
 }
 
+let _psychoLines = [];
+let _psychoLineOpen = null;
+function togglePsychoLine(i) {
+  const panel = document.getElementById("psy-line-info");
+  if (!panel) return;
+  if (_psychoLineOpen === i) { _psychoLineOpen = null; panel.classList.remove("open"); return; }
+  _psychoLineOpen = i;
+  const l = _psychoLines[i] || {};
+  panel.innerHTML = `<div class="octa-info-t">${escapeHtml(l.title || "")} — ${l.count}</div><div class="octa-info-d">${escapeHtml(l.desc || "")}</div>`;
+  panel.classList.add("open");
+}
+
 async function openPsychomatrix() {
   app.innerHTML = `<div class="empty">Строю твой квадрат Пифагора…</div>`;
   try {
     const r = await api("/api/psychomatrix");
     _psychoCells = r.cells;
+    _psychoLines = r.lines;
     _psychoOpen = null;
+    _psychoLineOpen = null;
     // Ячейки идут по цифрам 1..9; классическая раскладка столбцами:
     //   1 4 7 / 2 5 8 / 3 6 9. cells[digit-1] соответствует цифре.
     const idx = d => d - 1;
@@ -379,8 +393,8 @@ async function openPsychomatrix() {
       ${cell(2)}${cell(5)}${cell(8)}
       ${cell(3)}${cell(6)}${cell(9)}
     </div>`;
-    const lines = r.lines.map(l =>
-      `<div class="psy-line"><span class="psy-line-t">${escapeHtml(l.title)}</span><span class="psy-line-n">${l.count}</span></div>`
+    const lines = r.lines.map((l, i) =>
+      `<div class="psy-line psy-line-tap" data-i="${i}"><span class="psy-line-t">${escapeHtml(l.title)}</span><span class="psy-line-n">${l.count}</span></div>`
     ).join("");
     const cta = r.owned
       ? `<button id="psy-open-reading">📖 Открыть полный психопортрет</button>`
@@ -393,7 +407,9 @@ async function openPsychomatrix() {
       <div id="psy-info" class="octa-info"></div>
       <div class="cycles">
         <div class="cyc-head"><span class="cyc-rule"></span><span class="cyc-t">Линии характера</span><span class="cyc-rule"></span></div>
+        <div class="octa-hint" style="margin:-2px 0 10px">✦ Нажми на линию, чтобы узнать больше</div>
         <div class="psy-lines">${lines}</div>
+        <div id="psy-line-info" class="octa-info"></div>
       </div>
       <div class="onboard" style="margin-top:8px">
         <p>Это твой характер, разложенный на 9 качеств по силе. Полный психопортрет —
@@ -404,6 +420,9 @@ async function openPsychomatrix() {
     document.getElementById("psy-back").addEventListener("click", render);
     app.querySelectorAll(".psy-cell").forEach(el =>
       el.addEventListener("click", () => togglePsychoCell(parseInt(el.dataset.i, 10)))
+    );
+    app.querySelectorAll(".psy-line-tap").forEach(el =>
+      el.addEventListener("click", () => togglePsychoLine(parseInt(el.dataset.i, 10)))
     );
     document.getElementById("psy-buy")?.addEventListener("click", () => renderPayScreen("psychomatrix"));
     document.getElementById("psy-open-reading")?.addEventListener("click", () => openReading("psychomatrix"));

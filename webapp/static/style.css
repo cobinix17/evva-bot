@@ -157,6 +157,8 @@ h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
 .psy-lines{ display:flex; flex-direction:column; gap:7px; }
 .psy-line{ display:flex; align-items:center; justify-content:space-between;
   padding:11px 15px; background:var(--bg3); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); }
+.psy-line-tap{ cursor:pointer; transition:opacity .15s; }
+.psy-line-tap:active{ opacity:.72; }
 .psy-line-t{ font-size:13.5px; color:var(--ink); }
 .psy-line-n{ font-family:'Head',serif; font-weight:600; font-size:20px; color:var(--gold);
   font-variant-numeric:lining-nums; }
