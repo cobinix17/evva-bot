@@ -2,7 +2,7 @@
 # Зависит от config.py (TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS).
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_SHOP_ID, rub_price
+from config import TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_SHOP_ID, rub_price, price_of, get_discount
 
 CONTACT_URL = "https://t.me/eva_numer"
 CHANNEL_URL = "https://t.me/eva_numerologg"
@@ -32,6 +32,13 @@ def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
 
 def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMarkup:
     buttons = []
+
+    disc = get_discount()
+    if disc:
+        buttons.append([InlineKeyboardButton(
+            text=f"🔥 АКЦИЯ: −{disc}% на все разборы!",
+            callback_data="show_menu"
+        )])
 
     if user and not user.get("free_used"):
         buttons.append([InlineKeyboardButton(
@@ -178,7 +185,7 @@ def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool 
     buttons   = []
     for key, emoji_title in keys_with_emoji:
         prefix = ("✅ " if key in purchased else "") if not gift else ""
-        price  = PRICES.get(key, 49)
+        price  = price_of(key, 49)
         price_line = f"{price} ⭐"
         if YOOKASSA_SHOP_ID and not gift:
             price_line += f" / {rub_price(price)}₽"
@@ -281,7 +288,7 @@ def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
     for s in suggestions:
         if s not in user.get("purchased", []):
             title = TITLES.get(s, s)
-            price = PRICES.get(s, 49)
+            price = price_of(s, 49)
             price_line = f"{price} ⭐" + (f" / {rub_price(price)}₽" if YOOKASSA_SHOP_ID else "")
             buttons.append([InlineKeyboardButton(
                 text=f"{title} — {price_line}",

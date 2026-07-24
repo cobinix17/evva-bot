@@ -24,6 +24,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
 import db
+import config
 from config import (
     TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, TWO_DATE_KEYS,
     ADMIN_ID, REF_BONUS_PERCENT,
@@ -1147,7 +1148,7 @@ def _build_upsells(key: str, user: dict) -> list[dict]:
             result.append({
                 "title": TITLES.get(s, s),
                 "desc":  RAZBOR_DESCRIPTIONS.get(s, ""),
-                "price": PRICES.get(s, 49),
+                "price": config.price_of(s, 49),
             })
     return result
 
@@ -1361,7 +1362,7 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
     if await _premium_unlock(callback, state, user, key):
         return
     if key in PAID_RAZBORY:
-        price     = PRICES.get(key, 49)
+        price     = config.price_of(key, 49)
         title     = PAID_RAZBORY[key]
         balance   = user.get("ref_balance", 0)
         price_rub = rub_price(price) if YOOKASSA_SHOP_ID else None
@@ -1389,7 +1390,7 @@ async def buy_preview_cmd(message: Message, state: FSMContext):
     if key not in PAID_RAZBORY:
         await message.answer(f"Нет такого разбора: {key}")
         return
-    price     = PRICES.get(key, 49)
+    price     = config.price_of(key, 49)
     title     = PAID_RAZBORY[key]
     price_rub = rub_price(price) if YOOKASSA_SHOP_ID else None
     price_line = f"{price} ⭐" + (f" / {price_rub}₽" if price_rub else "")
@@ -1412,7 +1413,7 @@ async def rub_buy_handler(callback: CallbackQuery, state: FSMContext):
         await _resume_already_purchased(callback, state, user, key)
         return
     if key in PAID_RAZBORY and YOOKASSA_SHOP_ID:
-        price     = PRICES.get(key, 49)
+        price     = config.price_of(key, 49)
         price_rub = rub_price(price)
         title     = PAID_RAZBORY[key]
         desc      = RAZBOR_DESCRIPTIONS.get(key, title)
@@ -1430,7 +1431,7 @@ async def stars_buy_handler(callback: CallbackQuery, state: FSMContext):
         await _resume_already_purchased(callback, state, user, key)
         return
     if key in PAID_RAZBORY:
-        price = PRICES.get(key, 49)
+        price = config.price_of(key, 49)
         title = PAID_RAZBORY[key]
         desc  = RAZBOR_DESCRIPTIONS.get(key, title)
         await send_invoice(callback.message.chat.id, title, desc, key, price)
@@ -1469,7 +1470,7 @@ async def gift_buy_handler(callback: CallbackQuery):
     if key not in PAID_RAZBORY:
         await callback.answer()
         return
-    price = PRICES.get(key, 49)
+    price = config.price_of(key, 49)
     title = PAID_RAZBORY[key]
     desc  = f"Подарок: {RAZBOR_DESCRIPTIONS.get(key, title)}"
     await send_invoice(callback.message.chat.id, f"🎁 {title}", desc, f"gift_{key}", price)
@@ -1486,7 +1487,7 @@ async def balance_buy_handler(callback: CallbackQuery, state: FSMContext):
         await _resume_already_purchased(callback, state, user, key)
         return
 
-    price = PRICES.get(key, 49)
+    price = config.price_of(key, 49)
     # Замок на юзера: без него двойной клик прошёл бы обе проверки «не куплено»
     # и списал бы баланс дважды за один разбор (см. db.user_lock).
     async with db.user_lock(callback.from_user.id):
@@ -2720,6 +2721,32 @@ async def revoke_premium_cmd(message: Message, state: FSMContext):
     await db.set_premium(target_id, None)
     await message.answer(f"✅ Премиум снят с {target_id}.")
 
+@dp.message(Command("discount"), StateFilter("*"))
+async def discount_cmd(message: Message, state: FSMContext):
+    """Админ: включить/выключить акцию-скидку на ВСЕ разборы.
+    /discount 30 — скидка 30%, /discount 0 — убрать акцию.
+    Применяется сразу и к витрине, и к оплате; переживает рестарт (БД)."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await message.answer(
+            f"Текущая скидка: {config.get_discount()}%\n\n"
+            "Использование:\n/discount 30 — включить −30% на все разборы\n"
+            "/discount 0 — убрать акцию"
+        )
+        return
+    pct = max(0, min(90, int(parts[1])))
+    config.set_discount(pct)
+    await db.set_setting("discount_percent", str(pct))
+    if pct:
+        await message.answer(
+            f"🔥 Акция включена: −{pct}% на все разборы.\n"
+            "Цены пересчитаны везде — в меню, апселлах и оплате."
+        )
+    else:
+        await message.answer("✅ Акция выключена — цены вернулись к обычным.")
+
 @dp.message(Command("profile"), StateFilter("*"))
 async def profile_cmd(message: Message, state: FSMContext):
     await state.clear()
@@ -3137,6 +3164,12 @@ async def setup_bot_commands():
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 async def main():
     await db.init_db(DATABASE_URL)
+    # Восстанавливаем активную скидку из БД (переживает рестарты Railway).
+    try:
+        saved = await db.get_setting("discount_percent", "0")
+        config.set_discount(int(saved or 0))
+    except Exception as e:
+        logging.warning(f"Не удалось загрузить скидку: {e}")
     await setup_bot_commands()
     asyncio.create_task(run_web())
     asyncio.create_task(send_daily_horoscope())

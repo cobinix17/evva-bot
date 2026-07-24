@@ -193,6 +193,29 @@ def rub_price(price_stars: int) -> int:
 
 PREMIUM_PRICE_RUB = rub_price(PREMIUM_PRICE)  # 399⭐ → 640₽
 
+# ─── АКЦИЯ / СКИДКА НА РАЗБОРЫ ────────────────────────────────────────────────
+# Глобальный процент скидки на ВСЕ разборы (не на премиум). 0 = акции нет.
+# Хранится в БД (app_settings), при старте бот загружает значение сюда через
+# set_discount() — держим в памяти процесса, чтобы синхронно читать из
+# keyboards.py (там нет async). Меняется админом командой /discount.
+_DISCOUNT_PERCENT = 0
+
+def set_discount(percent: int) -> None:
+    global _DISCOUNT_PERCENT
+    _DISCOUNT_PERCENT = max(0, min(90, int(percent)))
+
+def get_discount() -> int:
+    return _DISCOUNT_PERCENT
+
+def price_of(key: str, default: int = 49) -> int:
+    """Актуальная цена разбора в звёздах С УЧЁТОМ действующей скидки.
+    Используется везде вместо PRICES.get(key) — и в показе, и в оплате,
+    чтобы витрина и списание всегда совпадали."""
+    base = PRICES.get(key, default)
+    if _DISCOUNT_PERCENT:
+        return max(1, round(base * (100 - _DISCOUNT_PERCENT) / 100))
+    return base
+
 RAZBOR_DESCRIPTIONS = {
     "matrix_full":   "Полная картина личности: характер, таланты, деньги, любовь, карма и предназначение в одном разборе.",
     "finance":       "Когда ждать рост доходов, какие источники сработают и чего избегать в деньгах.",

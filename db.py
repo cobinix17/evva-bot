@@ -158,6 +158,14 @@ async def init_db(database_url: str):
             created_at  TIMESTAMP DEFAULT NOW()
         )
     ''')
+    # Простое key-value хранилище настроек (скидка/акция и т.п.) — переживает
+    # рестарты Railway, в отличие от переменных в памяти процесса.
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
     for col, definition in [
         ("first_name",    "TEXT"),
         ("notifications", "BOOLEAN DEFAULT TRUE"),
@@ -257,6 +265,17 @@ async def set_gender(user_id: int, gender: str):
     """Пол для обращений: 'f' (по умолчанию) или 'm'. Отдельный setter, как
     set_email — чтобы save_user из вебхуков/старых флоу не затирал значение."""
     await db_pool.execute('UPDATE users SET gender = $1 WHERE user_id = $2', gender, user_id)
+
+async def get_setting(key: str, default: str | None = None) -> str | None:
+    row = await db_pool.fetchval('SELECT value FROM app_settings WHERE key = $1', key)
+    return row if row is not None else default
+
+async def set_setting(key: str, value: str):
+    await db_pool.execute(
+        '''INSERT INTO app_settings (key, value) VALUES ($1, $2)
+           ON CONFLICT (key) DO UPDATE SET value = $2''',
+        key, value
+    )
 
 def is_male(user: dict) -> bool:
     """Мужское обращение. NULL/отсутствие колонки = женское (основная аудитория,

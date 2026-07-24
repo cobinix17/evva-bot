@@ -23,7 +23,7 @@ from config import (
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, YESNO_FREE_LIMIT,
-    PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price,
+    PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price, price_of,
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny, normalize_date
 from keyboards import date_choice_menu
@@ -336,8 +336,8 @@ async def api_catalog(request: web.Request) -> web.Response:
                 {
                     "key":       k,
                     "title":     TITLES.get(k, k),
-                    "price":     PRICES.get(k, 49),
-                    "price_rub": rub_price(PRICES.get(k, 49)) if YOOKASSA_SHOP_ID else None,
+                    "price":     price_of(k, 49),
+                    "price_rub": rub_price(price_of(k, 49)) if YOOKASSA_SHOP_ID else None,
                     "desc":      RAZBOR_DESCRIPTIONS.get(k, ""),
                 }
                 for k in items
@@ -359,7 +359,7 @@ async def api_buy(request: web.Request) -> web.Response:
     user = await db.get_user(user_id)
     if key in user.get("purchased", []):
         return web.json_response({"already_purchased": True})
-    price = PRICES.get(key, 49)
+    price = price_of(key, 49)
     title = PAID_RAZBORY[key]
     desc  = RAZBOR_DESCRIPTIONS.get(key, title)
     link = await _bot.create_invoice_link(
@@ -406,7 +406,7 @@ async def api_buy_rub(request: web.Request) -> web.Response:
             return _json_error("unknown reading", 404)
         if key in user.get("purchased", []):
             return web.json_response({"already_purchased": True})
-        payload, price_rub = key, rub_price(PRICES.get(key, 49))
+        payload, price_rub = key, rub_price(price_of(key, 49))
         title = PAID_RAZBORY[key]
         desc  = RAZBOR_DESCRIPTIONS.get(key, title)
 
@@ -578,7 +578,7 @@ async def api_balance_buy(request: web.Request) -> web.Response:
     if key in user.get("purchased", []):
         return web.json_response({"already_purchased": True})
 
-    price = PRICES.get(key, 49)
+    price = price_of(key, 49)
     # Замок на юзера (см. db.user_lock): двойной клик по кнопке иначе прошёл бы
     # обе проверки «не куплено» и списал бы баланс дважды за один разбор.
     async with db.user_lock(user_id):
@@ -684,8 +684,8 @@ async def api_destiny_matrix(request: web.Request) -> web.Response:
     return web.json_response({
         "matrix":     matrix,
         "owned":      "matrix_full" in user.get("purchased", []),
-        "price":      PRICES.get("matrix_full", 149),
-        "price_rub":  rub_price(PRICES.get("matrix_full", 149)) if YOOKASSA_SHOP_ID else None,
+        "price":      price_of("matrix_full", 149),
+        "price_rub":  rub_price(price_of("matrix_full", 149)) if YOOKASSA_SHOP_ID else None,
     })
 
 async def api_psychomatrix(request: web.Request) -> web.Response:
@@ -704,8 +704,8 @@ async def api_psychomatrix(request: web.Request) -> web.Response:
         "cells":     view["cells"],
         "lines":     view["lines"],
         "owned":     "psychomatrix" in user.get("purchased", []),
-        "price":     PRICES.get("psychomatrix", 99),
-        "price_rub": rub_price(PRICES.get("psychomatrix", 99)) if YOOKASSA_SHOP_ID else None,
+        "price":     price_of("psychomatrix", 99),
+        "price_rub": rub_price(price_of("psychomatrix", 99)) if YOOKASSA_SHOP_ID else None,
     })
 
 async def api_yesno(request: web.Request) -> web.Response:
