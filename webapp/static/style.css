@@ -207,6 +207,13 @@ h1,h2,h3,.pin-n,.card .big,.ref-stat-n,.destiny-line{
 .item.owned{ border-color:rgba(127,191,127,.35); }
 .item.owned .item-p{ color:#5fa85f; }
 :root[data-theme="dark"] .item.owned .item-p{ color:#7fd17f; }
+.price-old{ text-decoration:line-through; opacity:.5; font-weight:400; margin-right:2px; }
+.sale-banner{
+  font-family:'Head',serif; font-weight:600; font-size:14px; text-align:center;
+  color:#fff; background:linear-gradient(135deg,#e0563f,#c8342b);
+  padding:10px 14px; border-radius:12px; margin-bottom:14px;
+  box-shadow:0 4px 14px rgba(200,52,43,.35);
+}
 
 .empty{ text-align:center; color:var(--accent); padding:70px 24px; font-size:14px; line-height:1.6; }
 

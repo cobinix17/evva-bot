@@ -1367,8 +1367,12 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
         price_rub = rub_price(price) if YOOKASSA_SHOP_ID else None
         if balance >= price or price_rub:
             price_line = f"{price} ⭐" + (f" / {price_rub}₽" if price_rub else "")
+            base = config.PRICES.get(key, 49)
+            disc_note = ""
+            if config.get_discount() and base != price:
+                disc_note = f"\n🔥 Акция −{config.get_discount()}%: было {base} ⭐"
             await callback.message.answer(
-                f"«{title}» — {price_line}.\n\nКак оплатить?",
+                f"«{title}» — {price_line}.{disc_note}\n\nКак оплатить?",
                 reply_markup=payment_choice_menu(key, price, price_rub, balance)
             )
         else:

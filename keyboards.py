@@ -175,6 +175,19 @@ def free_choose_menu() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def _price_line(key: str, show_rub: bool = True) -> str:
+    """Строка цены для кнопки. Если включена акция — показываем новую цену
+    и старую в скобках: «44 ⭐ (было 49)». В кнопках Telegram нет зачёркивания,
+    поэтому «было» — самый честный способ показать скидку прямо в тексте."""
+    price = price_of(key, 49)
+    base  = PRICES.get(key, 49)
+    line  = f"{price} ⭐"
+    if show_rub and YOOKASSA_SHOP_ID:
+        line += f" / {rub_price(price)}₽"
+    if get_discount() and base != price:
+        line += f" (было {base})"
+    return line
+
 def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool = False) -> InlineKeyboardMarkup:
     """Строит меню раздела из (ключ, 'эмодзи Название'), а цену берёт
     ЖИВЬЁМ из config.PRICES — раньше цена дублировалась текстом в каждом
@@ -186,10 +199,7 @@ def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool 
     buttons   = []
     for key, emoji_title in keys_with_emoji:
         prefix = ("✅ " if key in purchased else "") if not gift else ""
-        price  = price_of(key, 49)
-        price_line = f"{price} ⭐"
-        if YOOKASSA_SHOP_ID and not gift:
-            price_line += f" / {rub_price(price)}₽"
+        price_line = _price_line(key, show_rub=not gift)
         buttons.append([InlineKeyboardButton(
             text=f"{prefix}{emoji_title} — {price_line}",
             callback_data=f"{prefix_cb}{key}"
@@ -289,8 +299,7 @@ def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
     for s in suggestions:
         if s not in user.get("purchased", []):
             title = TITLES.get(s, s)
-            price = price_of(s, 49)
-            price_line = f"{price} ⭐" + (f" / {rub_price(price)}₽" if YOOKASSA_SHOP_ID else "")
+            price_line = _price_line(s)
             buttons.append([InlineKeyboardButton(
                 text=f"{title} — {price_line}",
                 callback_data=f"buy_{s}"

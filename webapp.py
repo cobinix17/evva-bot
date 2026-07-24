@@ -23,7 +23,7 @@ from config import (
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, YESNO_FREE_LIMIT,
-    PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price, price_of,
+    PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price, price_of, get_discount,
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny, normalize_date
 from keyboards import date_choice_menu
@@ -337,13 +337,15 @@ async def api_catalog(request: web.Request) -> web.Response:
                     "key":       k,
                     "title":     TITLES.get(k, k),
                     "price":     price_of(k, 49),
+                    "base":      PRICES.get(k, 49),
                     "price_rub": rub_price(price_of(k, 49)) if YOOKASSA_SHOP_ID else None,
                     "desc":      RAZBOR_DESCRIPTIONS.get(k, ""),
                 }
                 for k in items
             ],
         })
-    return web.json_response({"sections": sections, "yookassa": bool(YOOKASSA_SHOP_ID)})
+    return web.json_response({"sections": sections, "yookassa": bool(YOOKASSA_SHOP_ID),
+                              "discount": get_discount()})
 
 async def api_buy(request: web.Request) -> web.Response:
     """Создаёт invoice-ссылку на разбор — фронт открывает её через
@@ -685,6 +687,7 @@ async def api_destiny_matrix(request: web.Request) -> web.Response:
         "matrix":     matrix,
         "owned":      "matrix_full" in user.get("purchased", []),
         "price":      price_of("matrix_full", 149),
+        "base":       PRICES.get("matrix_full", 149),
         "price_rub":  rub_price(price_of("matrix_full", 149)) if YOOKASSA_SHOP_ID else None,
     })
 
@@ -705,6 +708,7 @@ async def api_psychomatrix(request: web.Request) -> web.Response:
         "lines":     view["lines"],
         "owned":     "psychomatrix" in user.get("purchased", []),
         "price":     price_of("psychomatrix", 99),
+        "base":      PRICES.get("psychomatrix", 99),
         "price_rub": rub_price(price_of("psychomatrix", 99)) if YOOKASSA_SHOP_ID else None,
     })
 
