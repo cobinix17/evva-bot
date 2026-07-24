@@ -181,11 +181,11 @@ def _price_line(key: str, show_rub: bool = True) -> str:
     поэтому «было» — самый честный способ показать скидку прямо в тексте."""
     price = price_of(key, 49)
     base  = PRICES.get(key, 49)
-    line  = f"{price} ⭐"
-    if show_rub and YOOKASSA_SHOP_ID:
-        line += f" / {rub_price(price)}₽"
+    rub   = show_rub and YOOKASSA_SHOP_ID
+    line  = f"{price} ⭐" + (f" / {rub_price(price)}₽" if rub else "")
     if get_discount() and base != price:
-        line += f" (было {base})"
+        old = f"{base} ⭐" + (f" / {rub_price(base)}₽" if rub else "")
+        line += f" (было {old})"
     return line
 
 def _section_menu(keys_with_emoji: list[tuple[str, str]], user=None, gift: bool = False) -> InlineKeyboardMarkup:

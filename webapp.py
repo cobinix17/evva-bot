@@ -339,6 +339,7 @@ async def api_catalog(request: web.Request) -> web.Response:
                     "price":     price_of(k, 49),
                     "base":      PRICES.get(k, 49),
                     "price_rub": rub_price(price_of(k, 49)) if YOOKASSA_SHOP_ID else None,
+                    "base_rub":  rub_price(PRICES.get(k, 49)) if YOOKASSA_SHOP_ID else None,
                     "desc":      RAZBOR_DESCRIPTIONS.get(k, ""),
                 }
                 for k in items
@@ -689,6 +690,7 @@ async def api_destiny_matrix(request: web.Request) -> web.Response:
         "price":      price_of("matrix_full", 149),
         "base":       PRICES.get("matrix_full", 149),
         "price_rub":  rub_price(price_of("matrix_full", 149)) if YOOKASSA_SHOP_ID else None,
+        "base_rub":   rub_price(PRICES.get("matrix_full", 149)) if YOOKASSA_SHOP_ID else None,
     })
 
 async def api_psychomatrix(request: web.Request) -> web.Response:
@@ -710,6 +712,7 @@ async def api_psychomatrix(request: web.Request) -> web.Response:
         "price":     price_of("psychomatrix", 99),
         "base":      PRICES.get("psychomatrix", 99),
         "price_rub": rub_price(price_of("psychomatrix", 99)) if YOOKASSA_SHOP_ID else None,
+        "base_rub":  rub_price(PRICES.get("psychomatrix", 99)) if YOOKASSA_SHOP_ID else None,
     })
 
 async def api_yesno(request: web.Request) -> web.Response:

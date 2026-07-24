@@ -1370,7 +1370,8 @@ async def buy_handler(callback: CallbackQuery, state: FSMContext):
             base = config.PRICES.get(key, 49)
             disc_note = ""
             if config.get_discount() and base != price:
-                disc_note = f"\n🔥 Акция −{config.get_discount()}%: было {base} ⭐"
+                old = f"{base} ⭐" + (f" / {rub_price(base)}₽" if price_rub else "")
+                disc_note = f"\n🔥 Акция −{config.get_discount()}%: было {old}"
             await callback.message.answer(
                 f"«{title}» — {price_line}.{disc_note}\n\nКак оплатить?",
                 reply_markup=payment_choice_menu(key, price, price_rub, balance)

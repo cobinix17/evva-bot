@@ -319,7 +319,7 @@ async function openDestinyMatrix() {
     _matrixOpen = null;
     const cta = r.owned
       ? `<button id="mx-open-reading">📖 Открыть полный разбор</button>`
-      : `<button id="mx-buy">🔮 Полное толкование матрицы — ${priceHtml(r)}${r.price_rub ? ` / ${r.price_rub}₽` : ""}</button>`;
+      : `<button id="mx-buy">🔮 Полное толкование матрицы — ${priceHtml(r, true)}</button>`;
     app.innerHTML = `
       <button class="back-btn" id="mx-back">← Назад</button>
       <div class="topbar"><div class="eyebrow">Матрица судьбы</div><h1>🔷 Твои арканы</h1></div>
@@ -398,7 +398,7 @@ async function openPsychomatrix() {
     ).join("");
     const cta = r.owned
       ? `<button id="psy-open-reading">📖 Открыть полный психопортрет</button>`
-      : `<button id="psy-buy">🔲 Подробный психопортрет — ${priceHtml(r)}${r.price_rub ? ` / ${r.price_rub}₽` : ""}</button>`;
+      : `<button id="psy-buy">🔲 Подробный психопортрет — ${priceHtml(r, true)}</button>`;
     app.innerHTML = `
       <button class="back-btn" id="psy-back">← Назад</button>
       <div class="topbar"><div class="eyebrow">Квадрат Пифагора</div><h1>🔲 Твой характер по цифрам</h1></div>
@@ -566,10 +566,16 @@ async function submitBirthdate() {
 
 // ── каталог ──────────────────────────────────────────────────────────────────
 // Цена с учётом акции: если действует скидка — новая цена, а старая зачёркнута.
-function priceHtml(it) {
-  if (it.base && it.base !== it.price)
-    return `<span class="price-old">${it.base}</span> ${it.price} ⭐`;
-  return `${it.price} ⭐`;
+// withRub=true добавляет рублёвую цену (тоже со старой зачёркнутой).
+function priceHtml(it, withRub) {
+  const sale = it.base && it.base !== it.price;
+  let s = sale ? `<span class="price-old">${it.base} ⭐</span> ${it.price} ⭐` : `${it.price} ⭐`;
+  if (withRub && it.price_rub) {
+    s += " / " + (sale && it.base_rub
+      ? `<span class="price-old">${it.base_rub}₽</span> ${it.price_rub}₽`
+      : `${it.price_rub}₽`);
+  }
+  return s;
 }
 
 function renderCatalog() {
@@ -735,8 +741,7 @@ function renderPayScreen(key) {
   if (!item) { buyWithStars(key); return; }
   const balance = ME.ref_balance || 0;
   const rub     = item.price_rub;
-  const oldPrice = (item.base && item.base !== item.price) ? `<span class="price-old">${item.base} ⭐</span> ` : "";
-  const priceLine = `${oldPrice}${item.price} ⭐${rub ? ` / ${rub}₽` : ""}`;
+  const priceLine = priceHtml(item, true);
   const emailVal = ME.email ? escapeHtml(ME.email) : "";
   let btns = "";
   if (balance >= item.price)
