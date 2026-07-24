@@ -30,7 +30,6 @@ from config import (
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT, YESNO_FREE_LIMIT,
-    PREMIUM_PRICE_INCREASE, PREMIUM_PRICE_INCREASE_DATE,
     YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE,
 )
 from ai import ask_ai, is_rude, rude_reply, bolden_headers
@@ -2084,9 +2083,6 @@ _PREMIUM_OFFER = (
     f"✨ До {PREMIUM_MONTHLY_LIMIT} разборов в месяц без покупки поштучно "
     f"(до {PREMIUM_DAILY_LIMIT} новых в день, открытые — сколько угодно раз)\n"
     "⚡ Приоритетная генерация — без очереди в часы пика\n\n"
-    f"⏳ С {PREMIUM_PRICE_INCREASE_DATE} цена для новых подписчиков станет "
-    f"{PREMIUM_PRICE_INCREASE} ⭐/мес. Оформи сейчас за {PREMIUM_PRICE} ⭐ — и эта цена "
-    "останется твоей навсегда, даже после повышения.\n\n"
     "Списывается раз в месяц автоматически, отменить можно в любой момент "
     "в настройках Telegram. Оформляется звёздами 👇"
 )
