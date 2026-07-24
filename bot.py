@@ -36,6 +36,7 @@ from ai import ask_ai, is_rude, rude_reply, bolden_headers
 from pdf import generate_pdf
 from generation import (
     premium_gen_semaphore, generate_single, generate_compat, generate_name, _generating,
+    RegenLimitReached,
 )
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date, normalize_date,
@@ -625,6 +626,17 @@ async def cancel_cmd(message: Message, state: FSMContext):
 _MENU_BACK_MARKUP = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")]
 ])
+
+def _regen_limit_text(limit: int, user: dict | None = None) -> str:
+    """Сообщение при исчерпании дневного лимита разборов на другие даты.
+    Уже сделанные разборы остаются доступны — важно сказать это прямо,
+    чтобы лимит не читался как «у меня всё пропало»."""
+    did = "сделал" if (user and db.is_male(user)) else "сделала"
+    return (
+        f"🌙 На сегодня ты уже {did} {limit} разбора на другие даты — это дневной лимит.\n\n"
+        "Все твои разборы никуда не делись, они открыты в «Мои разборы». "
+        "Новые даты можно будет посмотреть завтра ✨"
+    )
 
 async def _apply_promo(message: Message, code: str):
     code = code.strip().upper()
@@ -1755,6 +1767,12 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         await db.save_user(user_id, user)
         await message.answer(upsell_text, reply_markup=kb)
         await state.clear()
+    except RegenLimitReached as e:
+        await stop_intermediate()
+        user["waiting"] = None
+        await db.save_user(user_id, user)
+        await message.answer(_regen_limit_text(e.limit, user), reply_markup=_MENU_BACK_MARKUP)
+        await state.clear()
     except Exception as e:
         await stop_intermediate()
         logging.error(f"Date handler error [{waiting}]: {e}", exc_info=True)
@@ -1867,6 +1885,15 @@ async def handle_business_name(message: Message, state: FSMContext):
         user["waiting"] = None
         await db.save_user(user_id, user)
         await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("business_name", user))
+        await state.clear()
+    except RegenLimitReached as e:
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        user["waiting"] = None
+        await db.save_user(user_id, user)
+        await message.answer(_regen_limit_text(e.limit, user), reply_markup=_MENU_BACK_MARKUP)
         await state.clear()
     except Exception as e:
         logging.error(f"business_name error: {e}", exc_info=True)
@@ -1990,6 +2017,12 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
             user["free_used"] = True
         await db.save_user(user_id, user)
         await message.answer(upsell_text, reply_markup=kb)
+        await state.clear()
+    except RegenLimitReached as e:
+        await stop_intermediate()
+        user["waiting"] = None
+        await db.save_user(user_id, user)
+        await message.answer(_regen_limit_text(e.limit, user), reply_markup=_MENU_BACK_MARKUP)
         await state.clear()
     except Exception as e:
         await stop_intermediate()

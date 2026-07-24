@@ -470,7 +470,9 @@ async def api_reading_generate(request: web.Request) -> web.Response:
     except Exception:
         body = {}
 
-    from generation import generate_single, generate_compat, generate_name, GenerationBusy
+    from generation import (
+        generate_single, generate_compat, generate_name, GenerationBusy, RegenLimitReached,
+    )
     try:
         if key in TWO_DATE_KEYS:
             date1 = normalize_date(body.get("date1") or "")
@@ -498,6 +500,11 @@ async def api_reading_generate(request: web.Request) -> web.Response:
             title, text, from_cache = await generate_single(user_id, user, key, date_str)
     except GenerationBusy:
         return _json_error("Разбор уже готовится — подожди пару секунд 🔮", 409)
+    except RegenLimitReached as e:
+        return _json_error(
+            f"На сегодня уже {e.limit} разбора на другие даты — это дневной лимит. "
+            "Твои разборы остаются открыты, новые даты — завтра 🌙", 429
+        )
     except Exception as e:
         logging.error(f"web reading generate error [{key}]: {e}", exc_info=True)
         return _json_error("Не удалось составить разбор — попробуй ещё раз чуть позже 🙏", 500)

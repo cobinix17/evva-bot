@@ -14,7 +14,7 @@ from datetime import datetime
 
 import db
 from readings import PROMPTS
-from config import TITLES
+from config import TITLES, REGEN_DAILY_LIMIT, REGEN_DAILY_LIMIT_PREMIUM
 from numerology import (
     build_numerology_context, build_name_context, calculate_destiny,
     calculate_personal_year, calculate_personal_month, build_psychomatrix_context,
@@ -173,6 +173,30 @@ class GenerationBusy(Exception):
     """У этого пользователя уже идёт генерация — второй запуск отклонён."""
 
 
+class RegenLimitReached(Exception):
+    """Исчерпан дневной лимит повторных генераций на другую дату.
+    limit — сколько всего доступно в сутки (для текста сообщения)."""
+    def __init__(self, limit: int):
+        self.limit = limit
+        super().__init__(f"regen limit {limit}")
+
+
+def _regen_limit(user: dict) -> int:
+    return REGEN_DAILY_LIMIT_PREMIUM if db.is_premium(user) else REGEN_DAILY_LIMIT
+
+
+async def _consume_regen(user_id: int, user: dict, key: str) -> bool:
+    """Пытается списать одну повторную генерацию. Возвращает True, если
+    списание было (значит при ошибке ИИ его надо вернуть). Первая генерация
+    разбора лимит не трогает — она уже оплачена покупкой."""
+    if not await db.has_reading(user_id, key):
+        return False
+    limit = _regen_limit(user)
+    if not await db.regen_try_consume(user_id, limit):
+        raise RegenLimitReached(limit)
+    return True
+
+
 def _default_name(user: dict) -> str:
     return user.get("first_name") or ("дорогой" if db.is_male(user) else "дорогая")
 
@@ -205,17 +229,23 @@ async def generate_single(user_id: int, user: dict, key: str, date_str: str,
     try:
         name  = subject_name or _default_name(user)
         title = TITLES.get(key, "🔮 Разбор")
-        cached = await db.get_reading_text(user_id, key)
-        if cached and cached.get("date_str") == date_str:
+        cached = await db.get_reading_text(user_id, key, date_str)
+        if cached:
             return title, cached["text"], True
+        spent = await _consume_regen(user_id, user, key)
         context = build_numerology_context(name, date_str)
         # Психопортрет по квадрату Пифагора: дописываем в контекст готовую
         # раскладку психоматрицы, чтобы ИИ объяснял реальные цифры, а не гадал.
         if key == "psychomatrix":
             context += "\n\n" + build_psychomatrix_context(date_str)
         prompt  = _gender_note(user) + build_prompt(key, name=name, context=context, date=date_str)
-        async with premium_gen_semaphore(user):
-            answer = await ask_ai(prompt)
+        try:
+            async with premium_gen_semaphore(user):
+                answer = await ask_ai(prompt)
+        except Exception:
+            if spent:
+                await db.refund_regen_try(user_id)
+            raise
         await db.save_reading_text(user_id, key, title, answer, date_str)
         return title, answer, False
     finally:
@@ -232,14 +262,20 @@ async def generate_name(user_id: int, user: dict, key: str, subject: str) -> tup
     _generating.add(user_id)
     try:
         title = TITLES.get(key, "🔮 Разбор")
-        cached = await db.get_reading_text(user_id, key)
-        if cached and cached.get("date_str") == subject:
+        cached = await db.get_reading_text(user_id, key, subject)
+        if cached:
             return title, cached["text"], True
+        spent   = await _consume_regen(user_id, user, key)
         name    = _default_name(user)
         context = build_name_context(subject)
         prompt  = _gender_note(user) + build_prompt(key, name=name, subject=subject, context=context)
-        async with premium_gen_semaphore(user):
-            answer = await ask_ai(prompt)
+        try:
+            async with premium_gen_semaphore(user):
+                answer = await ask_ai(prompt)
+        except Exception:
+            if spent:
+                await db.refund_regen_try(user_id)
+            raise
         await db.save_reading_text(user_id, key, title, answer, subject)
         return title, answer, False
     finally:
@@ -278,14 +314,20 @@ async def generate_compat(user_id: int, user: dict, date1: str, date2: str, key:
         name  = _default_name(user)
         title = TITLES.get(key, "💑 Совместимость")
         compat_date_str = f"{date1},{date2}"
-        cached = await db.get_reading_text(user_id, key)
-        if cached and cached.get("date_str") == compat_date_str:
+        cached = await db.get_reading_text(user_id, key, compat_date_str)
+        if cached:
             return title, cached["text"], True
+        spent = await _consume_regen(user_id, user, key)
         n2 = calculate_destiny(date2)
         context = build_numerology_context(name, date1)
         prompt  = _gender_note(user) + build_prompt(key, name=name, context=context, date1=date1, date2=date2, n2=n2)
-        async with premium_gen_semaphore(user):
-            answer = await ask_ai(prompt)
+        try:
+            async with premium_gen_semaphore(user):
+                answer = await ask_ai(prompt)
+        except Exception:
+            if spent:
+                await db.refund_regen_try(user_id)
+            raise
         await db.save_reading_text(user_id, key, title, answer, compat_date_str)
         return title, answer, False
     finally:

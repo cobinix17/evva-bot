@@ -117,6 +117,40 @@ async def init_db(database_url: str):
     await db_pool.execute('''
         ALTER TABLE generated_readings ADD COLUMN IF NOT EXISTS date_str TEXT
     ''')
+    # Раньше ключом было (user_id, razbor_key), поэтому разбор на ДРУГУЮ дату
+    # затирал уже купленный: человек смотрел дату подруги и терял свой разбор
+    # навсегда. Дата входит в ключ — тексты на разные даты живут параллельно.
+    # date_str NOT NULL обязателен для первичного ключа, старые NULL → ''.
+    try:
+        await db_pool.execute("UPDATE generated_readings SET date_str = '' WHERE date_str IS NULL")
+        await db_pool.execute("ALTER TABLE generated_readings ALTER COLUMN date_str SET DEFAULT ''")
+        await db_pool.execute("ALTER TABLE generated_readings ALTER COLUMN date_str SET NOT NULL")
+        pk = await db_pool.fetchval('''
+            SELECT conname FROM pg_constraint
+            WHERE conrelid = 'generated_readings'::regclass AND contype = 'p'
+        ''')
+        # Меняем ключ только если он ещё старый (две колонки вместо трёх).
+        cols = await db_pool.fetchval('''
+            SELECT COUNT(*) FROM pg_constraint c
+            JOIN unnest(c.conkey) AS k ON TRUE
+            WHERE c.conrelid = 'generated_readings'::regclass AND c.contype = 'p'
+        ''')
+        if pk and cols == 2:
+            await db_pool.execute(f'ALTER TABLE generated_readings DROP CONSTRAINT "{pk}"')
+            await db_pool.execute(
+                'ALTER TABLE generated_readings '
+                'ADD PRIMARY KEY (user_id, razbor_key, date_str)'
+            )
+            logging.info("generated_readings: ключ расширен датой — разборы больше не затираются")
+    except Exception as e:
+        logging.warning(f"миграция ключа generated_readings не выполнена: {e}")
+    try:
+        await db_pool.execute(
+            "CREATE INDEX IF NOT EXISTS generated_readings_recent_idx "
+            "ON generated_readings (user_id, razbor_key, updated_at DESC)"
+        )
+    except Exception as e:
+        logging.warning(f"generated_readings_recent_idx не создан: {e}")
     await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS feedback (
             id         SERIAL PRIMARY KEY,
@@ -184,6 +218,8 @@ async def init_db(database_url: str):
         ("created_at",    "TIMESTAMP DEFAULT NOW()"),
         ("last_spin_date", "DATE"),
         ("gender",        "TEXT"),
+        ("regen_day",       "DATE"),
+        ("regen_day_count", "INTEGER DEFAULT 0"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -621,6 +657,46 @@ async def ask_try_consume(user_id: int, daily_limit: int) -> bool:
     )
     return row is not None
 
+async def regen_try_consume(user_id: int, daily_limit: int) -> bool:
+    """Атомарно списывает одну ПОВТОРНУЮ генерацию разбора (на другую дату).
+    Первая генерация после покупки лимит не трогает — она уже оплачена.
+
+    Без этого лимита купивший один разбор за 49 ⭐ мог гонять генерацию
+    бесконечно, подставляя новые даты: каждый прогон — полный запрос к ИИ,
+    так что счёт за токены рос, а выручка нет. Тот же неделимый
+    UPDATE-с-guard, что и в ask_try_consume."""
+    today = utc_now().date()
+    row = await db_pool.fetchrow(
+        '''
+        UPDATE users SET
+            regen_day_count = CASE WHEN regen_day = $2 THEN regen_day_count + 1 ELSE 1 END,
+            regen_day       = $2
+        WHERE user_id = $1
+          AND NOT (regen_day = $2 AND regen_day_count >= $3)
+        RETURNING regen_day_count
+        ''',
+        user_id, today, daily_limit
+    )
+    return row is not None
+
+async def refund_regen_try(user_id: int):
+    """Возвращает списанную регенерацию, если ИИ так и не отдал текст."""
+    today = utc_now().date()
+    await db_pool.execute(
+        '''UPDATE users SET regen_day_count = GREATEST(regen_day_count - 1, 0)
+           WHERE user_id = $1 AND regen_day = $2''',
+        user_id, today
+    )
+
+async def regen_left(user_id: int, daily_limit: int) -> int:
+    """Сколько повторных генераций осталось сегодня (для текста подсказки)."""
+    row = await db_pool.fetchrow(
+        'SELECT regen_day, regen_day_count FROM users WHERE user_id = $1', user_id
+    )
+    if not row or row['regen_day'] != utc_now().date():
+        return daily_limit
+    return max(0, daily_limit - (row['regen_day_count'] or 0))
+
 async def refund_ask_try(user_id: int):
     """Возвращает списанный вопрос дневного лимита, если генерация не удалась —
     чтобы сбой AI-провайдера не сжигал лимит пользователя впустую."""
@@ -682,21 +758,51 @@ async def save_reading_text(user_id: int, razbor_key: str, title: str, text: str
     напрямую, не отправляя пользователя каждый раз в чат с ботом, и чтобы
     повторный запрос того же разбора на ТУ ЖЕ дату не порождал новый
     (потенциально противоречивый) текст. date_str — дата(ы), с которой
-    сгенерирован текст; при генерации на другую дату запись перезаписывается."""
+    сгенерирован текст. Дата входит в ключ: разбор на ДРУГУЮ дату сохраняется
+    отдельной записью и не затирает уже сделанный (раньше затирал — человек
+    смотрел дату подруги и терял свой купленный разбор)."""
     await db_pool.execute(
         '''INSERT INTO generated_readings (user_id, razbor_key, title, text, date_str)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (user_id, razbor_key) DO UPDATE
-               SET title = $3, text = $4, date_str = $5, updated_at = NOW()''',
+           VALUES ($1, $2, $3, $4, COALESCE($5, ''))
+           ON CONFLICT (user_id, razbor_key, date_str) DO UPDATE
+               SET title = $3, text = $4, updated_at = NOW()''',
         user_id, razbor_key, title, text, date_str
     )
 
-async def get_reading_text(user_id: int, razbor_key: str) -> dict | None:
+async def get_reading_text(user_id: int, razbor_key: str, date_str: str | None = None) -> dict | None:
+    """Сохранённый текст разбора. date_str=None — самый свежий по этому
+    разбору (так работают все экраны «показать мой разбор»); с датой —
+    ровно та версия, если она уже генерировалась (кэш в generation.py)."""
+    if date_str is not None:
+        row = await db_pool.fetchrow(
+            'SELECT title, text, date_str, updated_at FROM generated_readings '
+            'WHERE user_id = $1 AND razbor_key = $2 AND date_str = $3',
+            user_id, razbor_key, date_str
+        )
+        return dict(row) if row else None
     row = await db_pool.fetchrow(
-        'SELECT title, text, date_str, updated_at FROM generated_readings WHERE user_id = $1 AND razbor_key = $2',
+        'SELECT title, text, date_str, updated_at FROM generated_readings '
+        'WHERE user_id = $1 AND razbor_key = $2 ORDER BY updated_at DESC LIMIT 1',
         user_id, razbor_key
     )
     return dict(row) if row else None
+
+async def has_reading(user_id: int, razbor_key: str) -> bool:
+    """Есть ли у юзера хоть один готовый текст этого разбора. По этому признаку
+    отличаем первую (уже оплаченную) генерацию от повторной на другую дату."""
+    return await db_pool.fetchval(
+        'SELECT 1 FROM generated_readings WHERE user_id = $1 AND razbor_key = $2 LIMIT 1',
+        user_id, razbor_key
+    ) is not None
+
+async def list_reading_dates(user_id: int, razbor_key: str) -> list[dict]:
+    """Все даты, на которые юзер уже делал этот разбор — свежие сверху."""
+    rows = await db_pool.fetch(
+        'SELECT date_str, updated_at FROM generated_readings '
+        'WHERE user_id = $1 AND razbor_key = $2 ORDER BY updated_at DESC',
+        user_id, razbor_key
+    )
+    return [dict(r) for r in rows]
 
 async def get_reading_texts(user_id: int, keys: list[str]) -> dict[str, dict]:
     """Пакетно достаёт тексты нескольких разборов одним запросом (вместо N
@@ -704,22 +810,29 @@ async def get_reading_texts(user_id: int, keys: list[str]) -> dict[str, dict]:
     {razbor_key: {title, text, date_str}}."""
     if not keys:
         return {}
+    # DISTINCT ON — по каждому разбору берём только самую свежую версию:
+    # с тех пор как дата входит в ключ, строк на один razbor_key может быть
+    # несколько (разбор на себя, на подругу и т.д.).
     rows = await db_pool.fetch(
-        'SELECT razbor_key, title, text, date_str FROM generated_readings '
-        'WHERE user_id = $1 AND razbor_key = ANY($2)',
+        'SELECT DISTINCT ON (razbor_key) razbor_key, title, text, date_str '
+        'FROM generated_readings WHERE user_id = $1 AND razbor_key = ANY($2) '
+        'ORDER BY razbor_key, updated_at DESC',
         user_id, keys
     )
     return {r["razbor_key"]: dict(r) for r in rows}
 
 async def get_all_reading_texts(user_id: int) -> list[dict]:
     """Все сохранённые разборы пользователя (для «Спроси Еву» как памяти о том,
-    что уже разбирали). Свежие сверху."""
+    что уже разбирали). Свежие сверху. По одному (самому свежему) тексту на
+    разбор — иначе после генерации на другую дату Ева получала бы в память
+    несколько версий одного разбора и путалась в них."""
     rows = await db_pool.fetch(
-        'SELECT razbor_key, title, text, date_str, updated_at FROM generated_readings '
-        'WHERE user_id = $1 ORDER BY updated_at DESC',
+        'SELECT DISTINCT ON (razbor_key) razbor_key, title, text, date_str, updated_at '
+        'FROM generated_readings WHERE user_id = $1 '
+        'ORDER BY razbor_key, updated_at DESC',
         user_id
     )
-    return [dict(r) for r in rows]
+    return sorted((dict(r) for r in rows), key=lambda r: r["updated_at"], reverse=True)
 
 async def add_feedback(user_id: int, text: str, category: str = "idea") -> int:
     return await db_pool.fetchval(
