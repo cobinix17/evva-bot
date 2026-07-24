@@ -192,6 +192,11 @@ async def init_db(database_url: str):
     for col, definition in [
         ("max_uses",   "INTEGER DEFAULT 1"),
         ("uses_count", "INTEGER DEFAULT 0"),
+        # FALSE (по умолчанию) — публичный промокод: КАЖДЫЙ юзер может
+        # активировать его лишь один раз, пока не кончится общий лимит.
+        # TRUE — личный/тестовый: один и тот же человек может активировать
+        # повторно (так админ выдаёт доступ своему второму аккаунту).
+        ("multi_per_user", "BOOLEAN DEFAULT FALSE"),
     ]:
         try:
             await db_pool.execute(f"ALTER TABLE coupons ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -201,6 +206,47 @@ async def init_db(database_url: str):
         await db_pool.execute("ALTER TABLE coupons DROP COLUMN IF EXISTS used_by")
     except Exception:
         pass
+    # once=TRUE помечает активацию публичного промокода. Частичный уникальный
+    # индекс именно по таким строкам не даёт одному юзеру активировать
+    # публичный код дважды даже при гонке из двух параллельных запросов,
+    # а активациям личных кодов (once=FALSE) повторяться не мешает.
+    try:
+        await db_pool.execute("ALTER TABLE coupon_uses ADD COLUMN IF NOT EXISTS once BOOLEAN DEFAULT TRUE")
+    except Exception:
+        pass
+    # В базе, созданной ДО появления режимов, один юзер мог активировать код
+    # несколько раз — такие дубли не дали бы создать уникальный индекс. Не
+    # удаляем историю, а помечаем все повторы кроме первого как once=FALSE:
+    # индекс после этого строится, а старые активации остаются видны в статистике.
+    try:
+        await db_pool.execute('''
+            UPDATE coupon_uses SET once = FALSE
+            WHERE once AND id NOT IN (
+                SELECT MIN(id) FROM coupon_uses GROUP BY code, user_id
+            )
+        ''')
+    except Exception as e:
+        logging.warning(f"дедупликация coupon_uses не выполнена: {e}")
+    try:
+        await db_pool.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS coupon_uses_once_uniq "
+            "ON coupon_uses (code, user_id) WHERE once"
+        )
+    except Exception as e:
+        # Даже если индекс почему-то не создался, защиту держит явная
+        # проверка в use_coupon — она не зависит от наличия индекса.
+        logging.warning(f"coupon_uses_once_uniq не создан: {e}")
+    # Индексы под запросы, которые иначе сканируют таблицу целиком.
+    for idx, ddl in [
+        ("referrals_referrer_idx",  "CREATE INDEX IF NOT EXISTS referrals_referrer_idx ON referrals (referrer_id)"),
+        ("ref_bonuses_user_idx",    "CREATE INDEX IF NOT EXISTS ref_bonuses_user_idx ON ref_bonuses (user_id)"),
+        ("coupon_uses_code_idx",    "CREATE INDEX IF NOT EXISTS coupon_uses_code_idx ON coupon_uses (code)"),
+        ("payments_user_idx",       "CREATE INDEX IF NOT EXISTS payments_user_idx ON payments (user_id)"),
+    ]:
+        try:
+            await db_pool.execute(ddl)
+        except Exception as e:
+            logging.warning(f"Индекс {idx} не создан: {e}")
 
 # ─── ПОЛЬЗОВАТЕЛИ ────────────────────────────────────────────────────────────
 async def user_exists(user_id: int) -> bool:
@@ -329,12 +375,14 @@ async def mark_yookassa_payment(payment_id: str, user_id: int, payload: str, amo
     return result == "INSERT 0 1"
 
 # ─── КУПОНЫ ──────────────────────────────────────────────────────────────────
-async def create_coupon(code: str, max_uses: int = 1) -> str:
+async def create_coupon(code: str, max_uses: int = 1, multi_per_user: bool = False) -> str:
+    """multi_per_user=False — публичный код (каждому по одной активации),
+    True — личный/тестовый (один человек может активировать много раз)."""
     expires = utc_now() + timedelta(hours=48)
     try:
         await db_pool.execute(
-            'INSERT INTO coupons (code, expires_at, max_uses) VALUES ($1, $2, $3)',
-            code.upper(), expires, max_uses
+            'INSERT INTO coupons (code, expires_at, max_uses, multi_per_user) VALUES ($1, $2, $3, $4)',
+            code.upper(), expires, max_uses, multi_per_user
         )
         return 'ok'
     except asyncpg.UniqueViolationError:
@@ -344,25 +392,64 @@ async def create_coupon(code: str, max_uses: int = 1) -> str:
         return 'error'
 
 async def use_coupon(code: str, user_id: int) -> str:
-    row = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code.upper())
+    """Активирует промокод. Два режима (см. coupons.multi_per_user):
+
+    • публичный (multi_per_user = FALSE) — каждый юзер активирует код ровно
+      один раз, общий лимит max_uses делится между разными людьми. Раньше
+      этого ограничения не было, и один человек мог выгрести весь купон;
+    • личный/тестовый (multi_per_user = TRUE) — один и тот же человек может
+      активировать повторно, пока не кончится max_uses (так админ выдаёт
+      доступ своему второму аккаунту).
+
+    Возвращает 'ok' | 'not_found' | 'expired' | 'limit' | 'used'."""
+    code = code.upper()
+    row = await db_pool.fetchrow('SELECT * FROM coupons WHERE code = $1', code)
     if not row:
         return 'not_found'
     if row['expires_at'] and row['expires_at'] < utc_now():
         return 'expired'
-    if row['uses_count'] >= row['max_uses']:
-        return 'limit'
+    once = not row.get('multi_per_user')
+
+    if once:
+        # Явная проверка — работает даже если уникальный индекс не создался
+        # (старая база с дублями), поэтому не полагаемся только на ON CONFLICT.
+        already = await db_pool.fetchval(
+            'SELECT 1 FROM coupon_uses WHERE code = $1 AND user_id = $2 AND once',
+            code, user_id
+        )
+        if already:
+            return 'used'
+        # «Занимаем» активацию за юзером. Уникальный частичный индекс делает
+        # это неделимым: параллельный повтор не вставится и получит 'used'.
+        claimed = await db_pool.execute(
+            '''INSERT INTO coupon_uses (code, user_id, once) VALUES ($1, $2, TRUE)
+               ON CONFLICT DO NOTHING''',
+            code, user_id
+        )
+        if claimed != "INSERT 0 1":
+            return 'used'
+
     updated = await db_pool.fetchval(
         '''UPDATE coupons SET uses_count = uses_count + 1
            WHERE code = $1 AND uses_count < max_uses
            RETURNING uses_count''',
-        code.upper()
+        code
     )
     if updated is None:
+        if once:
+            # Лимит кода исчерпан — снимаем только что занятую активацию,
+            # иначе юзер остался бы «использовавшим» код, ничего не получив.
+            await db_pool.execute(
+                'DELETE FROM coupon_uses WHERE code = $1 AND user_id = $2 AND once',
+                code, user_id
+            )
         return 'limit'
-    await db_pool.execute(
-        'INSERT INTO coupon_uses (code, user_id) VALUES ($1, $2)',
-        code.upper(), user_id
-    )
+
+    if not once:
+        await db_pool.execute(
+            'INSERT INTO coupon_uses (code, user_id, once) VALUES ($1, $2, FALSE)',
+            code, user_id
+        )
     return 'ok'
 
 # ─── РЕФЕРАЛЫ ────────────────────────────────────────────────────────────────

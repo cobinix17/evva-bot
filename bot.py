@@ -681,21 +681,28 @@ async def coupon_cmd(message: Message, state: FSMContext):
         await message.answer(
             "Использование:\n"
             "/coupon КОД — создать на 1 использование\n"
-            "/coupon КОД 20 — создать на 20 использований\n\n"
-            "Один код можно вводить /promo несколько раз — каждый выбранный "
-            "разбор спишет одно использование, пока не закончится лимит.\n\n"
+            "/coupon КОД 20 — создать на 20 использований\n"
+            "/coupon КОД 50 multi — личный код (см. ниже)\n\n"
+            "👥 Обычный код: каждый юзер активирует его ОДИН раз, лимит "
+            "делится между разными людьми — так публичный промокод не "
+            "выгребет один человек.\n"
+            "🔁 Личный код (multi): один и тот же человек может активировать "
+            "код много раз, пока не кончится лимит — для второго аккаунта "
+            "и тестов.\n\n"
             "Пример: /coupon FRIEND20 20"
         )
         return
     code     = parts[1].upper()
+    multi    = any(p.lower() in ("multi", "личный", "тест") for p in parts[2:])
+    rest     = [p for p in parts[2:] if p.lower() not in ("multi", "личный", "тест")]
     max_uses = 1
-    if len(parts) >= 3:
+    if rest:
         try:
-            max_uses = max(1, int(parts[2]))
+            max_uses = max(1, int(rest[0]))
         except ValueError:
             await message.answer("❌ Число использований должно быть целым числом.\nПример: /coupon FRIEND20 20")
             return
-    result = await db.create_coupon(code, max_uses)
+    result = await db.create_coupon(code, max_uses, multi_per_user=multi)
     if result == 'ok':
         expires  = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
         uses_str = f"{max_uses} раз" if max_uses > 1 else "1 раз"
@@ -703,6 +710,7 @@ async def coupon_cmd(message: Message, state: FSMContext):
             f"✅ Промокод создан!\n\n"
             f"Код: <code>{code}</code>\n"
             f"Лимит использований: {uses_str}\n"
+            f"Режим: {'🔁 личный — один человек может активировать много раз' if multi else '👥 обычный — каждый юзер активирует один раз'}\n"
             f"Действует до: {expires}\n\n"
             f"Юзер вводит: /promo {code} — и выбирает разборы из списка, "
             f"пока не закончится лимит.",
@@ -859,7 +867,12 @@ async def admin_coupon_create_cb(callback: CallbackQuery, state: FSMContext):
         "🎟 Создание купона\n\n"
         "Напиши код и количество использований через пробел:\n"
         "Пример: FRIEND20 10\n\n"
-        "Если без числа — создам на 1 использование.\nДля отмены — /cancel"
+        "Если без числа — создам на 1 использование.\n\n"
+        "📌 Режимы:\n"
+        "• обычный — каждый юзер активирует код ОДИН раз (для канала/рекламы)\n"
+        "• личный — допиши слово multi в конце, тогда один человек сможет "
+        "активировать код много раз (для своего второго аккаунта и тестов)\n"
+        "Пример: TEST 50 multi\n\nДля отмены — /cancel"
     )
     await callback.answer()
 
@@ -871,6 +884,9 @@ async def handle_coupon_input(message: Message, state: FSMContext):
     if not parts:
         await message.answer("❌ Введи код купона.")
         return
+    # Ключевое слово multi в любом месте — личный/тестовый режим.
+    multi = any(p.lower() in ("multi", "личный", "тест") for p in parts[1:])
+    parts = [p for p in parts if p.lower() not in ("multi", "личный", "тест")]
     code     = parts[0].upper()
     max_uses = 1
     if len(parts) >= 2:
@@ -879,13 +895,17 @@ async def handle_coupon_input(message: Message, state: FSMContext):
         except ValueError:
             await message.answer("❌ Второй параметр должен быть числом. Пример: FRIEND20 10")
             return
-    result = await db.create_coupon(code, max_uses)
+    result = await db.create_coupon(code, max_uses, multi_per_user=multi)
     await state.clear()
     if result == 'ok':
         expires  = (utc_now() + timedelta(hours=48)).strftime("%d.%m.%Y %H:%M")
         uses_str = f"{max_uses} раз" if max_uses > 1 else "1 раз"
+        mode_str = ("🔁 личный — один человек может активировать много раз"
+                    if multi else
+                    "👥 обычный — каждый юзер активирует один раз")
         await message.answer(
-            f"✅ Купон создан!\n\nКод: {code}\nЛимит: {uses_str}\nДействует до: {expires}\n\n"
+            f"✅ Купон создан!\n\nКод: {code}\nЛимит: {uses_str}\nРежим: {mode_str}\n"
+            f"Действует до: {expires}\n\n"
             f"Пользователь вводит: /promo {code}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="admin_panel")]
@@ -903,7 +923,8 @@ async def admin_coupon_list_cb(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
     rows = await db.db_pool.fetch(
-        'SELECT code, uses_count, max_uses, expires_at FROM coupons ORDER BY expires_at DESC LIMIT 20'
+        'SELECT code, uses_count, max_uses, expires_at, multi_per_user '
+        'FROM coupons ORDER BY expires_at DESC LIMIT 20'
     )
     if not rows:
         await callback.message.answer("Купонов пока нет.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -915,7 +936,9 @@ async def admin_coupon_list_cb(callback: CallbackQuery):
     for r in rows:
         exp = r['expires_at'].strftime("%d.%m %H:%M") if r['expires_at'] else "∞"
         status = "✅" if r['uses_count'] < r['max_uses'] else "❌"
-        lines.append(f"{status} {r['code']} — {r['uses_count']}/{r['max_uses']} исп. до {exp}")
+        mode   = "🔁" if r['multi_per_user'] else "👥"
+        lines.append(f"{status} {mode} {r['code']} — {r['uses_count']}/{r['max_uses']} исп. до {exp}")
+    lines.append("\n👥 каждому по одной активации · 🔁 личный (много раз одному)")
     await callback.message.answer(
         "\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1127,6 +1150,13 @@ async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
             return
         if result == 'limit':
             await callback.answer("❌ Лимит этого промокода исчерпан.", show_alert=True)
+            return
+        if result == 'used':
+            used_verb = "активировал" if db.is_male(user) else "активировала"
+            await callback.answer(
+                f"❌ Ты уже {used_verb} этот промокод — он даётся один раз в руки.",
+                show_alert=True
+            )
             return
         user["purchased"].append(key)
         user["waiting"] = key

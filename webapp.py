@@ -294,6 +294,8 @@ async def api_promo_redeem(request: web.Request) -> web.Response:
         return _json_error("Промокод истёк")
     if result == "limit":
         return _json_error("Лимит промокода исчерпан")
+    if result == "used":
+        return _json_error("Ты уже активировала этот промокод — он даётся один раз в руки")
 
     user["purchased"].append(key)
     user["waiting"] = key
