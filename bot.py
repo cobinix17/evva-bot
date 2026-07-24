@@ -2743,6 +2743,51 @@ async def discount_cmd(message: Message, state: FSMContext):
     else:
         await message.answer("✅ Акция выключена — цены вернулись к обычным.")
 
+def _discount_menu() -> InlineKeyboardMarkup:
+    cur = config.get_discount()
+    def _lbl(p: int) -> str:
+        base = f"−{p}%" if p else "Выключить"
+        return ("✅ " + base) if p == cur else base
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=_lbl(10), callback_data="admin_disc_10"),
+         InlineKeyboardButton(text=_lbl(20), callback_data="admin_disc_20"),
+         InlineKeyboardButton(text=_lbl(30), callback_data="admin_disc_30")],
+        [InlineKeyboardButton(text=_lbl(40), callback_data="admin_disc_40"),
+         InlineKeyboardButton(text=_lbl(50), callback_data="admin_disc_50"),
+         InlineKeyboardButton(text=_lbl(0),  callback_data="admin_disc_0")],
+        [InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="admin_panel")],
+    ])
+
+@dp.callback_query(F.data == "admin_discount")
+async def admin_discount_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    cur = config.get_discount()
+    status = f"🔥 Сейчас активна акция −{cur}%" if cur else "Акция выключена (обычные цены)"
+    await callback.message.answer(
+        f"🔥 Акция / скидка на все разборы\n\n{status}\n\n"
+        "Выбери размер скидки — применится сразу к меню, апселлам и оплате. "
+        "Тонкую настройку можно задать командой /discount 35.",
+        reply_markup=_discount_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("admin_disc_"))
+async def admin_disc_set_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    pct = max(0, min(90, int(callback.data.rsplit("_", 1)[1])))
+    config.set_discount(pct)
+    await db.set_setting("discount_percent", str(pct))
+    if pct:
+        await callback.answer(f"🔥 Акция −{pct}% включена", show_alert=False)
+    else:
+        await callback.answer("✅ Акция выключена", show_alert=False)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=_discount_menu())
+    except Exception:
+        pass
+
 @dp.message(Command("profile"), StateFilter("*"))
 async def profile_cmd(message: Message, state: FSMContext):
     await state.clear()
