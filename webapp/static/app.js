@@ -36,6 +36,9 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+const CHANNEL_URL         = "https://t.me/eva_numerologg";
+const REVIEWS_CHANNEL_URL = "https://t.me/eva_numerolog_otz";
+
 const app = document.getElementById("app");
 const tabbar = document.getElementById("tabbar");
 let ME = null;
@@ -1002,6 +1005,14 @@ function renderMore() {
     </div>
 
     <div class="onboard">
+      <div class="section-t" style="margin-bottom:10px">Каналы Евы</div>
+      <p>Прогнозы и разборы — в основном канале. Живые отзывы тех,
+         кто уже разбирался, — в отдельном.</p>
+      <button id="ch-main-btn" style="margin-top:10px">📢 Наш канал</button>
+      <button id="ch-rev-btn" style="margin-top:8px">💬 Отзывы о Еве</button>
+    </div>
+
+    <div class="onboard">
       <div class="section-t" style="margin-bottom:10px">Промокод</div>
       <div id="promo-block">
         <input id="promo-code-input" placeholder="КОД" maxlength="20" style="text-transform:uppercase">
@@ -1141,6 +1152,11 @@ function render() {
     app.innerHTML = renderMore();
     loadReferralBlock();
     document.getElementById("notif-toggle").addEventListener("change", toggleNotifications);
+    // openTelegramLink открывает канал внутри Telegram, не выкидывая в браузер.
+    document.getElementById("ch-main-btn")?.addEventListener("click",
+      () => tg?.openTelegramLink(CHANNEL_URL));
+    document.getElementById("ch-rev-btn")?.addEventListener("click",
+      () => tg?.openTelegramLink(REVIEWS_CHANNEL_URL));
     document.getElementById("promo-check-btn").addEventListener("click", checkPromo);
     document.getElementById("feedback-idea-btn").addEventListener("click", () => chooseFeedbackCategory("idea"));
     document.getElementById("feedback-bug-btn").addEventListener("click", () => chooseFeedbackCategory("bug"));

@@ -9,6 +9,20 @@ from config import (
 
 CONTACT_URL = "https://t.me/eva_numer"
 CHANNEL_URL = "https://t.me/eva_numerologg"
+# Канал с отзывами: главный аргумент доверия для новых людей — держим ссылку
+# на виду, а не только в тексте «опубликую в канале».
+REVIEWS_CHANNEL_URL = "https://t.me/eva_numerolog_otz"
+
+def reviews_channel_button() -> InlineKeyboardButton:
+    return InlineKeyboardButton(text="💬 Отзывы о Еве", url=REVIEWS_CHANNEL_URL)
+
+def review_sent_menu() -> InlineKeyboardMarkup:
+    """После отправки/публикации отзыва — раньше здесь был тупик: человек
+    написал отзыв и оставался в чате без единой кнопки."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [reviews_channel_button()],
+        [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")],
+    ])
 
 def check_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -87,6 +101,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         text="📢 Наш канал",
         url=CHANNEL_URL
     )])
+    buttons.append([reviews_channel_button()])
     buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы",
         url=CONTACT_URL

@@ -50,7 +50,7 @@ from keyboards import (
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
     notif_off_menu, admin_menu, balance_pay_menu, payment_choice_menu,
-    redate_offer_menu,
+    redate_offer_menu, review_sent_menu, reviews_channel_button,
     premium_subscribe_menu, premium_active_menu, gift_sections_menu, profile_menu,
 )
 
@@ -474,6 +474,8 @@ async def start(message: Message, state: FSMContext):
             "• Здоровье, энергия и интуиция\n"
             "• Прошлые жизни, родовой код, прогноз на 3 года\n\n"
             "Всё это по твоей дате рождения — точно и личностно 🌸\n\n"
+            "💬 Что пишут те, кто уже сделал разбор — в канале с отзывами "
+            f"{REVIEWS_CHANNEL}\n\n"
             f"Подпишись на {CHANNEL} и получи бесплатный разбор на выбор 👇",
             reply_markup=check_menu()
         )
@@ -2238,10 +2240,15 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Отзыв можно оставить только после покупки!", show_alert=True)
         return
     if key in user.get("reviews_left", []):
-        await callback.answer("Ты уже оставила отзыв по этому разбору 💫", show_alert=True)
+        left_verb = "оставил" if db.is_male(user) else "оставила"
+        await callback.answer(f"Ты уже {left_verb} отзыв по этому разбору 💫", show_alert=True)
         return
     await state.update_data(review_key=key)
-    await callback.message.answer("💬 Напиши свой отзыв — опубликую его в канале!")
+    await callback.message.answer(
+        "💬 Напиши свой отзыв — опубликую его в нашем канале с отзывами.\n\n"
+        "Загляни, как выглядят отзывы других 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[reviews_channel_button()]])
+    )
     await state.set_state(Form.waiting_review)
     await callback.answer()
 
@@ -2287,7 +2294,11 @@ async def handle_review(message: Message, state: FSMContext):
         )
     except Exception as e:
         logging.error(f"Review moderation notify error: {e}")
-    await message.answer("✅ Спасибо! Твой отзыв отправлен на проверку и скоро появится в канале 💫")
+    await message.answer(
+        "✅ Спасибо! Твой отзыв отправлен на проверку и скоро появится "
+        f"в канале {REVIEWS_CHANNEL} 💫",
+        reply_markup=review_sent_menu()
+    )
 
 @dp.callback_query(F.data.startswith("revmod_"))
 async def review_moderation_cb(callback: CallbackQuery):
@@ -2307,7 +2318,13 @@ async def review_moderation_cb(callback: CallbackQuery):
     if action == "ok":
         try:
             await bot.send_message(REVIEWS_CHANNEL, review["review_text"])
-            await bot.send_message(review["user_id"], "🎉 Твой отзыв одобрен и опубликован в канале!")
+            author = await db.get_user(review["user_id"])
+            shared = "поделился" if db.is_male(author) else "поделилась"
+            await bot.send_message(
+                review["user_id"],
+                f"🎉 Твой отзыв одобрен и опубликован — спасибо, что {shared} 🌸",
+                reply_markup=review_sent_menu()
+            )
         except Exception as e:
             logging.error(f"Review publish error: {e}")
         await callback.message.edit_text(callback.message.text + "\n\n✅ ОДОБРЕНО")
