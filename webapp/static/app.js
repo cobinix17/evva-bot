@@ -24,7 +24,15 @@ async function api(path, opts = {}) {
   const headers = { "X-Telegram-Init-Data": initData, ...(opts.headers || {}) };
   if (opts.body) headers["Content-Type"] = "application/json";
   const res = await fetch(path, { ...opts, headers });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body.error || res.statusText);
+    // Тело ответа кладём на ошибку целиком: часть отказов несёт данные для UI
+    // (например code:"redate_required" — предложение купить разбор на другую дату).
+    err.body = body;
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 
@@ -685,8 +693,49 @@ async function generateReading(key) {
     await boot();               // подтянуть обновлённую дату рождения/каталог
     renderReadingResult(key, r.title, r.text);
   } catch (e) {
+    if (e.body && e.body.code === "redate_required") {
+      renderRedateOffer(e.body);
+      return;
+    }
     tg?.showAlert(e.message || "Не удалось составить разбор");
     renderReadingDateForm(key, true);
+  }
+}
+
+// Оплаченная дата по этому разбору уже использована — предлагаем разбор для
+// другого человека как НОВУЮ возможность (со скидкой), а не как отказ.
+function renderRedateOffer(o) {
+  const title = (CATALOG && findCatalogItem(o.key)?.title) || "Разбор";
+  const line  = `${o.price} ⭐${o.price_rub ? ` / ${o.price_rub}₽` : ""}`;
+  app.innerHTML = `
+    <button class="back-btn" id="rdo-back">← Назад</button>
+    <div class="onboard">
+      <div class="eyebrow">💞 Разбор для близкого человека</div>
+      <h2>${escapeHtml(title)}</h2>
+      <p>Твой разбор готов и всегда доступен в «Мои разборы».</p>
+      <p>Эта дата — уже другой человек, а значит и разбор другой: числа,
+         характер и судьба у него свои. Составлю так же подробно.</p>
+      <p style="margin-top:10px">
+        <span class="price-old">${o.full} ⭐</span>
+        <strong>${line}</strong> — со скидкой −${o.discount}%
+      </p>
+      <button id="rdo-buy">💞 Разобрать другого человека — ${line}</button>
+    </div>`;
+  document.getElementById("rdo-back").onclick = () => renderTab("readings");
+  document.getElementById("rdo-buy").onclick  = () => buyRedate(o.key);
+}
+
+async function buyRedate(key) {
+  try {
+    const res = await api(`/api/redate/${key}`, { method: "POST" });
+    tg.openInvoice(res.invoice_url, (status) => {
+      if (status === "paid") {
+        tg?.showAlert("Оплата прошла 🌸 Теперь введи дату рождения человека.");
+        boot().then(() => openReading(key));
+      }
+    });
+  } catch (e) {
+    tg?.showAlert(e.message || "Не удалось открыть оплату");
   }
 }
 

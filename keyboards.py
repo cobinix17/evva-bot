@@ -2,7 +2,10 @@
 # Зависит от config.py (TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS).
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_SHOP_ID, rub_price, price_of, get_discount
+from config import (
+    TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_SHOP_ID,
+    rub_price, price_of, get_discount, redate_price, REDATE_PREFIX, REDATE_DISCOUNT,
+)
 
 CONTACT_URL = "https://t.me/eva_numer"
 CHANNEL_URL = "https://t.me/eva_numerologg"
@@ -292,6 +295,18 @@ def my_readings_menu(user: dict) -> InlineKeyboardMarkup:
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def redate_offer_menu(key: str) -> InlineKeyboardMarkup:
+    """Предложение разобрать по этому же разбору ДРУГОГО человека.
+    Отдельная покупка со скидкой — подаём как новую возможность, а не как
+    упёршийся лимит."""
+    price = redate_price(key, 49)
+    line  = f"{price} ⭐" + (f" / {rub_price(price)}₽" if YOOKASSA_SHOP_ID else "")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💞 Разбор для близкого — {line}",
+                              callback_data=f"{REDATE_PREFIX}{key}")],
+        [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")],
+    ])
 
 def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
     buttons     = []

@@ -192,6 +192,30 @@ async def init_db(database_url: str):
             created_at  TIMESTAMP DEFAULT NOW()
         )
     ''')
+    # Сколько РАЗНЫХ дат человек вправе разобрать по каждому купленному разбору.
+    # Покупка даёт 1 слот (своя дата), разбор для другого человека — отдельная
+    # покупка со скидкой, которая добавляет ещё слот.
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS reading_credits (
+            user_id    BIGINT  NOT NULL,
+            razbor_key TEXT    NOT NULL,
+            credits    INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (user_id, razbor_key)
+        )
+    ''')
+    # Те, кто уже сделал несколько дат по старым правилам (когда это было
+    # бесплатно), не должны ничего потерять — выдаём слотов не меньше, чем
+    # у них уже есть готовых разборов.
+    try:
+        await db_pool.execute('''
+            INSERT INTO reading_credits (user_id, razbor_key, credits)
+            SELECT user_id, razbor_key, COUNT(*) FROM generated_readings
+            GROUP BY user_id, razbor_key
+            ON CONFLICT (user_id, razbor_key) DO UPDATE
+                SET credits = GREATEST(reading_credits.credits, EXCLUDED.credits)
+        ''')
+    except Exception as e:
+        logging.warning(f"перенос слотов дат не выполнен: {e}")
     # Простое key-value хранилище настроек (скидка/акция и т.п.) — переживает
     # рестарты Railway, в отличие от переменных в памяти процесса.
     await db_pool.execute('''
@@ -656,6 +680,51 @@ async def ask_try_consume(user_id: int, daily_limit: int) -> bool:
         user_id, today, daily_limit
     )
     return row is not None
+
+async def _reading_used(user_id: int, razbor_key: str) -> int:
+    return await db_pool.fetchval(
+        'SELECT COUNT(*) FROM generated_readings WHERE user_id = $1 AND razbor_key = $2',
+        user_id, razbor_key
+    ) or 0
+
+async def grant_reading_credit(user_id: int, razbor_key: str, n: int = 1):
+    """Даёт n РАБОЧИХ слотов дат: и при первой покупке, и при докупке «другой
+    даты». Отсчитываем от уже использованных дат, а не только от счётчика —
+    иначе человек, который сначала взял разбор бесплатно, а потом купил его,
+    заплатил бы и остался заблокирован (слот был бы уже занят)."""
+    used = await _reading_used(user_id, razbor_key)
+    await db_pool.execute(
+        '''INSERT INTO reading_credits (user_id, razbor_key, credits)
+           VALUES ($1, $2, $3::int + $4::int)
+           ON CONFLICT (user_id, razbor_key) DO UPDATE
+               SET credits = GREATEST(reading_credits.credits, $4::int) + $3::int''',
+        user_id, razbor_key, n, used
+    )
+
+async def ensure_reading_credit(user_id: int, razbor_key: str):
+    """Гарантирует ОДИН свободный слот — для способов получить разбор без
+    оплаты (купон, подарок, бесплатный первый, разблокировка премиумом).
+    В отличие от grant не копит слоты при повторных вызовах."""
+    used = await _reading_used(user_id, razbor_key)
+    await db_pool.execute(
+        '''INSERT INTO reading_credits (user_id, razbor_key, credits)
+           VALUES ($1, $2, $3::int + 1)
+           ON CONFLICT (user_id, razbor_key) DO UPDATE
+               SET credits = GREATEST(reading_credits.credits, $3::int + 1)''',
+        user_id, razbor_key, used
+    )
+
+async def reading_credit_status(user_id: int, razbor_key: str) -> tuple[int, int]:
+    """(сколько слотов дат есть, сколько уже занято готовыми разборами)."""
+    credits = await db_pool.fetchval(
+        'SELECT credits FROM reading_credits WHERE user_id = $1 AND razbor_key = $2',
+        user_id, razbor_key
+    ) or 0
+    used = await db_pool.fetchval(
+        'SELECT COUNT(*) FROM generated_readings WHERE user_id = $1 AND razbor_key = $2',
+        user_id, razbor_key
+    ) or 0
+    return credits, used
 
 async def regen_try_consume(user_id: int, daily_limit: int) -> bool:
     """Атомарно списывает одну ПОВТОРНУЮ генерацию разбора (на другую дату).

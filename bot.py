@@ -31,12 +31,13 @@ from config import (
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT, YESNO_FREE_LIMIT,
     YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE,
+    REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
 )
 from ai import ask_ai, is_rude, rude_reply, bolden_headers
 from pdf import generate_pdf
 from generation import (
     premium_gen_semaphore, generate_single, generate_compat, generate_name, _generating,
-    RegenLimitReached,
+    RegenLimitReached, DateCreditRequired,
 )
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date, normalize_date,
@@ -49,6 +50,7 @@ from keyboards import (
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
     notif_off_menu, admin_menu, balance_pay_menu, payment_choice_menu,
+    redate_offer_menu,
     premium_subscribe_menu, premium_active_menu, gift_sections_menu, profile_menu,
 )
 
@@ -507,6 +509,7 @@ async def start(message: Message, state: FSMContext):
             return
         if key not in user.get("purchased", []):
             user["purchased"].append(key)
+        await db.ensure_reading_credit(message.from_user.id, key)
         title = PAID_RAZBORY.get(key, "разбор")
         await message.answer(f"🎁 Тебе подарили «{title}»! Забираем 🌸")
         await _resume_purchased_from_start(message, state, user, key)
@@ -626,6 +629,21 @@ async def cancel_cmd(message: Message, state: FSMContext):
 _MENU_BACK_MARKUP = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")]
 ])
+
+def _redate_offer_text(key: str) -> str:
+    """Показывается, когда оплаченная дата по разбору уже использована.
+    Формулируем как предложение нового разбора, а не как упёршийся лимит:
+    человек не «потерял доступ», а может посмотреть ещё одного человека."""
+    price = redate_price(key, 49)
+    full  = config.price_of(key, 49)
+    line  = f"{price} ⭐" + (f" / {rub_price(price)}₽" if YOOKASSA_SHOP_ID else "")
+    return (
+        f"💞 Разбор для другого человека\n\n"
+        f"Твой «{TITLES.get(key, 'разбор')}» уже готов и всегда доступен в «Мои разборы».\n\n"
+        f"Эта дата — уже другой человек, а значит и разбор другой: числа, "
+        f"характер, судьба у него свои. Могу составить его так же подробно.\n\n"
+        f"Для тебя со скидкой −{REDATE_DISCOUNT}%: {line} вместо {full} ⭐ 👇"
+    )
 
 def _regen_limit_text(limit: int, user: dict | None = None) -> str:
     """Сообщение при исчерпании дневного лимита разборов на другие даты.
@@ -1173,6 +1191,7 @@ async def coupon_razboy_handler(callback: CallbackQuery, state: FSMContext):
         user["purchased"].append(key)
         user["waiting"] = key
         await db.save_user(callback.from_user.id, user)
+        await db.ensure_reading_credit(callback.from_user.id, key)
         remaining = await db.coupon_remaining(code)
         await callback.answer(f"✅ Добавлено! Осталось использований промокода: {remaining}")
 
@@ -1357,6 +1376,42 @@ async def _start_date_flow(message: Message, state: FSMContext, user: dict, key:
         await _ask_date(message, user, key=key)
         await state.set_state(Form.waiting_free_date if is_free else Form.waiting_date)
 
+async def _start_redate_flow(message: Message, state: FSMContext, user: dict, key: str):
+    """Переход к вводу даты после ДОКУПКИ разбора для другого человека.
+    В отличие от _start_date_flow не предлагает «для себя» — этот слот
+    покупали именно чтобы посмотреть кого-то ещё."""
+    if key in TWO_DATE_KEYS:
+        await message.answer("💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998")
+        await state.set_state(Form.waiting_second_date)
+    elif key == "business_name":
+        await message.answer("💼 Введи название бизнеса, бренда или проекта:\nНапример: Ромашка, EvaShop")
+        await state.set_state(Form.waiting_business_name)
+    else:
+        await message.answer(
+            "📅 Введи дату рождения человека, которого разбираем, в формате ДД.ММ.ГГГГ\n"
+            "Например: 15.03.1995"
+        )
+        await state.set_state(Form.waiting_date)
+
+async def _redate_ref_bonus(user: dict, user_id: int, amount: int, key: str):
+    """Реферальный бонус с докупки даты — та же логика, что и с обычной покупки."""
+    referrer_id = user.get("referred_by")
+    if not referrer_id:
+        return
+    bonus = max(1, round(amount * REF_BONUS_PERCENT / 100))
+    try:
+        await db.add_ref_bonus(referrer_id, user_id, bonus, key)
+        buyer_name  = user.get("first_name") or ("Друг" if db.is_male(user) else "Подруга")
+        bought_verb = "купил" if db.is_male(user) else "купила"
+        await bot.send_message(
+            referrer_id,
+            f"🎉 +{bonus} ⭐ на твой баланс!\n\n"
+            f"{buyer_name} {bought_verb} «{TITLES.get(key, 'разбор')}» по твоей реферальной ссылке.\n"
+            f"Проверить баланс: /balance"
+        )
+    except Exception as e:
+        logging.warning(f"Ref bonus error (redate) for referrer {referrer_id}: {e}")
+
 async def _resume_already_purchased(callback: CallbackQuery, state: FSMContext, user: dict, key: str):
     user["waiting"] = key
     await db.save_user(callback.from_user.id, user)
@@ -1389,6 +1444,7 @@ async def _premium_unlock(callback: CallbackQuery, state: FSMContext, user: dict
     user["purchased"].append(key)
     user["waiting"] = key
     await db.save_user(callback.from_user.id, user)
+    await db.ensure_reading_credit(callback.from_user.id, key)
     await callback.answer("💎 Открыто по подписке")
     await _start_date_flow(callback.message, state, user, key)
     return True
@@ -1483,6 +1539,88 @@ async def stars_buy_handler(callback: CallbackQuery, state: FSMContext):
         await send_invoice(callback.message.chat.id, title, desc, key, price)
     await callback.answer()
 
+# ─── РАЗБОР ДЛЯ ДРУГОГО ЧЕЛОВЕКА (докупка слота даты) ────────────────────────
+# Отдельная ветка оплаты: payload = redate_<key>, чтобы successful_payment и
+# вебхук ЮKassa начислили СЛОТ ДАТЫ, а не выдали разбор заново.
+def _redate_pay_menu(key: str, price: int, price_rub: int | None, balance: int) -> InlineKeyboardMarkup:
+    rows = []
+    if balance >= price:
+        rows.append([InlineKeyboardButton(text=f"⭐ Оплатить балансом ({price} ⭐)", callback_data=f"rdbal_{key}")])
+    rows.append([InlineKeyboardButton(text=f"⭐ {price} звёзд Telegram", callback_data=f"rdstars_{key}")])
+    if price_rub:
+        rows.append([InlineKeyboardButton(text=f"💳 Картой — {price_rub}₽", callback_data=f"rdcard_{key}")])
+        rows.append([InlineKeyboardButton(text=f"📱 СБП / QR — {price_rub}₽", callback_data=f"rdsbp_{key}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def _redate_title(key: str) -> str:
+    return f"{TITLES.get(key, 'Разбор')} — для близкого человека"
+
+@dp.callback_query(F.data.startswith(REDATE_PREFIX))
+async def redate_start_cb(callback: CallbackQuery, state: FSMContext):
+    key = callback.data.removeprefix(REDATE_PREFIX)
+    if key not in PAID_RAZBORY:
+        await callback.answer()
+        return
+    user      = await db.get_user(callback.from_user.id)
+    price     = redate_price(key, 49)
+    full      = config.price_of(key, 49)
+    price_rub = rub_price(price) if YOOKASSA_SHOP_ID else None
+    balance   = user.get("ref_balance", 0)
+    line = f"{price} ⭐" + (f" / {price_rub}₽" if price_rub else "")
+    await callback.message.answer(
+        f"💞 «{TITLES.get(key, 'Разбор')}» для другого человека\n\n"
+        f"Тот же разбор, но по дате рождения того, кого хочешь посмотреть — "
+        f"партнёра, ребёнка, подругу.\n\n"
+        f"Цена со скидкой −{REDATE_DISCOUNT}%: {line} (обычно {full} ⭐)\n\n"
+        f"Как оплатить?",
+        reply_markup=_redate_pay_menu(key, price, price_rub, balance)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("rdstars_"))
+async def redate_stars_cb(callback: CallbackQuery):
+    key = callback.data.removeprefix("rdstars_")
+    if key in PAID_RAZBORY:
+        await send_invoice(
+            callback.message.chat.id, _redate_title(key),
+            "Тот же разбор по дате рождения другого человека.",
+            f"{REDATE_PREFIX}{key}", redate_price(key, 49)
+        )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("rdcard_") | F.data.startswith("rdsbp_"))
+async def redate_rub_cb(callback: CallbackQuery, state: FSMContext):
+    if callback.data.startswith("rdcard_"):
+        key, method = callback.data.removeprefix("rdcard_"), "bank_card"
+    else:
+        key, method = callback.data.removeprefix("rdsbp_"), "sbp"
+    if key in PAID_RAZBORY and YOOKASSA_SHOP_ID:
+        await _pay_rub(
+            callback, state, f"{REDATE_PREFIX}{key}",
+            rub_price(redate_price(key, 49)), _redate_title(key),
+            "Тот же разбор по дате рождения другого человека.", method=method
+        )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("rdbal_"))
+async def redate_balance_cb(callback: CallbackQuery, state: FSMContext):
+    key = callback.data.removeprefix("rdbal_")
+    if key not in PAID_RAZBORY:
+        await callback.answer()
+        return
+    price = redate_price(key, 49)
+    async with db.user_lock(callback.from_user.id):
+        if not await db.spend_balance(callback.from_user.id, price):
+            await callback.answer("❌ На балансе не хватает звёзд — /balance", show_alert=True)
+            return
+        await db.grant_reading_credit(callback.from_user.id, key)
+        user = await db.get_user(callback.from_user.id)
+        user["waiting"] = key
+        await db.save_user(callback.from_user.id, user)
+    await callback.answer(f"✅ Оплачено балансом! Списано {price} ⭐")
+    await _start_redate_flow(callback.message, state, user, key)
+
 @dp.callback_query(F.data == "gift_start")
 async def gift_start_cb(callback: CallbackQuery):
     await callback.message.answer(
@@ -1549,6 +1687,7 @@ async def balance_buy_handler(callback: CallbackQuery, state: FSMContext):
         user["purchased"].append(key)
         user["waiting"] = key
         await db.save_user(callback.from_user.id, user)
+        await db.grant_reading_credit(callback.from_user.id, key)
     await callback.answer(f"✅ Оплачено балансом! Списано {price} ⭐")
     await _start_date_flow(callback.message, state, user, key)
 
@@ -1627,6 +1766,25 @@ async def successful_payment(message: Message, state: FSMContext):
         await state.clear()
         return
 
+    # ── РАЗБОР НА ДРУГУЮ ДАТУ (докупка слота со скидкой) ─────────────────
+    if payload.startswith(REDATE_PREFIX):
+        key = payload.removeprefix(REDATE_PREFIX)
+        if key not in PAID_RAZBORY:
+            logging.warning(f"redate payment с неизвестным key={key!r} от user {message.from_user.id}")
+            await message.answer("❌ Что-то пошло не так с оплатой — напиши в поддержку.", reply_markup=_MENU_BACK_MARKUP)
+            await state.clear()
+            return
+        await db.grant_reading_credit(message.from_user.id, key)
+        if key not in user["purchased"]:
+            user["purchased"].append(key)
+        user["waiting"] = key
+        await db.save_user(message.from_user.id, user)
+        await db.log_payment(message.from_user.id, key, amount, sp.currency)
+        await _redate_ref_bonus(user, message.from_user.id, amount, key)
+        await message.answer(f"✅ Оплата прошла! Теперь введи дату рождения человека, которого разбираем 🔮")
+        await _start_redate_flow(message, state, user, key)
+        return
+
     if payload not in PAID_RAZBORY:
         logging.warning(f"successful_payment с неизвестным payload={payload!r} от user {message.from_user.id}")
         await message.answer("❌ Что-то пошло не так с оплатой — напиши в поддержку.", reply_markup=_MENU_BACK_MARKUP)
@@ -1637,6 +1795,7 @@ async def successful_payment(message: Message, state: FSMContext):
         user["purchased"].append(payload)
     user["waiting"] = payload
     await db.save_user(message.from_user.id, user)
+    await db.grant_reading_credit(message.from_user.id, payload)
     await db.log_payment(message.from_user.id, payload, amount, sp.currency)
 
     # Начисляем реферальный бонус пригласившему
@@ -1699,6 +1858,11 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     if user_id in _generating:
         await message.answer("⏳ Твой разбор уже готовится — дождись его, пожалуйста 🔮")
         return
+
+    # Бесплатный разбор тоже занимает слот даты — иначе он бы не учитывался,
+    # и последующая покупка этого же разбора считала бы слот уже занятым.
+    if is_free:
+        await db.ensure_reading_credit(user_id, waiting)
 
     if not user.get("birth_date"):
         user["birth_date"]     = date_str
@@ -1766,6 +1930,12 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             user["free_used"] = True
         await db.save_user(user_id, user)
         await message.answer(upsell_text, reply_markup=kb)
+        await state.clear()
+    except DateCreditRequired as e:
+        await stop_intermediate()
+        user["waiting"] = None
+        await db.save_user(user_id, user)
+        await message.answer(_redate_offer_text(e.key), reply_markup=redate_offer_menu(e.key))
         await state.clear()
     except RegenLimitReached as e:
         await stop_intermediate()
@@ -1885,6 +2055,15 @@ async def handle_business_name(message: Message, state: FSMContext):
         user["waiting"] = None
         await db.save_user(user_id, user)
         await message.answer("✨ Тебе также может подойти 👇", reply_markup=upsell_menu("business_name", user))
+        await state.clear()
+    except DateCreditRequired as e:
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        user["waiting"] = None
+        await db.save_user(user_id, user)
+        await message.answer(_redate_offer_text(e.key), reply_markup=redate_offer_menu(e.key))
         await state.clear()
     except RegenLimitReached as e:
         try:
@@ -2017,6 +2196,12 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
             user["free_used"] = True
         await db.save_user(user_id, user)
         await message.answer(upsell_text, reply_markup=kb)
+        await state.clear()
+    except DateCreditRequired as e:
+        await stop_intermediate()
+        user["waiting"] = None
+        await db.save_user(user_id, user)
+        await message.answer(_redate_offer_text(e.key), reply_markup=redate_offer_menu(e.key))
         await state.clear()
     except RegenLimitReached as e:
         await stop_intermediate()

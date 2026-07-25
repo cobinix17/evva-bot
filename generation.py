@@ -181,16 +181,30 @@ class RegenLimitReached(Exception):
         super().__init__(f"regen limit {limit}")
 
 
+class DateCreditRequired(Exception):
+    """Все оплаченные слоты дат по этому разбору заняты — новая дата это
+    отдельная покупка (разбор для другого человека, со скидкой)."""
+    def __init__(self, key: str):
+        self.key = key
+        super().__init__(f"date credit required for {key}")
+
+
 def _regen_limit(user: dict) -> int:
     return REGEN_DAILY_LIMIT_PREMIUM if db.is_premium(user) else REGEN_DAILY_LIMIT
 
 
 async def _consume_regen(user_id: int, user: dict, key: str) -> bool:
-    """Пытается списать одну повторную генерацию. Возвращает True, если
-    списание было (значит при ошибке ИИ его надо вернуть). Первая генерация
-    разбора лимит не трогает — она уже оплачена покупкой."""
+    """Проверяет, вправе ли юзер сделать разбор на ЕЩЁ ОДНУ дату.
+
+    Один купленный разбор = одна дата. Слот на новую дату даёт отдельная
+    покупка со скидкой (см. config.redate_price). Дневной лимит поверх этого
+    остаётся страховкой от абьюза. Возвращает True, если дневной лимит был
+    списан — значит при ошибке ИИ его надо вернуть."""
     if not await db.has_reading(user_id, key):
-        return False
+        return False  # первая генерация — уже оплачена самой покупкой
+    credits, used = await db.reading_credit_status(user_id, key)
+    if used >= credits:
+        raise DateCreditRequired(key)
     limit = _regen_limit(user)
     if not await db.regen_try_consume(user_id, limit):
         raise RegenLimitReached(limit)

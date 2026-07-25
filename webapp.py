@@ -24,6 +24,7 @@ from config import (
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, YESNO_FREE_LIMIT,
     PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price, price_of, get_discount,
+    REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
 )
 from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny, normalize_date
 from keyboards import date_choice_menu
@@ -300,6 +301,7 @@ async def api_promo_redeem(request: web.Request) -> web.Response:
     user["purchased"].append(key)
     user["waiting"] = key
     await db.save_user(user_id, user)
+    await db.ensure_reading_credit(user_id, key)
 
     if not user.get("birth_date"):
         return web.json_response({"ok": True, "needs_birthdate": True})
@@ -370,6 +372,26 @@ async def api_buy(request: web.Request) -> web.Response:
     link = await _bot.create_invoice_link(
         title=title, description=desc, payload=key,
         currency="XTR", prices=[LabeledPrice(label=title, amount=price)],
+    )
+    return web.json_response({"invoice_url": link})
+
+async def api_redate(request: web.Request) -> web.Response:
+    """Invoice на разбор для ДРУГОГО человека — докупка слота даты со скидкой.
+    payload = redate_<key>, поэтому successful_payment в боте начислит слот,
+    а не выдаст разбор повторно."""
+    from aiogram.types import LabeledPrice
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    key = request.match_info["key"]
+    if key not in PAID_RAZBORY:
+        return _json_error("unknown reading", 404)
+    price = redate_price(key, 49)
+    title = f"{TITLES.get(key, 'Разбор')} — для близкого человека"
+    link  = await _bot.create_invoice_link(
+        title=title[:32], description="Тот же разбор по дате рождения другого человека.",
+        payload=f"{REDATE_PREFIX}{key}",
+        currency="XTR", prices=[LabeledPrice(label=title[:32], amount=price)],
     )
     return web.json_response({"invoice_url": link})
 
@@ -472,6 +494,7 @@ async def api_reading_generate(request: web.Request) -> web.Response:
 
     from generation import (
         generate_single, generate_compat, generate_name, GenerationBusy, RegenLimitReached,
+        DateCreditRequired,
     )
     try:
         if key in TWO_DATE_KEYS:
@@ -500,6 +523,18 @@ async def api_reading_generate(request: web.Request) -> web.Response:
             title, text, from_cache = await generate_single(user_id, user, key, date_str)
     except GenerationBusy:
         return _json_error("Разбор уже готовится — подожди пару секунд 🔮", 409)
+    except DateCreditRequired as e:
+        # Не ошибка, а предложение: фронт по коду redate_required показывает
+        # кнопку покупки разбора для другого человека.
+        return web.json_response({
+            "error": "Эта дата — уже другой человек, а значит и разбор другой.",
+            "code":  "redate_required",
+            "key":   e.key,
+            "price": redate_price(e.key, 49),
+            "price_rub": rub_price(redate_price(e.key, 49)) if YOOKASSA_SHOP_ID else None,
+            "full":  price_of(e.key, 49),
+            "discount": REDATE_DISCOUNT,
+        }, status=402)
     except RegenLimitReached as e:
         return _json_error(
             f"На сегодня уже {e.limit} разбора на другие даты — это дневной лимит. "
@@ -603,6 +638,7 @@ async def api_balance_buy(request: web.Request) -> web.Response:
         user = await db.get_user(user_id)  # перечитываем — баланс уже списан
         user["purchased"].append(key)
         await db.save_user(user_id, user)
+        await db.grant_reading_credit(user_id, key)
     # Баланс — бонусные (реферальные) звёзды, а не живые деньги: в выручку
     # не пишем, иначе двойной счёт с покупкой, что этот бонус породила.
     return web.json_response({"ok": True})
@@ -950,19 +986,46 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
             logging.warning(f"yookassa premium notify error: {e}")
         return web.Response(status=200)
 
-    if payload not in PAID_RAZBORY:
+    # Докупка разбора для ДРУГОГО человека: даёт ещё один слот даты, а не
+    # выдаёт разбор заново (payload = redate_<key>, см. bot.py).
+    redate_key = payload.removeprefix(REDATE_PREFIX) if payload.startswith(REDATE_PREFIX) else None
+    if redate_key:
+        if redate_key not in PAID_RAZBORY:
+            logging.warning(f"yookassa redate с неизвестным key={redate_key!r}")
+            return web.Response(status=200)
+        await db.grant_reading_credit(user_id, redate_key)
+        async with db.user_lock(user_id):
+            user = await db.get_user(user_id)
+            if redate_key not in user["purchased"]:
+                user["purchased"].append(redate_key)
+            user["waiting"] = redate_key
+            await db.save_user(user_id, user)
+        await db.log_payment(user_id, redate_key, stars_equiv, "RUB")
+        try:
+            await _bot.send_message(
+                user_id,
+                f"✅ Оплата прошла! Теперь введи дату рождения человека, "
+                f"которого разбираем — пришли её сюда в формате ДД.ММ.ГГГГ 🔮"
+            )
+        except Exception as e:
+            logging.warning(f"yookassa redate notify error: {e}")
+        payload = redate_key  # дальше — общий блок реферального бонуса
+
+    elif payload not in PAID_RAZBORY:
         logging.warning(f"yookassa webhook с неизвестным payload={payload!r}")
         return web.Response(status=200)
 
-    # Под user_lock: та же покупка могла идти параллельно через баланс/бот —
-    # read-modify-write без замка мог бы затереть их изменения.
-    async with db.user_lock(user_id):
-        user = await db.get_user(user_id)
-        if payload not in user["purchased"]:
-            user["purchased"].append(payload)
-        user["waiting"] = payload
-        await db.save_user(user_id, user)
-    await db.log_payment(user_id, payload, stars_equiv, "RUB")
+    if not redate_key:
+        # Под user_lock: та же покупка могла идти параллельно через баланс/бот —
+        # read-modify-write без замка мог бы затереть их изменения.
+        async with db.user_lock(user_id):
+            user = await db.get_user(user_id)
+            if payload not in user["purchased"]:
+                user["purchased"].append(payload)
+            user["waiting"] = payload
+            await db.save_user(user_id, user)
+        await db.grant_reading_credit(user_id, payload)
+        await db.log_payment(user_id, payload, stars_equiv, "RUB")
 
     referrer_id = user.get("referred_by")
     if referrer_id:
@@ -980,6 +1043,11 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
             )
         except Exception as e:
             logging.warning(f"yookassa reading ref bonus error: {e}")
+
+    if redate_key:
+        # Про докупку даты юзеру уже написали выше — второе сообщение с
+        # выбором «для себя / другая дата» здесь было бы лишним и путало бы.
+        return web.Response(status=200)
 
     title = PAID_RAZBORY[payload]
     # compat (две даты) и business_name (название) нельзя запускать датным
@@ -1019,6 +1087,7 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_get("/api/catalog", api_catalog)
     app.router.add_get("/api/matrix", api_matrix)
     app.router.add_post("/api/buy/{key}", api_buy)
+    app.router.add_post("/api/redate/{key}", api_redate)
     app.router.add_post("/api/buy_rub/{key}", api_buy_rub)
     app.router.add_get("/api/reading/{key}", api_reading)
     app.router.add_post("/api/reading/{key}/generate", api_reading_generate)
