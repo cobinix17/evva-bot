@@ -90,18 +90,9 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
     buttons.append([InlineKeyboardButton(text="🌙 Здоровье и энергия",   callback_data="section_health")])
     buttons.append([InlineKeyboardButton(text="✨ Прошлое и будущее",    callback_data="section_past")])
     buttons.append([InlineKeyboardButton(
-        text="👥 Пригласить друзей — +25% ⭐",
-        callback_data="ref_promo"
-    )])
-    buttons.append([InlineKeyboardButton(
         text="👤 Мой профиль",
         callback_data="my_profile"
     )])
-    buttons.append([InlineKeyboardButton(
-        text="📢 Наш канал",
-        url=CHANNEL_URL
-    )])
-    buttons.append([reviews_channel_button()])
     buttons.append([InlineKeyboardButton(
         text="🌸 Личный разбор от Евы",
         url=CONTACT_URL
@@ -146,9 +137,11 @@ def profile_menu(notifications_on: bool, purchased_count: int = 0,
         )])
     buttons += [
         [InlineKeyboardButton(text="🏆 Достижения", callback_data="my_achievements")],
-        [InlineKeyboardButton(text="👥 Реферальная ссылка", callback_data="ref_promo")],
+        [InlineKeyboardButton(text="👥 Пригласить друзей — +25% ⭐", callback_data="ref_promo")],
         [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="promo_start")],
         [InlineKeyboardButton(text="🎁 Подарить разбор", callback_data="gift_start")],
+        [InlineKeyboardButton(text="📢 Наш канал", url=CHANNEL_URL)],
+        [reviews_channel_button()],
         [InlineKeyboardButton(text="✏️ Изменить имя", callback_data="name_start")],
         [InlineKeyboardButton(text=gender_text, callback_data="gender_toggle")],
         [InlineKeyboardButton(text=notif_text, callback_data=notif_cb)],
