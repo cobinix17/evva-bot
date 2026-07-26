@@ -21,7 +21,7 @@ import db
 from config import (
     TITLES, PRICES, PAID_RAZBORY, RAZBOR_DESCRIPTIONS, TWO_DATE_KEYS,
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
-    ADMIN_ID, REF_BONUS_PERCENT,
+    ADMIN_ID, REF_BONUS_PERCENT, REF_WELCOME_BONUS,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, YESNO_FREE_LIMIT,
     PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price, price_of, get_discount,
     REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
@@ -608,6 +608,7 @@ async def api_referral(request: web.Request) -> web.Response:
         "earned":       stats["earned"],
         "balance":      stats["balance"],
         "bonus_percent": REF_BONUS_PERCENT,
+        "welcome_bonus": REF_WELCOME_BONUS,
         "bonuses":      bonuses,
     })
 

@@ -30,7 +30,7 @@ from config import (
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT, YESNO_FREE_LIMIT,
-    YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE,
+    YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE, REF_WELCOME_BONUS,
     REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
 )
 from ai import ask_ai, is_rude, rude_reply, bolden_headers
@@ -444,14 +444,28 @@ async def start(message: Message, state: FSMContext):
 
     # Реферальный payload: /start ref_12345678
     args = message.text.strip().split()
+    ref_welcome = 0
     if is_new_user and len(args) > 1 and args[1].startswith("ref_"):
         try:
             referrer_id = int(args[1][4:])
             if referrer_id != message.from_user.id and not user.get("referred_by"):
-                await db.register_referral(referrer_id, message.from_user.id)
+                ref_welcome = await db.register_referral(
+                    referrer_id, message.from_user.id, REF_WELCOME_BONUS
+                )
                 user["referred_by"] = referrer_id
+                if ref_welcome:
+                    user["ref_balance"] = (user.get("ref_balance") or 0) + ref_welcome
         except (ValueError, TypeError):
             pass
+
+    # Про подарок говорим сразу, до приветствия: это первое, что человек видит,
+    # и именно ради него он дошёл по ссылке.
+    if ref_welcome:
+        await message.answer(
+            f"🎁 Тебе подарок от подруги — {ref_welcome} ⭐ на баланс!\n\n"
+            "Ими можно оплатить часть любого разбора. Баланс всегда виден "
+            "в профиле 🌸"
+        )
 
     if not user.get("first_name") and message.from_user.first_name:
         tg_name = sanitize_name(message.from_user.first_name)
@@ -3110,7 +3124,9 @@ async def ref_promo_callback(callback: CallbackQuery):
     balance  = user.get("ref_balance", 0)
     text = (
         f"👥 Реферальная программа\n\n"
-        f"Приглашай подруг — получай {REF_BONUS_PERCENT}% звёздами с каждой их покупки!\n\n"
+        f"Приглашай подруг — получай {REF_BONUS_PERCENT}% звёздами с каждой их покупки!\n"
+        f"🎁 А подруга получит {REF_WELCOME_BONUS} ⭐ на баланс сразу при переходе — "
+        f"так что зовёшь не с пустыми руками.\n\n"
         f"🔗 Твоя ссылка:\n{ref_link}\n\n"
         f"📊 Статистика:\n"
         f"• Приглашено: {stats['count']} чел.\n"
@@ -3136,7 +3152,9 @@ async def ref_cmd(message: Message, state: FSMContext):
 
     text = (
         f"👥 Реферальная программа\n\n"
-        f"Приглашай подруг — получай {REF_BONUS_PERCENT}% звёздами с каждой их покупки!\n\n"
+        f"Приглашай подруг — получай {REF_BONUS_PERCENT}% звёздами с каждой их покупки!\n"
+        f"🎁 А подруга получит {REF_WELCOME_BONUS} ⭐ на баланс сразу при переходе — "
+        f"так что зовёшь не с пустыми руками.\n\n"
         f"🔗 Твоя ссылка:\n{ref_link}\n\n"
         f"📊 Статистика:\n"
         f"• Приглашено: {stats['count']} чел.\n"

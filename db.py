@@ -575,19 +575,33 @@ async def use_coupon(code: str, user_id: int) -> str:
     return 'ok'
 
 # ─── РЕФЕРАЛЫ ────────────────────────────────────────────────────────────────
-async def register_referral(referrer_id: int, referred_id: int):
-    """Записывает реферальную связь если её ещё нет."""
+async def register_referral(referrer_id: int, referred_id: int, welcome_bonus: int = 0) -> int:
+    """Записывает реферальную связь и начисляет приветственные звёзды тому,
+    кого пригласили. Возвращает начисленную сумму (0 — если связь уже была).
+
+    Начисление привязано к тому же UPDATE с guard `referred_by IS NULL`, что
+    и сама связь: строка обновится ровно один раз, поэтому бонус нельзя
+    получить дважды, даже если человек несколько раз откроет ссылку."""
     try:
         await db_pool.execute(
             'INSERT INTO referrals (referrer_id, referred_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
             referrer_id, referred_id
         )
-        await db_pool.execute(
-            'UPDATE users SET referred_by = $1 WHERE user_id = $2 AND referred_by IS NULL',
+        linked = await db_pool.fetchval(
+            '''UPDATE users SET referred_by = $1 WHERE user_id = $2 AND referred_by IS NULL
+               RETURNING user_id''',
             referrer_id, referred_id
         )
+        if linked is None or welcome_bonus <= 0:
+            return 0
+        await db_pool.execute(
+            'UPDATE users SET ref_balance = ref_balance + $1 WHERE user_id = $2',
+            welcome_bonus, referred_id
+        )
+        return welcome_bonus
     except Exception as e:
         logging.error(f"register_referral error: {e}")
+        return 0
 
 async def spend_balance(user_id: int, amount: int) -> bool:
     """Атомарно списывает бонусные звёзды с баланса, если их хватает.

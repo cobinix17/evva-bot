@@ -901,7 +901,9 @@ async function loadReferralBlock() {
   try {
     const r = await api("/api/referral");
     el.innerHTML = `
-      <p>Приглашай подруг — получай ${r.bonus_percent}% звёздами с каждой их покупки.</p>
+      <p>Приглашай подруг — получай ${r.bonus_percent}% звёздами с каждой их покупки.
+         А подруга получит ${r.welcome_bonus} ⭐ на баланс сразу при переходе —
+         так что зовёшь не с пустыми руками.</p>
       <div class="ref-stats">
         <div class="ref-stat"><div class="ref-stat-n">${r.count}</div><div class="ref-stat-l">приглашено</div></div>
         <div class="ref-stat"><div class="ref-stat-n">${r.earned}</div><div class="ref-stat-l">заработано ⭐</div></div>
