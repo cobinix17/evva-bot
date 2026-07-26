@@ -34,6 +34,7 @@ from config import (
     REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
 )
 from ai import ask_ai, is_rude, rude_reply, bolden_headers
+from broadcasts import MORNING, PERSONAL_DAY, NEW_CYCLE_INTRO
 from pdf import generate_pdf
 from generation import (
     premium_gen_semaphore, generate_single, generate_compat, generate_name, _generating,
@@ -3184,31 +3185,59 @@ async def balance_cmd(message: Message, state: FSMContext):
     await message.answer("\n".join(lines), reply_markup=_MENU_BACK_MARKUP)
 
 # ─── РАССЫЛКИ ────────────────────────────────────────────────────────────────
-def _day_message(name: str, destiny_number: int, day_number: int) -> str:
-    day_info = DAY_ENERGY.get(day_number, DAY_ENERGY[9])
-    day_energy, day_advice = day_info
+def _pick(variants: list, user_id: int, seed: int) -> str:
+    """Детерминированный выбор варианта: одинаковый в течение суток (человек
+    не получит разный текст при перезапуске бота), но разный у разных людей и
+    в разных циклах — чтобы рассылка не выглядела рассылкой."""
+    return variants[(seed + user_id) % len(variants)]
 
-    destiny_notes = {
-        1:  "Для твоей единицы этот день особенно важен — не упусти момент для инициативы.",
-        2:  "Твоя двойка сегодня чувствует людей особенно тонко — используй это.",
-        3:  "Твоя тройка расцветает в такие дни — выражай себя смело.",
-        4:  "Твоя четвёрка найдёт опору в энергии этого дня — строй и создавай.",
-        5:  "Твоя пятёрка обожает такие дни — следуй за интересом.",
-        6:  "Твоя шестёрка сегодня особенно нужна близким — подари им своё внимание.",
-        7:  "Твоя семёрка углубляется в этот день — дай себе время побыть наедине с мыслями.",
-        8:  "Твоя восьмёрка усиливается сегодня — смело берись за важные дела.",
-        9:  "Твоя девятка видит дальше других — доверяй этому взгляду сегодня.",
-        11: "Твоё мастер-число 11 резонирует с этим днём — обращай внимание на знаки.",
-        22: "Твоё мастер-число 22 даёт тебе сегодня особую практическую силу.",
-        33: "Твоё мастер-число 33 сегодня светит ярче — позволь себе быть тем светом.",
-    }
-    personal = destiny_notes.get(destiny_number, destiny_notes[9])
+def _day_message(name: str, destiny_number: int, day_number: int,
+                 birth_date: str | None = None, user_id: int = 0,
+                 today: "date | None" = None) -> str:
+    """Утреннее уведомление. Строится вокруг ЛИЧНОГО дня (считается из даты
+    рождения — у каждого свой и меняется ежедневно), а не вокруг общего числа
+    дня, которое одинаково для всех: раньше «личный прогноз» был личным только
+    в одной статичной строке про число судьбы.
+
+    day_number остаётся запасным вариантом на случай, если даты рождения нет."""
+    today = today or date.today()
+    ordinal = today.toordinal()
+
+    personal = None
+    if birth_date:
+        try:
+            personal = calculate_personal_day(birth_date, today)
+        except Exception:
+            personal = None
+
+    if personal is None:
+        # Даты рождения нет — старый формат по общему числу дня.
+        energy, advice = DAY_ENERGY.get(day_number, DAY_ENERGY[9])
+        return (
+            f"🌅 Доброе утро, {name}!\n\n"
+            f"Сегодня {day_number}-й день по нумерологии — {energy}.\n\n"
+            f"✨ {advice.capitalize()}.\n\n"
+            f"🔮 /menu"
+        )
+
+    # Раз в неделю — сообщение про ЧИСЛО СУДЬБЫ вместо личного дня: меняется
+    # не только текст, но и сам угол разговора, поэтому не приедается.
+    if today.weekday() == 0 and destiny_number in MORNING:
+        return _pick(MORNING[destiny_number], user_id, ordinal // 7).format(name=name)
+
+    energy, _ = DAY_ENERGY.get(personal, DAY_ENERGY[9])
+    advice    = _pick(PERSONAL_DAY.get(personal, PERSONAL_DAY[9]), user_id, ordinal)
+
+    if personal == 1:
+        intro = _pick(NEW_CYCLE_INTRO, user_id, ordinal)
+        head  = f"🌱 {intro}\n\nЛичный день 1 — {energy}."
+    else:
+        head = f"Твой личный день сегодня — {personal}: {energy}."
 
     return (
         f"🌅 Доброе утро, {name}!\n\n"
-        f"Сегодня {day_number}-й день по нумерологии — {day_energy}.\n\n"
-        f"✨ {day_advice.capitalize()}.\n\n"
-        f"{personal}\n\n"
+        f"{head}\n\n"
+        f"{advice}\n\n"
         f"🔮 /menu"
     )
 
@@ -3224,8 +3253,9 @@ _PMONTH_ENERGY = {
     9: "месяц завершения — отпусти лишнее, освободи место для нового цикла",
 }
 
-def _premium_day_message(name: str, destiny_number: int, day_number: int, birth_date: str) -> str:
-    base = _day_message(name, destiny_number, day_number).replace("🌅", "💎", 1)
+def _premium_day_message(name: str, destiny_number: int, day_number: int, birth_date: str,
+                         user_id: int = 0, today: "date | None" = None) -> str:
+    base = _day_message(name, destiny_number, day_number, birth_date, user_id, today).replace("🌅", "💎", 1)
     base = base.replace("\n🔮 /menu", "")
     try:
         pm = calculate_personal_month(birth_date)
@@ -3275,9 +3305,9 @@ async def send_daily_horoscope():
                     if premium and calculate_personal_day(row['birth_date'], today) == number:
                         text = _power_day_message(name, number)
                     elif premium:
-                        text = _premium_day_message(name, number, day_number, row['birth_date'])
+                        text = _premium_day_message(name, number, day_number, row['birth_date'], row['user_id'], today)
                     else:
-                        text = _day_message(name, number, day_number)
+                        text = _day_message(name, number, day_number, row['birth_date'], row['user_id'], today)
                     await bot.send_message(row['user_id'], text, reply_markup=notif_off_menu())
                     await asyncio.sleep(0.05)
                 except TelegramForbiddenError:
