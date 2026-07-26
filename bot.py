@@ -462,7 +462,7 @@ async def start(message: Message, state: FSMContext):
     # и именно ради него он дошёл по ссылке.
     if ref_welcome:
         await message.answer(
-            f"🎁 Тебе подарок от подруги — {ref_welcome} ⭐ на баланс!\n\n"
+            f"🎁 Тебе подарок по приглашению — {ref_welcome} ⭐ на баланс!\n\n"
             "Ими можно оплатить часть любого разбора. Баланс всегда виден "
             "в профиле 🌸"
         )
@@ -1588,7 +1588,7 @@ async def redate_start_cb(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         f"💞 «{TITLES.get(key, 'Разбор')}» для другого человека\n\n"
         f"Тот же разбор, но по дате рождения того, кого хочешь посмотреть — "
-        f"партнёра, ребёнка, подругу.\n\n"
+        f"партнёра, ребёнка, близкого человека.\n\n"
         f"Цена со скидкой −{REDATE_DISCOUNT}%: {line} (обычно {full} ⭐)\n\n"
         f"Как оплатить?",
         reply_markup=_redate_pay_menu(key, price, price_rub, balance)
@@ -1642,7 +1642,7 @@ async def redate_balance_cb(callback: CallbackQuery, state: FSMContext):
 async def gift_start_cb(callback: CallbackQuery):
     await callback.message.answer(
         "🎁 Выбери разбор, который хочешь подарить — пришлю тебе ссылку, "
-        "которую перешлёшь подруге. Она сама выберет дату и заберёт подарок.",
+        "которую перешлёшь кому захочешь. Получатель сам выберет дату и заберёт подарок.",
         reply_markup=gift_sections_menu()
     )
     await callback.answer()
@@ -1778,7 +1778,7 @@ async def successful_payment(message: Message, state: FSMContext):
         title = PAID_RAZBORY[key]
         await message.answer(
             f"🎁 Готово! «{title}» ждёт получателя.\n\n"
-            f"Перешли эту ссылку подруге — она откроет бота и заберёт подарок:\n{gift_link}",
+            f"Перешли эту ссылку тому, кому даришь — он откроет бота и заберёт подарок:\n{gift_link}",
         )
         await state.clear()
         return
@@ -3124,15 +3124,11 @@ async def ref_promo_callback(callback: CallbackQuery):
     balance  = user.get("ref_balance", 0)
     text = (
         f"👥 Реферальная программа\n\n"
-        f"Приглашай подруг — получай {REF_BONUS_PERCENT}% звёздами с каждой их покупки!\n"
-        f"🎁 А подруга получит {REF_WELCOME_BONUS} ⭐ на баланс сразу при переходе — "
-        f"так что зовёшь не с пустыми руками.\n\n"
+        f"🎁 Тому, кого пригласишь — {REF_WELCOME_BONUS} ⭐ на баланс сразу\n"
+        f"💰 Тебе — {REF_BONUS_PERCENT}% звёздами с каждой его покупки\n\n"
         f"🔗 Твоя ссылка:\n{ref_link}\n\n"
-        f"📊 Статистика:\n"
-        f"• Приглашено: {stats['count']} чел.\n"
-        f"• Заработано всего: {stats['earned']} ⭐\n"
-        f"• Баланс сейчас: {balance} ⭐\n\n"
-        f"💡 {REF_BONUS_PERCENT}% от суммы каждой покупки подруги — автоматически на твой баланс ⭐\n"
+        f"📊 Приглашено: {stats['count']} · Заработано: {stats['earned']} ⭐ · "
+        f"Баланс: {balance} ⭐\n\n"
         f"Использовать баланс: /balance"
     )
     await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -3152,19 +3148,12 @@ async def ref_cmd(message: Message, state: FSMContext):
 
     text = (
         f"👥 Реферальная программа\n\n"
-        f"Приглашай подруг — получай {REF_BONUS_PERCENT}% звёздами с каждой их покупки!\n"
-        f"🎁 А подруга получит {REF_WELCOME_BONUS} ⭐ на баланс сразу при переходе — "
-        f"так что зовёшь не с пустыми руками.\n\n"
+        f"🎁 Тому, кого пригласишь — {REF_WELCOME_BONUS} ⭐ на баланс сразу\n"
+        f"💰 Тебе — {REF_BONUS_PERCENT}% звёздами с каждой его покупки\n\n"
         f"🔗 Твоя ссылка:\n{ref_link}\n\n"
-        f"📊 Статистика:\n"
-        f"• Приглашено: {stats['count']} чел.\n"
-        f"• Заработано всего: {stats['earned']} ⭐\n"
-        f"• Баланс сейчас: {balance} ⭐\n\n"
-        f"💡 Как это работает:\n"
-        f"Подруга переходит по твоей ссылке и покупает любой разбор — "
-        f"ты автоматически получаешь {REF_BONUS_PERCENT}% от суммы её покупки "
-        f"на свой баланс виртуальных звёзд.\n\n"
-        f"Баланс можно использовать для оплаты своих разборов — команда /balance"
+        f"📊 Приглашено: {stats['count']} · Заработано: {stats['earned']} ⭐ · "
+        f"Баланс: {balance} ⭐\n\n"
+        f"Звёзды с баланса можно потратить на свои разборы — /balance"
     )
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")]
@@ -3181,7 +3170,7 @@ async def balance_cmd(message: Message, state: FSMContext):
     lines = [
         f"⭐ Твой баланс: {balance} звёзд",
         f"",
-        f"👥 Приглашено подруг: {stats['count']}",
+        f"👥 Приглашено: {stats['count']}",
         f"💰 Заработано за всё время: {stats['earned']} ⭐",
     ]
 
@@ -3198,7 +3187,7 @@ async def balance_cmd(message: Message, state: FSMContext):
     else:
         bot_info = await bot.get_me()
         ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
-        lines.append(f"\n🔗 Пригласи подругу и начни зарабатывать:\n{ref_link}")
+        lines.append(f"\n🔗 Пригласи друзей и начни зарабатывать:\n{ref_link}")
 
     await message.answer("\n".join(lines), reply_markup=_MENU_BACK_MARKUP)
 

@@ -26,7 +26,7 @@ def review_sent_menu() -> InlineKeyboardMarkup:
 
 def check_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Я подписалась!", callback_data="check_sub")],
+        [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")],
     ])
 
 def date_choice_menu() -> InlineKeyboardMarkup:
@@ -90,7 +90,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
     buttons.append([InlineKeyboardButton(text="🌙 Здоровье и энергия",   callback_data="section_health")])
     buttons.append([InlineKeyboardButton(text="✨ Прошлое и будущее",    callback_data="section_past")])
     buttons.append([InlineKeyboardButton(
-        text="👥 Пригласить подругу — +25% ⭐",
+        text="👥 Пригласить друзей — +25% ⭐",
         callback_data="ref_promo"
     )])
     buttons.append([InlineKeyboardButton(
