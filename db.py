@@ -1,6 +1,7 @@
 # db.py — работа с PostgreSQL: пользователи и купоны.
 # Использует пул соединений asyncpg, создаваемый в init_db().
 # Зависит от config.py (PAID_RAZBORY) для авто-выдачи всех разборов админу.
+import re
 import json
 import asyncio
 import logging
@@ -151,6 +152,7 @@ async def init_db(database_url: str):
         )
     except Exception as e:
         logging.warning(f"generated_readings_recent_idx не создан: {e}")
+    await _normalize_stored_dates()
     await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS feedback (
             id         SERIAL PRIMARY KEY,
@@ -309,6 +311,66 @@ async def init_db(database_url: str):
             logging.warning(f"Индекс {idx} не создан: {e}")
 
 # ─── ПОЛЬЗОВАТЕЛИ ────────────────────────────────────────────────────────────
+_LOOSE_DATE_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$")
+
+def _pad_date_key(value: str) -> str:
+    """Приводит сохранённый ключ даты к ДД.ММ.ГГГГ. Трогаем только то, что
+    действительно является датой (или парой дат через запятую у разборов на
+    совместимость) — в этом же поле лежат названия бизнеса и подпись
+    профильного дайджеста, их портить нельзя."""
+    parts = value.split(",")
+    if not parts or not all(_LOOSE_DATE_RE.match(p) for p in parts):
+        return value
+    out = []
+    for p in parts:
+        d, m, y = p.split(".")
+        out.append(f"{int(d):02d}.{int(m):02d}.{y}")
+    return ",".join(out)
+
+async def _normalize_stored_dates():
+    """Разово приводит уже сохранённые разборы к дополненному нулями формату
+    даты. Без этого после смены normalize_date разбор, сделанный на «1.1.2000»,
+    перестал бы находиться в кэше по «01.01.2000» — человек получил бы
+    повторную генерацию и списание платного слота за то, что уже оплатил."""
+    try:
+        rows = await db_pool.fetch(
+            'SELECT user_id, razbor_key, date_str FROM generated_readings'
+        )
+    except Exception as e:
+        logging.warning(f"нормализация дат пропущена: {e}")
+        return
+    fixed = 0
+    for r in rows:
+        old = r["date_str"] or ""
+        new = _pad_date_key(old)
+        if new == old:
+            continue
+        try:
+            # Если нормализованный вариант уже есть — старая запись дубль,
+            # удаляем её, иначе UPDATE упал бы на первичном ключе.
+            exists = await db_pool.fetchval(
+                'SELECT 1 FROM generated_readings '
+                'WHERE user_id = $1 AND razbor_key = $2 AND date_str = $3',
+                r["user_id"], r["razbor_key"], new
+            )
+            if exists:
+                await db_pool.execute(
+                    'DELETE FROM generated_readings '
+                    'WHERE user_id = $1 AND razbor_key = $2 AND date_str = $3',
+                    r["user_id"], r["razbor_key"], old
+                )
+            else:
+                await db_pool.execute(
+                    'UPDATE generated_readings SET date_str = $4 '
+                    'WHERE user_id = $1 AND razbor_key = $2 AND date_str = $3',
+                    r["user_id"], r["razbor_key"], old, new
+                )
+            fixed += 1
+        except Exception as e:
+            logging.warning(f"дата {old!r} не нормализована: {e}")
+    if fixed:
+        logging.info(f"нормализовано дат в generated_readings: {fixed}")
+
 async def user_exists(user_id: int) -> bool:
     """Существует ли пользователь в БД ДО автосоздания строки в get_user.
     Нужно чтобы отличить первый /start от повторного — реферала можно

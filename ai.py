@@ -176,6 +176,11 @@ MAX_FOREIGN_RATIO = 0.03
 # не запасные модели.
 MODEL_STATS: Counter = Counter()          # {"OpenRouter · claude-haiku-4.5": 42, ...}
 RECENT_MODELS: deque = deque(maxlen=15)   # [(ts, "OpenRouter · claude-haiku-4.5"), ...]
+# Потолок общего времени подбора ответа по всем провайдерам и повторам.
+# Отдельные таймауты (90/60/45с) остаются — этот бюджет ограничивает именно
+# СУММУ попыток: раньше худший случай складывался в несколько минут ожидания.
+ASK_AI_BUDGET = 150.0                     # секунд
+
 _LAST_MODEL: dict[str, str] = {}          # последняя модель на провайдера
 
 def _record_model(provider: str) -> None:
@@ -738,6 +743,16 @@ async def ask_ai(prompt: str) -> str:
 
     for name, fn in providers:
         for attempt in range(2):  # сама попытка + один повтор у того же провайдера
+            # Общий дедлайн: перебор всех провайдеров с повторами в худшем
+            # случае занимал минуты, а столько никто не ждёт — соединение
+            # отваливается, человек уходит. Как только бюджет исчерпан, отдаём
+            # лучший уже полученный ответ вместо продолжения перебора.
+            if time.perf_counter() - t0 > ASK_AI_BUDGET:
+                logging.warning(
+                    f"ask_ai: исчерпан бюджет {ASK_AI_BUDGET}с, "
+                    f"{'отдаю неполный ответ' if last_incomplete else 'провайдеры не ответили'}"
+                )
+                break
             result = await fn(prompt)
             if not result:
                 break  # этот провайдер недоступен вовсе — переходим к следующему
@@ -751,7 +766,8 @@ async def ask_ai(prompt: str) -> str:
                 f"{'повторяю' if attempt == 0 else 'перехожу к следующему провайдеру'}"
             )
             last_incomplete = result
-        # переходим к следующему провайдеру во внешнем цикле
+        if time.perf_counter() - t0 > ASK_AI_BUDGET:
+            break
 
     if last_incomplete:
         logging.warning(f"Все провайдеры дали неполный ответ за {time.perf_counter()-t0:.1f}с — отдаю последний доступный результат")

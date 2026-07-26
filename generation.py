@@ -9,7 +9,7 @@
 # вебе одновременно не запустится.
 import asyncio
 import logging
-from collections import deque
+from collections import deque, OrderedDict
 from datetime import datetime
 
 import db
@@ -25,8 +25,26 @@ from ai import ask_ai
 # ощущалась как настоящий чат («а почему?» → Ева продолжает мысль), а не набор
 # разовых ответов. Общая для бота и веба (один процесс). В памяти, а не в БД:
 # при рестарте очищается — для живого диалога это допустимо.
-_ASK_HISTORY: dict[int, deque] = {}
-_ASK_HISTORY_MAX = 8  # 8 сообщений = 4 пары «вопрос-ответ»
+# OrderedDict, а не обычный dict: словарь никогда не чистился и рос вместе с
+# числом пользователей — каждый, кто хоть раз что-то спросил, оставался в
+# памяти навсегда. Теперь это LRU: держим диалоги последних _ASK_USERS_MAX
+# человек, у остальных история просто начнётся заново.
+_ASK_HISTORY: "OrderedDict[int, deque]" = OrderedDict()
+_ASK_HISTORY_MAX = 8    # 8 сообщений = 4 пары «вопрос-ответ»
+_ASK_USERS_MAX   = 500  # для скольких человек храним диалог одновременно
+
+
+def _ask_history_for(user_id: int) -> deque:
+    """Достаёт (создавая при необходимости) историю диалога, помечая её как
+    свежую и вытесняя самые давние, чтобы словарь не рос бесконечно."""
+    dq = _ASK_HISTORY.get(user_id)
+    if dq is None:
+        dq = deque(maxlen=_ASK_HISTORY_MAX)
+        _ASK_HISTORY[user_id] = dq
+    _ASK_HISTORY.move_to_end(user_id)
+    while len(_ASK_HISTORY) > _ASK_USERS_MAX:
+        _ASK_HISTORY.popitem(last=False)
+    return dq
 
 _RU_MONTHS = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле",
               "августе", "сентябре", "октябре", "ноябре", "декабре"]
@@ -136,7 +154,7 @@ async def answer_ask(user_id: int, user: dict, question: str) -> str:
     async with premium_gen_semaphore(user):
         answer = await ask_ai(prompt)
 
-    dq = _ASK_HISTORY.setdefault(user_id, deque(maxlen=_ASK_HISTORY_MAX))
+    dq = _ask_history_for(user_id)
     dq.append(f"{'Он' if male else 'Она'}: {question}")
     dq.append(f"Ева: {answer}")
     return answer
