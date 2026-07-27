@@ -329,7 +329,34 @@ def _fix_langswap(text: str) -> str:
             chars[i] = repl
     return ''.join(chars)
 
+# Римские цифры состоят из латинских букв, поэтому фильтр иностранных
+# символов вырезал их вместе с латиницей: «Аркан года — VIII. Сила»
+# превращалось в «Аркан года — . Сила». Арканы нумеруются 1–22, так что
+# защищаем ровно этот диапазон и только когда номер стоит отдельным словом.
+_ROMAN_RE = re.compile(
+    r'(?<![A-Za-zА-Яа-яЁё])'
+    r'(XXII|XXI|XX|XIX|XVIII|XVII|XVI|XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)'
+    r'(?![A-Za-zА-Яа-яЁё])'
+)
+
+def _protect_roman(text: str) -> tuple[str, list[str]]:
+    saved: list[str] = []
+    def sub(m):
+        saved.append(m.group(1))
+        return f"\x00{len(saved) - 1}\x00"
+    return _ROMAN_RE.sub(sub, text), saved
+
+def _restore_roman(text: str, saved: list[str]) -> str:
+    for i, val in enumerate(saved):
+        text = text.replace(f"\x00{i}\x00", val)
+    return text
+
 def _foreign_ratio(text: str) -> float:
+    """Доля инородных символов. Римские цифры (номера арканов) из подсчёта
+    исключаются: формально это латиница, и разбор, где аркан упомянут
+    несколько раз, отбраковывался целиком как «иностранный» — провайдер
+    менялся впустую, а причина была в законном тексте."""
+    text = _ROMAN_RE.sub("", text)
     stripped = text.replace(" ", "").replace("\n", "")
     if not stripped:
         return 0.0
@@ -350,17 +377,20 @@ def _cleanup_orphan_punctuation(text: str) -> str:
 
 def _clean_text(text: str) -> str:
     """Сначала восстанавливаем 'лангсвопы', и только потом отбрасываем
-    оставшиеся недопустимые символы."""
+    оставшиеся недопустимые символы. Римские цифры (номера арканов) при этом
+    выносим за скобки чистки — иначе они пропадают как латиница."""
     text = _fix_langswap(text)
+    text, romans = _protect_roman(text)
     result = []
     for char in text:
         cp = ord(char)
         if (0x0400 <= cp <= 0x04FF or 0x2000 <= cp <= 0x206F or
             0x2600 <= cp <= 0x27FF or 0x1F300 <= cp <= 0x1FFFF or
             0x2700 <= cp <= 0x27BF or
-            char in '0123456789.,!?:;-—()«»"\'\n\r\t ⭐%№'):
+            char in '0123456789.,!?:;-—()«»"\'\n\r\t ⭐%№\x00'):
             result.append(char)
-    return _cleanup_orphan_punctuation(''.join(result))
+    cleaned = _cleanup_orphan_punctuation(''.join(result))
+    return _restore_roman(cleaned, romans)
 
 def _strip_preamble(text: str) -> str:
     """Любой из ИИ-провайдеров может изредка 'проговорить' структуру ответа
