@@ -952,6 +952,18 @@ async def has_reading(user_id: int, razbor_key: str) -> bool:
         user_id, razbor_key
     ) is not None
 
+async def list_received_readings(user_id: int) -> list[str]:
+    """Ключи разборов, которые человек РЕАЛЬНО получил (есть готовый текст),
+    свежие сверху. Отличается от users.purchased тем, что включает разборы,
+    полученные бесплатно — «Мои разборы» строились по purchased и поэтому
+    были пусты у тех, кто взял только бесплатный первый."""
+    rows = await db_pool.fetch(
+        'SELECT razbor_key, MAX(updated_at) AS last FROM generated_readings '
+        'WHERE user_id = $1 GROUP BY razbor_key ORDER BY last DESC',
+        user_id
+    )
+    return [r["razbor_key"] for r in rows]
+
 async def list_reading_dates(user_id: int, razbor_key: str) -> list[dict]:
     """Все даты, на которые юзер уже делал этот разбор — свежие сверху."""
     rows = await db_pool.fetch(

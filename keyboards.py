@@ -293,15 +293,27 @@ def gift_sections_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")],
     ])
 
-def my_readings_menu(user: dict) -> InlineKeyboardMarkup:
-    purchased = user.get("purchased", [])
-    buttons   = []
-    for key in purchased:
+def my_readings_menu(keys: list[str], reviews_left: list[str] | None = None) -> InlineKeyboardMarkup:
+    """Список ПОЛУЧЕННЫХ разборов. Раньше строился из purchased, поэтому
+    бесплатный первый разбор сюда не попадал — у тех, кто ничего не покупал,
+    раздела не было вовсе, и вернуться к своему единственному разбору (или
+    оставить по нему отзыв) можно было только листая чат назад.
+
+    Под каждым неотрецензированным разбором — кнопка отзыва: до этого
+    единственный вход в отзыв жил в сообщении сразу после разбора."""
+    reviews_left = reviews_left or []
+    buttons = []
+    for key in keys:
         title = TITLES.get(key, key)
         buttons.append([InlineKeyboardButton(
             text=f"✅ {title}",
             callback_data=f"buy_{key}"
         )])
+        if key not in reviews_left:
+            buttons.append([InlineKeyboardButton(
+                text=f"   😍 Оставить отзыв — +{REVIEW_BONUS} ⭐",
+                callback_data=f"leave_review_{key}"
+            )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

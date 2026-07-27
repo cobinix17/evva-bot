@@ -358,14 +358,16 @@ async def section_past(callback: CallbackQuery):
 # ─── МОИ РАЗБОРЫ ─────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "my_readings")
 async def my_readings(callback: CallbackQuery):
-    user      = await db.get_user(callback.from_user.id)
-    purchased = user.get("purchased", [])
-    if not purchased:
-        await callback.answer("У тебя пока нет купленных разборов 🔮", show_alert=True)
+    user = await db.get_user(callback.from_user.id)
+    # Список строим по РЕАЛЬНО полученным текстам, а не по purchased: иначе
+    # бесплатный разбор здесь не показывался, хотя человек его получил.
+    keys = await db.list_received_readings(callback.from_user.id)
+    if not keys:
+        await callback.answer("У тебя пока нет разборов 🔮", show_alert=True)
         return
     await callback.message.answer(
-        f"📚 Твои разборы ({len(purchased)}) — нажми на любой чтобы получить снова 👇",
-        reply_markup=my_readings_menu(user)
+        f"📚 Твои разборы ({len(keys)}) — нажми на любой чтобы получить снова 👇",
+        reply_markup=my_readings_menu(keys, user.get("reviews_left", []))
     )
     await callback.answer()
 
@@ -2980,8 +2982,11 @@ async def _show_profile(target: Message, user: dict):
         f"под полем ввода) есть ежедневный бонус звёзд — загляни, если ещё не "
         + ("пробовал." if db.is_male(user) else "пробовала.")
     )
+    # Счётчик — по полученным разборам, иначе у взявших только бесплатный
+    # кнопка «Мои разборы» вообще не появлялась.
+    received = await db.list_received_readings(user["user_id"])
     await target.answer(text, reply_markup=profile_menu(
-        notif_on, len(user.get("purchased", [])), is_male=db.is_male(user)))
+        notif_on, len(received), is_male=db.is_male(user)))
 
 @dp.callback_query(F.data == "gender_toggle")
 async def gender_toggle_cb(callback: CallbackQuery):
