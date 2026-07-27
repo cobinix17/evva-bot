@@ -2251,8 +2251,14 @@ async def handle_date(message: Message, state: FSMContext):
 async def leave_review(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("leave_review_", "")
     user = await db.get_user(callback.from_user.id)
-    if key not in user.get("purchased", []):
-        await callback.answer("Отзыв можно оставить только после покупки!", show_alert=True)
+    # Право на отзыв даёт полученный РАЗБОР, а не факт оплаты: бесплатный
+    # первый разбор — пик впечатления и главный источник живых отзывов, а
+    # проверка по purchased отсекала именно его (кнопка при этом показывалась).
+    if not await db.has_reading(callback.from_user.id, key):
+        await callback.answer(
+            "Отзыв можно оставить после того, как получишь разбор 🌸",
+            show_alert=True
+        )
         return
     if key in user.get("reviews_left", []):
         left_verb = "оставил" if db.is_male(user) else "оставила"
