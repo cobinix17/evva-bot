@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import (
     TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_SHOP_ID,
     rub_price, price_of, get_discount, redate_price, REDATE_PREFIX, REDATE_DISCOUNT,
+    REVIEW_BONUS,
 )
 
 CONTACT_URL = "https://t.me/eva_numer"
@@ -330,7 +331,7 @@ def upsell_menu(key: str, user: dict) -> InlineKeyboardMarkup:
     reviews_left = user.get("reviews_left", [])
     if key not in reviews_left:
         buttons.append([InlineKeyboardButton(
-            text="😍 Оставить отзыв",
+            text=f"😍 Оставить отзыв — +{REVIEW_BONUS} ⭐",
             callback_data=f"leave_review_{key}"
         )])
     buttons.append([InlineKeyboardButton(text="🔮 Все разборы", callback_data="show_menu")])

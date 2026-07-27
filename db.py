@@ -687,8 +687,20 @@ async def get_pending_review(review_id: int) -> dict | None:
     row = await db_pool.fetchrow('SELECT * FROM pending_reviews WHERE id = $1', review_id)
     return dict(row) if row else None
 
-async def delete_pending_review(review_id: int):
-    await db_pool.execute('DELETE FROM pending_reviews WHERE id = $1', review_id)
+async def delete_pending_review(review_id: int) -> bool:
+    """Забирает отзыв из очереди. Возвращает True только тому вызову, который
+    реально его удалил — по этому признаку начисляется награда за отзыв, иначе
+    два быстрых нажатия «Одобрить» выдали бы звёзды дважды."""
+    result = await db_pool.execute('DELETE FROM pending_reviews WHERE id = $1', review_id)
+    return result == "DELETE 1"
+
+async def add_review_reward(user_id: int, amount: int):
+    """Награда за опубликованный отзыв — на тот же бонусный баланс, что и
+    реферальные звёзды (тратится только внутри бота)."""
+    await db_pool.execute(
+        'UPDATE users SET ref_balance = ref_balance + $1 WHERE user_id = $2',
+        amount, user_id
+    )
 
 # ─── ПРЕМИУМ-ПОДПИСКА ────────────────────────────────────────────────────────
 async def set_premium(user_id: int, until: datetime):

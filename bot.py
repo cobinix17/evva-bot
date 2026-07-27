@@ -31,6 +31,7 @@ from config import (
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT, YESNO_FREE_LIMIT,
     YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE, REF_WELCOME_BONUS,
+    REVIEW_BONUS,
     REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
 )
 from ai import ask_ai, is_rude, rude_reply, bolden_headers
@@ -2267,6 +2268,7 @@ async def leave_review(callback: CallbackQuery, state: FSMContext):
     await state.update_data(review_key=key)
     await callback.message.answer(
         "💬 Напиши свой отзыв — опубликую его в нашем канале с отзывами.\n\n"
+        f"⭐ После публикации начислю тебе {REVIEW_BONUS} звёзд на баланс.\n\n"
         "Загляни, как выглядят отзывы других 👇",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[reviews_channel_button()]])
     )
@@ -2317,7 +2319,8 @@ async def handle_review(message: Message, state: FSMContext):
         logging.error(f"Review moderation notify error: {e}")
     await message.answer(
         "✅ Спасибо! Твой отзыв отправлен на проверку и скоро появится "
-        f"в канале {REVIEWS_CHANNEL} 💫",
+        f"в канале {REVIEWS_CHANNEL} 💫\n\n"
+        f"Как опубликую — начислю {REVIEW_BONUS} ⭐ на баланс.",
         reply_markup=review_sent_menu()
     )
 
@@ -2335,15 +2338,22 @@ async def review_moderation_cb(callback: CallbackQuery):
     if not review:
         await callback.answer("Отзыв уже обработан.", show_alert=True)
         return
-    await db.delete_pending_review(review_id)
+    # Начисляем награду только тому вызову, который реально забрал отзыв из
+    # очереди — иначе двойное нажатие «Одобрить» выдало бы звёзды дважды.
+    claimed = await db.delete_pending_review(review_id)
+    if not claimed:
+        await callback.answer("Отзыв уже обработан.", show_alert=True)
+        return
     if action == "ok":
         try:
             await bot.send_message(REVIEWS_CHANNEL, review["review_text"])
+            await db.add_review_reward(review["user_id"], REVIEW_BONUS)
             author = await db.get_user(review["user_id"])
             shared = "поделился" if db.is_male(author) else "поделилась"
             await bot.send_message(
                 review["user_id"],
-                f"🎉 Твой отзыв одобрен и опубликован — спасибо, что {shared} 🌸",
+                f"🎉 Твой отзыв опубликован — спасибо, что {shared} 🌸\n\n"
+                f"⭐ +{REVIEW_BONUS} звёзд на баланс за отзыв!",
                 reply_markup=review_sent_menu()
             )
         except Exception as e:
