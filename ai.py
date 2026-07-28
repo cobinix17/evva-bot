@@ -126,6 +126,19 @@ SYSTEM_PROMPT = (
     "Всегда используй женский род: 'ты пришла', 'ты сильная', 'твоя миссия', "
     "'партнёр' (о мужчине рядом с ней). Никогда не пиши 'ты пришел', "
     "'верным партнёром' (о ней), 'партнёрша' — это ошибки.\n\n"
+    "ЗАГОЛОВКИ БЛОКОВ:\n"
+    "В списке блоков после эмодзи идёт короткое название, а дальше через тире — "
+    "ПОЯСНЕНИЕ ДЛЯ ТЕБЯ, что раскрыть. В ответе пиши только эмодзи и короткое "
+    "название (2-5 слов). Пояснение НЕ переписывай — это служебный текст, "
+    "клиент не должен его видеть.\n"
+    "Плохо: «😨 Главный страх — назови его прямо и конкретно».\n"
+    "Хорошо: «😨 Главный страх».\n"
+    "Плохо: «🪤 Как страх управляет жизнью — 2-3 конкретные ситуации».\n"
+    "Хорошо: «🪤 Как страх управляет жизнью».\n\n"
+    "НЕ ПУТАЙ ЧИСЛА МЕЖДУ СОБОЙ:\n"
+    "У неё несколько разных чисел, и у них разные значения. Прежде чем написать "
+    "«твоё число судьбы N» — сверься со списком данных выше. Не приписывай "
+    "числу судьбы значение числа личности, души или личного года и наоборот.\n\n"
     "НЕ повторяй инструкцию, не пиши план перед ответом — "
     "ВСЕГДА начинай с ПЕРВОГО emoji-заголовка из списка, не пропускай ни одного. "
     "Заканчивай полным предложением.\n\n"
@@ -482,6 +495,47 @@ def actual_sections(answer: str) -> set:
             found.add(emoji)
     return found
 
+def strip_instruction_tails(prompt: str, answer: str) -> str:
+    """Убирает из заголовков блоков служебный хвост, скопированный из промпта.
+
+    В промпте блок описан как «😨 Главный страх — назови его прямо и конкретно»,
+    где всё после тире адресовано модели. Модель регулярно переносит эту часть
+    в ответ, и клиент читает инструкцию вместо заголовка.
+
+    Сверяем хвост не со всем промптом, а со строкой ТОГО ЖЕ блока: в промптах
+    попадаются примеры («например: Твой Аркан — Колесо Фортуны»), и сверка по
+    всему тексту вырезала бы осмысленное содержание, совпавшее с примером."""
+    # строки-блоки промпта: эмодзи -> хвост после разделителя
+    tails: dict[str, list[str]] = {}
+    for line in prompt.split("\n"):
+        s = line.strip()
+        for h in _HEADER_EMOJI:
+            if not s.startswith(h):
+                continue
+            sep = " — " if " — " in s else (": " if ": " in s else None)
+            if sep:
+                tails.setdefault(h, []).append(s.partition(sep)[2].strip())
+            break
+
+    out = []
+    for line in answer.split("\n"):
+        s = line.strip()
+        emoji = next((h for h in _HEADER_EMOJI if s.startswith(h)), None)
+        if not emoji or emoji not in tails:
+            out.append(line); continue
+        sep = " — " if " — " in s else (": " if ": " in s else None)
+        if not sep:
+            out.append(line); continue
+        head, _, tail = s.partition(sep)
+        tail = tail.strip()
+        # хвост совпал с началом пояснения из промпта — значит это инструкция
+        if any(t and (tail[:30] == t[:30] or t.startswith(tail[:30])) and len(tail) >= 12
+               for t in tails[emoji]):
+            out.append(head.strip())
+        else:
+            out.append(line)
+    return "\n".join(out)
+
 def is_structure_complete(prompt: str, answer: str, min_ratio: float = 0.6) -> bool:
     """True если ответ покрывает хотя бы min_ratio ожидаемых разделов из
     структуры, заданной в промпте. 60%, не 100% — модель иногда объединяет
@@ -802,6 +856,7 @@ async def ask_ai(prompt: str) -> str:
             result = await fn(prompt)
             if not result:
                 break  # этот провайдер недоступен вовсе — переходим к следующему
+            result = strip_instruction_tails(prompt, result)
             if is_structure_complete(prompt, result) and ends_properly(result):
                 _record_model(name)
                 logging.info(f"ask_ai завершён за {time.perf_counter()-t0:.1f}с ({name})")
