@@ -192,10 +192,24 @@ def destiny_calc_menu(free_used: bool) -> InlineKeyboardMarkup:
             callback_data="free_choose"
         )])
     buttons.append([InlineKeyboardButton(
+        text="📅 Посчитать другую дату",
+        callback_data="destiny_calc_other"
+    )])
+    buttons.append([InlineKeyboardButton(
         text="🔮 Все разборы по моим числам",
         callback_data="show_menu"
     )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def destiny_other_menu() -> InlineKeyboardMarkup:
+    """После числа чужого человека. Здесь и возникает интерес «а что у него
+    ещё?» — поэтому сразу ведём в раздел совместимости и разборов, а не
+    просто в главное меню."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Посчитать ещё дату", callback_data="destiny_calc_other")],
+        [InlineKeyboardButton(text="💑 Совместимость по двум датам", callback_data="section_love")],
+        [InlineKeyboardButton(text="🔮 Главное меню", callback_data="show_menu")],
+    ])
 
 def free_choose_menu() -> InlineKeyboardMarkup:
     buttons = []

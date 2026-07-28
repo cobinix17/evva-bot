@@ -48,7 +48,7 @@ from numerology import (
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
-    free_choose_menu, destiny_calc_menu, section_destiny_menu, section_money_menu,
+    free_choose_menu, destiny_calc_menu, destiny_other_menu, section_destiny_menu, section_money_menu,
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
     notif_off_menu, admin_menu, balance_pay_menu, payment_choice_menu,
@@ -175,6 +175,7 @@ class Form(StatesGroup):
     waiting_rub_email        = State()
     waiting_other_name       = State()
     waiting_destiny_calc     = State()
+    waiting_destiny_other    = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -391,6 +392,39 @@ async def destiny_calc_cb(callback: CallbackQuery, state: FSMContext):
         "и через что идёт твой путь.\n\n"
         "📅 Введи дату рождения в формате ДД.ММ.ГГГГ\n"
         "Например: 15.03.1995"
+    )
+
+@dp.callback_query(F.data == "destiny_calc_other")
+async def destiny_calc_other_cb(callback: CallbackQuery, state: FSMContext):
+    """Посчитать число судьбы другого человека. Считается локально, без ИИ,
+    поэтому ничего не стоит — а вопрос «а какое число у него?» возникает
+    почти у всех и естественно ведёт к разбору для близкого."""
+    await callback.answer()
+    await state.set_state(Form.waiting_destiny_other)
+    await callback.message.answer(
+        "📅 Введи дату рождения человека, которого хочешь посмотреть — "
+        "партнёра, ребёнка, друга.\n\n"
+        "Формат ДД.ММ.ГГГГ, например: 22.07.1998"
+    )
+
+@dp.message(StateFilter(Form.waiting_destiny_other))
+async def handle_destiny_other(message: Message, state: FSMContext):
+    text = normalize_date(message.text or "")
+    if not is_valid_date(text):
+        await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 22.07.1998")
+        return
+    await state.clear()
+    user = await db.get_user(message.from_user.id)
+    from numerology import destiny_short
+    r = destiny_short(text)
+    # Свою дату НЕ трогаем — это чужая, она не должна подменить дату владельца.
+    await message.answer(
+        f"✨ Число судьбы этого человека — {r['number']}\n\n"
+        f"🔢 {r['steps']}\n\n"
+        f"<b>{r['title']}</b>\n\n"
+        f"{r['text']}",
+        parse_mode="HTML",
+        reply_markup=destiny_other_menu()
     )
 
 @dp.message(StateFilter(Form.waiting_destiny_calc))
