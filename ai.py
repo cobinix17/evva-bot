@@ -572,6 +572,22 @@ _WORD_SWAPS = {
     r"[Бб]леял":   "блистал",
 }
 
+# «Некому/нечего/некуда было» требуют после себя инфинитив: «некому было
+# помочь». Модель регулярно обрывает конструкцию на полуслове — «рядом некому
+# было.» — и получается безграмотно. Чиним ТОЛЬКО когда инфинитива нет, то есть
+# когда сразу после идёт знак препинания или конец текста; корректное
+# «некому было помочь» остаётся нетронутым.
+_DANGLING_NEG = (
+    (re.compile(r"\bнекому\s+было(?=\s*[.,;:!?…»)]|\s*$)", re.M), "никого не было"),
+    (re.compile(r"\bнекому\s+будет(?=\s*[.,;:!?…»)]|\s*$)", re.M), "никого не будет"),
+    (re.compile(r"\bнечего\s+было(?=\s*[.,;:!?…»)]|\s*$)", re.M), "ничего не было"),
+)
+
+def _fix_dangling_negatives(text: str) -> str:
+    for pat, repl in _DANGLING_NEG:
+        text = pat.sub(repl, text)
+    return text
+
 def _fix_known_words(text: str) -> str:
     """Заменяет частые смысловые осечки модели (напр. «блеешь» → «блистаешь»)."""
     for pat, repl in _WORD_SWAPS.items():
@@ -579,7 +595,7 @@ def _fix_known_words(text: str) -> str:
             w = m.group(0)
             return repl[0].upper() + repl[1:] if w[0].isupper() else repl
         text = re.sub(pat, _sub, text)
-    return text
+    return _fix_dangling_negatives(text)
 
 def _fix_spelling(text: str) -> str:
     """Проверяет каждое кириллическое слово длиннее 4 букв через hunspell;
