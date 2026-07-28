@@ -18,6 +18,7 @@ from config import TITLES, REGEN_DAILY_LIMIT, REGEN_DAILY_LIMIT_PREMIUM
 from numerology import (
     build_numerology_context, build_name_context, calculate_destiny,
     calculate_personal_year, calculate_personal_month, build_psychomatrix_context,
+    build_matrix_context,
 )
 from ai import ask_ai
 
@@ -270,6 +271,11 @@ async def generate_single(user_id: int, user: dict, key: str, date_str: str,
         # раскладку психоматрицы, чтобы ИИ объяснял реальные цифры, а не гадал.
         if key == "psychomatrix":
             context += "\n\n" + build_psychomatrix_context(date_str)
+        # Матрица судьбы: три уровня предназначения и родовые линии считаются
+        # из уже готовых точек октаграммы — отдаём их готовыми числами, чтобы
+        # модель не выдумывала расклад сама.
+        elif key == "matrix_full":
+            context += "\n\n" + build_matrix_context(date_str)
         prompt  = _gender_note(user) + build_prompt(key, name=name, context=context, date=date_str)
         try:
             async with premium_gen_semaphore(user):
