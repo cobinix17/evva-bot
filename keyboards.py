@@ -59,7 +59,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         )])
 
     buttons.append([InlineKeyboardButton(
-        text="✨ Число судьбы — бесплатно",
+        text="✨ Число судьбы",
         callback_data="destiny_calc"
     )])
 
