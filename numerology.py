@@ -845,6 +845,26 @@ DESTINY_SHORT = {
          "Обратная сторона — ты отдаёшь так много, что о собственных потребностях вспоминаешь последней."),
 }
 
+def destiny_for_other(date_str: str) -> dict:
+    """Число судьбы ДРУГОГО человека. Отдельно от destiny_short, потому что
+    там текст написан на «ты» — для чужой даты он звучал бы так, будто это
+    про читателя. Здесь коротко и в третьем лице: задача не разобрать
+    человека, а дать число и подтолкнуть к совместимости."""
+    digits = date_str.strip().replace(".", "")
+    total  = sum(int(c) for c in digits)
+    number = _reduce_keep_master(total)
+    steps  = " + ".join(digits) + f" = {total}"
+    if total != number:
+        steps += f" → {number}"
+    title, _ = DESTINY_SHORT.get(number, DESTINY_SHORT[9])
+    return {
+        "number":    number,
+        "title":     title,
+        "traits":    _DESTINY_MEANING.get(number, ""),
+        "is_master": number in (11, 22, 33),
+        "steps":     steps,
+    }
+
 def destiny_short(date_str: str) -> dict:
     """Число судьбы + короткое значение для калькулятора-лид-магнита.
     Возвращает {number, title, text, is_master, steps} — steps показывает

@@ -415,14 +415,16 @@ async def handle_destiny_other(message: Message, state: FSMContext):
         return
     await state.clear()
     user = await db.get_user(message.from_user.id)
-    from numerology import destiny_short
-    r = destiny_short(text)
+    from numerology import destiny_for_other
+    r = destiny_for_other(text)
+    master = "\n\n💫 Это мастер-число — его не сворачивают до простого." if r["is_master"] else ""
     # Свою дату НЕ трогаем — это чужая, она не должна подменить дату владельца.
     await message.answer(
         f"✨ Число судьбы этого человека — {r['number']}\n\n"
         f"🔢 {r['steps']}\n\n"
-        f"<b>{r['title']}</b>\n\n"
-        f"{r['text']}",
+        f"<b>{r['title']}</b>\n"
+        f"{r['traits']}{master}\n\n"
+        f"Как ваши числа сочетаются — покажет разбор совместимости 👇",
         parse_mode="HTML",
         reply_markup=destiny_other_menu()
     )
