@@ -99,7 +99,7 @@ UPSELLS = {
     "finance":        ("wealth_blocks",  "freedom_path"),
     "wealth_blocks":  ("finance",        "own_business"),
     "freedom_path":   ("calling",        "own_business"),
-    "calling":        ("career",         "own_business"),
+    "calling":        ("own_business",   "freedom_path"),
     "career":         ("promotion",      "money"),
     "money":          ("finance",        "wealth_blocks"),
     "karma":          ("mission",        "matrix_full"),
