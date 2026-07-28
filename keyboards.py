@@ -259,6 +259,7 @@ def section_destiny_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
     items = [
         ("matrix_full",    "🔮 Матрица судьбы"),
         ("psychomatrix",   "🔲 Квадрат Пифагора"),
+        ("mother",         "👩‍👧 Отношения с мамой"),
         ("mission",        "🌟 Предназначение и миссия"),
         ("hidden_talents", "✨ Скрытые таланты"),
         ("strong_weak",    "⚖️ Сильная/слабая сторона"),
@@ -286,7 +287,8 @@ def section_money_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
 
 def section_love_menu(user=None, gift: bool = False) -> InlineKeyboardMarkup:
     items = [
-        ("compat",   "💑 Совместимость двух людей"),
+        ("compat",     "💑 Совместимость двух людей"),
+        ("attachment", "🪢 Почему я боюсь, что меня бросят"),
         ("when",     "💘 Когда встретишь того самого"),
         ("portrait", "💍 Портрет идеального партнёра"),
         ("unlucky",  "💔 Почему не везёт в любви"),
