@@ -94,7 +94,7 @@ PAID_RAZBORY  = {k: v for k, v in TITLES.items() if k != "free"}
 FREE_ELIGIBLE = {k for k, v in PRICES.items() if v <= 99 and k not in ("name_secret", "business_name")}
 
 UPSELLS = {
-    "matrix_full":    ("forecast_2026", "mission"),
+    "matrix_full":    ("psychomatrix",   "attachment"),
     "forecast_2026":  ("matrix_full",   "karma"),
     "finance":        ("wealth_blocks",  "freedom_path"),
     "wealth_blocks":  ("finance",        "own_business"),
@@ -131,7 +131,7 @@ UPSELLS = {
     "name_secret":    ("matrix_full",    "mission"),
     "business_name":  ("own_business",   "finance"),
     "psychomatrix":   ("matrix_full",    "strong_weak"),
-    "mother":         ("ancestor_code",  "karma"),
+    "mother":         ("attachment",     "main_fear"),
     "attachment":     ("unlucky",        "toxic"),
 }
 
