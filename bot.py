@@ -1345,6 +1345,9 @@ async def use_my_date(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     current_state = await state.get_state()
     is_free = (current_state == Form.waiting_free_date.state)
+    # Разбор для СЕБЯ — снимаем чужое имя, если оно осталось от прерванного
+    # разбора на другую дату, иначе свой разбор подписался бы чужим именем.
+    await state.update_data(other_name=None)
     await _process_date(callback.message, callback.from_user.id, user, user["birth_date"], state, is_free=is_free)
 
 @dp.callback_query(F.data == "use_new_date")
@@ -1497,11 +1500,16 @@ async def _start_redate_flow(message: Message, state: FSMContext, user: dict, ke
         await message.answer("💼 Введи название бизнеса, бренда или проекта:\nНапример: Ромашка, EvaShop")
         await state.set_state(Form.waiting_business_name)
     else:
+        # Сначала имя, потом дата: без этого числа имени (душа, личность, имя)
+        # считались бы по имени ВЛАДЕЛЬЦА аккаунта, и разбор для другого
+        # человека подписывался бы его именем.
         await message.answer(
-            "📅 Введи дату рождения человека, которого разбираем, в формате ДД.ММ.ГГГГ\n"
-            "Например: 15.03.1995"
+            "👤 Как зовут человека, которого разбираем?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Без имени", callback_data="other_name_skip")]
+            ])
         )
-        await state.set_state(Form.waiting_date)
+        await state.set_state(Form.waiting_other_name)
 
 async def _redate_ref_bonus(user: dict, user_id: int, amount: int, key: str):
     """Реферальный бонус с докупки даты — та же логика, что и с обычной покупки."""
