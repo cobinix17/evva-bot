@@ -58,6 +58,11 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
             callback_data="show_menu"
         )])
 
+    buttons.append([InlineKeyboardButton(
+        text="✨ Число судьбы — бесплатно",
+        callback_data="destiny_calc"
+    )])
+
     if user and not user.get("free_used"):
         buttons.append([InlineKeyboardButton(
             text="🎁 Бесплатный разбор на выбор",
@@ -174,6 +179,23 @@ def premium_active_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔮 К разборам", callback_data="show_menu")],
     ])
+
+def destiny_calc_menu(free_used: bool) -> InlineKeyboardMarkup:
+    """Что показать сразу после числа судьбы. Пока бесплатный разбор не
+    использован — он и есть главная кнопка: человек уже заинтересован собой,
+    это лучший момент увести его глубже. Когда использован — предлагаем
+    платные, но мягко, отдельной строкой про глубину."""
+    buttons = []
+    if not free_used:
+        buttons.append([InlineKeyboardButton(
+            text="🎁 Полный разбор бесплатно — выбрать",
+            callback_data="free_choose"
+        )])
+    buttons.append([InlineKeyboardButton(
+        text="🔮 Все разборы по моим числам",
+        callback_data="show_menu"
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def free_choose_menu() -> InlineKeyboardMarkup:
     buttons = []

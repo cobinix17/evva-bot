@@ -153,6 +153,7 @@ async def init_db(database_url: str):
     except Exception as e:
         logging.warning(f"generated_readings_recent_idx не создан: {e}")
     await _normalize_stored_dates()
+    await _recompute_destiny_numbers()
     await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS feedback (
             id         SERIAL PRIMARY KEY,
@@ -370,6 +371,34 @@ async def _normalize_stored_dates():
             logging.warning(f"дата {old!r} не нормализована: {e}")
     if fixed:
         logging.info(f"нормализовано дат в generated_readings: {fixed}")
+
+async def _recompute_destiny_numbers():
+    """Пересчитывает сохранённое число судьбы после перехода на мастер-числа:
+    у кого дата давала 11/22/33, в базе лежало свёрнутое 2/4/6, и матрица
+    показывала бы одно число, а калькулятор — другое."""
+    from numerology import calculate_destiny
+    try:
+        rows = await db_pool.fetch(
+            'SELECT user_id, birth_date, destiny_number FROM users '
+            'WHERE birth_date IS NOT NULL'
+        )
+    except Exception as e:
+        logging.warning(f"пересчёт числа судьбы пропущен: {e}")
+        return
+    fixed = 0
+    for r in rows:
+        try:
+            actual = calculate_destiny(r["birth_date"])
+        except Exception:
+            continue
+        if actual != r["destiny_number"]:
+            await db_pool.execute(
+                'UPDATE users SET destiny_number = $1 WHERE user_id = $2',
+                actual, r["user_id"]
+            )
+            fixed += 1
+    if fixed:
+        logging.info(f"число судьбы пересчитано с мастер-числами: {fixed} польз.")
 
 async def user_exists(user_id: int) -> bool:
     """Существует ли пользователь в БД ДО автосоздания строки в get_user.

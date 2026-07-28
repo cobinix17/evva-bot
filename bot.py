@@ -48,7 +48,7 @@ from numerology import (
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
-    free_choose_menu, section_destiny_menu, section_money_menu,
+    free_choose_menu, destiny_calc_menu, section_destiny_menu, section_money_menu,
     section_love_menu, section_health_menu, section_past_menu,
     my_readings_menu, upsell_menu, retry_menu, coupon_razboy_menu,
     notif_off_menu, admin_menu, balance_pay_menu, payment_choice_menu,
@@ -174,6 +174,7 @@ class Form(StatesGroup):
     waiting_promo            = State()
     waiting_rub_email        = State()
     waiting_other_name       = State()
+    waiting_destiny_calc     = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -370,6 +371,59 @@ async def my_readings(callback: CallbackQuery):
         reply_markup=my_readings_menu(keys, user.get("reviews_left", []))
     )
     await callback.answer()
+
+# ─── КАЛЬКУЛЯТОР ЧИСЛА СУДЬБЫ (лид-магнит) ──────────────────────────────────
+# Самый лёгкий вход в бота: не требует ни подписки, ни покупки, ни выбора
+# разбора — только дату. Задача — за 20 секунд дать «это про меня» и на
+# тёплом интересе увести в бесплатный разбор.
+@dp.callback_query(F.data == "destiny_calc")
+async def destiny_calc_cb(callback: CallbackQuery, state: FSMContext):
+    user = await db.get_user(callback.from_user.id)
+    await callback.answer()
+    # Дата уже известна — не заставляем вводить её второй раз.
+    if user.get("birth_date"):
+        await _send_destiny_calc(callback.message, user, user["birth_date"])
+        return
+    await state.set_state(Form.waiting_destiny_calc)
+    await callback.message.answer(
+        "✨ Число судьбы\n\n"
+        "Это главное число в нумерологии — оно про то, кто ты по своей сути "
+        "и через что идёт твой путь.\n\n"
+        "📅 Введи дату рождения в формате ДД.ММ.ГГГГ\n"
+        "Например: 15.03.1995"
+    )
+
+@dp.message(StateFilter(Form.waiting_destiny_calc))
+async def handle_destiny_calc(message: Message, state: FSMContext):
+    text = normalize_date(message.text or "")
+    if not is_valid_date(text):
+        await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
+        return
+    await state.clear()
+    user = await db.get_user(message.from_user.id)
+    # Первая дата в жизни аккаунта — запоминаем, дальше бот её не переспросит.
+    if not user.get("birth_date"):
+        user["birth_date"]     = text
+        user["destiny_number"] = calculate_destiny(text)
+        await db.save_user(message.from_user.id, user)
+    await _send_destiny_calc(message, user, text)
+
+async def _send_destiny_calc(target: Message, user: dict, date_str: str):
+    from numerology import destiny_short
+    r = destiny_short(date_str)
+    # Формулировка без выдуманной статистики: по реальным датам 1960–2010
+    # мастер-число выпадает примерно у каждого шестого, так что «редчайшее»
+    # было бы враньём, которое любой может проверить на друзьях.
+    master = ("\n\n💫 Мастер-число не сворачивают до простого — считается, "
+              "что оно даёт больше и требует больше.") if r["is_master"] else ""
+    await target.answer(
+        f"✨ Твоё число судьбы — {r['number']}\n\n"
+        f"🔢 {r['steps']}\n\n"
+        f"<b>{r['title']}</b>\n\n"
+        f"{r['text']}{master}",
+        parse_mode="HTML",
+        reply_markup=destiny_calc_menu(bool(user.get("free_used")))
+    )
 
 # ─── БЕСПЛАТНЫЙ РАЗБОР НА ВЫБОР ─────────────────────────────────────────────
 @dp.callback_query(F.data == "free_choose")
