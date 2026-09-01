@@ -153,6 +153,7 @@ async def init_db(database_url: str):
     except Exception as e:
         logging.warning(f"generated_readings_recent_idx не создан: {e}")
     await _normalize_stored_dates()
+    await _normalize_user_birth_dates()
     await _recompute_destiny_numbers()
     await db_pool.execute('''
         CREATE TABLE IF NOT EXISTS feedback (
@@ -282,10 +283,14 @@ async def init_db(database_url: str):
     # удаляем историю, а помечаем все повторы кроме первого как once=FALSE:
     # индекс после этого строится, а старые активации остаются видны в статистике.
     try:
+        # ctid, а не id: в базе, созданной до появления колонки id, запрос
+        # по id падал, дубли оставались, уникальный индекс не строился — и
+        # защита от гонки в use_coupon переставала работать молча. ctid есть
+        # у любой строки PostgreSQL и от схемы не зависит.
         await db_pool.execute('''
             UPDATE coupon_uses SET once = FALSE
-            WHERE once AND id NOT IN (
-                SELECT MIN(id) FROM coupon_uses GROUP BY code, user_id
+            WHERE once AND ctid NOT IN (
+                SELECT MIN(ctid) FROM coupon_uses WHERE once GROUP BY code, user_id
             )
         ''')
     except Exception as e:
@@ -371,6 +376,34 @@ async def _normalize_stored_dates():
             logging.warning(f"дата {old!r} не нормализована: {e}")
     if fixed:
         logging.info(f"нормализовано дат в generated_readings: {fixed}")
+
+async def _normalize_user_birth_dates():
+    """Приводит users.birth_date к ДД.ММ.ГГГГ. Ввод пользователя нормализуется
+    на входе, но СОХРАНЁННАЯ раньше дата уходит в генерацию как есть — и
+    «1.3.1995» даёт другой ключ кэша, чем «01.03.1995». Тот же человек, та же
+    дата, а слот списывается второй раз."""
+    try:
+        rows = await db_pool.fetch(
+            'SELECT user_id, birth_date FROM users WHERE birth_date IS NOT NULL'
+        )
+    except Exception as e:
+        logging.warning(f"нормализация дат рождения пропущена: {e}")
+        return
+    fixed = 0
+    for r in rows:
+        old = r["birth_date"] or ""
+        new = _pad_date_key(old)
+        if new == old:
+            continue
+        try:
+            await db_pool.execute(
+                'UPDATE users SET birth_date = $1 WHERE user_id = $2', new, r["user_id"]
+            )
+            fixed += 1
+        except Exception as e:
+            logging.warning(f"дата рождения {old!r} не нормализована: {e}")
+    if fixed:
+        logging.info(f"нормализовано дат рождения: {fixed}")
 
 async def _recompute_destiny_numbers():
     """Пересчитывает сохранённое число судьбы после перехода на мастер-числа:
