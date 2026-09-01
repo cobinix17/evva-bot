@@ -520,7 +520,19 @@ async def api_reading_generate(request: web.Request) -> web.Response:
                 user["birth_date"]     = date_str
                 user["destiny_number"] = calculate_destiny(date_str)
                 await db.save_user(user_id, user)
-            title, text, from_cache = await generate_single(user_id, user, key, date_str)
+            # Разбор на ЧУЖУЮ дату должен считаться по ЧУЖОМУ имени. Без этого
+            # числа имени, души и личности брались от владельца аккаунта, и
+            # разбор для другого человека подписывался его именем — тот же
+            # баг, что уже чинили в боте. Имя не прислали — берём нейтральную
+            # заглушку: по ней числа имени не считаются вовсе (см.
+            # numerology.PLACEHOLDER_NAMES), и это честнее, чем чужие числа.
+            subject_name = None
+            if date_str != (user.get("birth_date") or ""):
+                subject_name = _sanitize_name(body.get("name") or "")
+                if len(subject_name) < 2:
+                    subject_name = "дорогой человек"
+            title, text, from_cache = await generate_single(
+                user_id, user, key, date_str, subject_name=subject_name)
     except GenerationBusy:
         return _json_error("Разбор уже готовится — подожди пару секунд 🔮", 409)
     except DateCreditRequired as e:

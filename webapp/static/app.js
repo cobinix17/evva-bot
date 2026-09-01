@@ -662,9 +662,18 @@ function renderReadingDateForm(key, forceNew) {
     `;
   } else {
     const prefill = (!forceNew && ME.birth_date) ? escapeHtml(ME.birth_date) : "";
+    // Разбор для другого человека: спрашиваем имя. Без него числа имени,
+    // души и личности посчитались бы по имени владельца аккаунта, и текст
+    // обращался бы к чужому человеку его именем.
+    const nameField = forceNew ? `
+      <input id="rd-name" placeholder="Имя человека (можно пропустить)" maxlength="30" style="margin-top:10px">
+    ` : "";
     inner = `
-      <p>Для кого делаем разбор? Введи дату рождения.</p>
+      <p>${forceNew
+            ? "Для кого этот разбор? Введи дату рождения и имя."
+            : "Для кого делаем разбор? Введи дату рождения."}</p>
       <input id="rd-date" placeholder="ДД.ММ.ГГГГ" inputmode="numeric" value="${prefill}">
+      ${nameField}
     `;
   }
   app.innerHTML = `
@@ -694,6 +703,8 @@ async function generateReading(key) {
     const d = document.getElementById("rd-date").value.trim();
     if (!d) { tg?.showAlert("Введи дату рождения 🌸"); return; }
     body = { date: d };
+    const nm = document.getElementById("rd-name")?.value.trim();
+    if (nm) body.name = nm;
   }
   app.innerHTML = `<div class="empty">⏳ Ева составляет разбор…<br>Это занимает до минуты 🔮</div>`;
   try {

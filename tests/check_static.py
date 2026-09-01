@@ -215,6 +215,18 @@ def check_web() -> None:
 
 
 # ── ЗАГЛУШКИ ВМЕСТО ИМЕНИ ────────────────────────────────────────────────────
+def check_subject_name() -> None:
+    """Разбор на чужую дату обязан считаться по чужому имени. Пока веб звал
+    generate_single без subject_name, числа имени, души и личности брались от
+    владельца аккаунта, и разбор для другого человека подписывался его именем."""
+    for fname in ("webapp.py", "bot.py"):
+        src = read(fname)
+        calls = re.findall(r"generate_single\((.*?)\)", src, re.S)
+        bad = [c for c in calls if "subject_name" not in c and "def " not in c]
+        check(f"{fname}: generate_single без subject_name", not bad,
+              str([c.replace("\n", " ")[:70] for c in bad]))
+
+
 def check_placeholder_names() -> None:
     """По заглушке нельзя считать числа имени: человек получит числа слова
     «дорогой» вместо своих. Все обращения-заглушки обязаны быть в списке."""
@@ -240,6 +252,7 @@ def main() -> int:
     check_callbacks()
     check_admin_guards()
     check_web()
+    check_subject_name()
     check_placeholder_names()
 
     total = PASSED + len(FAILURES)
