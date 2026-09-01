@@ -541,7 +541,12 @@ async def start(message: Message, state: FSMContext):
     if is_new_user and len(args) > 1 and args[1].startswith("ref_"):
         try:
             referrer_id = int(args[1][4:])
-            if referrer_id != message.from_user.id and not user.get("referred_by"):
+            # Пригласивший должен реально существовать: ссылку легко собрать
+            # руками с любым числом, а приветственные звёзды начислялись и за
+            # выдуманного пригласившего. user_exists, а не get_user — тот
+            # создал бы призрачную строку прямо в проверке.
+            if (referrer_id != message.from_user.id and not user.get("referred_by")
+                    and await db.user_exists(referrer_id)):
                 ref_welcome = await db.register_referral(
                     referrer_id, message.from_user.id, REF_WELCOME_BONUS
                 )
@@ -2461,8 +2466,24 @@ async def review_moderation_cb(callback: CallbackQuery):
         await callback.answer("Отзыв уже обработан.", show_alert=True)
         return
     if action == "ok":
+        # Публикация отдельно от всего остального: если она не прошла (канал
+        # недоступен, бот разжалован в правах), раньше исключение глушилось,
+        # отзыв уже был удалён из очереди, звёзды не начислялись, а админ
+        # видел «✅ ОДОБРЕНО». Отзыв пропадал совсем. Теперь возвращаем его
+        # в очередь и говорим об этом прямо.
         try:
             await bot.send_message(REVIEWS_CHANNEL, review["review_text"])
+        except Exception as e:
+            logging.error(f"Review publish error: {e}")
+            await db.restore_pending_review(
+                review["user_id"], review["review_text"], review.get("flags") or ""
+            )
+            await callback.answer(
+                "❌ Не удалось опубликовать в канал — отзыв вернул в очередь, попробуй ещё раз.",
+                show_alert=True
+            )
+            return
+        try:
             await db.add_review_reward(review["user_id"], REVIEW_BONUS)
             author = await db.get_user(review["user_id"])
             shared = "поделился" if db.is_male(author) else "поделилась"
@@ -2473,7 +2494,8 @@ async def review_moderation_cb(callback: CallbackQuery):
                 reply_markup=review_sent_menu()
             )
         except Exception as e:
-            logging.error(f"Review publish error: {e}")
+            # Звёзды уже начислены — здесь могло не дойти только уведомление.
+            logging.error(f"Review reward notify error: {e}")
         await callback.message.edit_text(callback.message.text + "\n\n✅ ОДОБРЕНО")
     else:
         try:

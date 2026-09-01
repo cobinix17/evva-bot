@@ -723,6 +723,14 @@ async def delete_pending_review(review_id: int) -> bool:
     result = await db_pool.execute('DELETE FROM pending_reviews WHERE id = $1', review_id)
     return result == "DELETE 1"
 
+async def restore_pending_review(user_id: int, review_text: str, flags: str = "") -> int:
+    """Возвращает отзыв в очередь, если после «Одобрить» публикация в канал
+    сорвалась. Забираем отзыв из очереди ДО отправки (иначе двойное нажатие
+    опубликовало бы его дважды), а значит на сбое его нужно положить обратно —
+    иначе отзыв пропадал бесследно, а человек не получал ни публикации,
+    ни звёзд."""
+    return await add_pending_review(user_id, review_text, flags)
+
 async def add_review_reward(user_id: int, amount: int):
     """Награда за опубликованный отзыв — на тот же бонусный баланс, что и
     реферальные звёзды (тратится только внутри бота)."""
