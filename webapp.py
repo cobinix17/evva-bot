@@ -575,15 +575,23 @@ async def api_achievements(request: web.Request) -> web.Response:
         return _json_error("unauthorized", 401)
     user  = await db.get_user(user_id)
     stats = await db.get_referral_stats(user_id)
-    digest = await _digest_status(user_id, user)
     from achievements import compute_achievements
+    # Считаем ровно так же, как бот (_show_achievements), иначе одному и тому
+    # же человеку кабинет и бот показывали разное:
+    #  • purchased содержит и бесплатный разбор ("free" не входит в
+    #    PAID_RAZBORY) — без фильтра кабинет насчитывал разбор лишний;
+    #  • «Целостный портрет» здесь снимался, если после сборки портрета
+    #    человек покупал ещё разбор и кэш переставал совпадать по составу.
+    #    Достижение — про «once собрал», отбирать его назад неправильно.
+    purchased_paid = [k for k in user.get("purchased", []) if k in PAID_RAZBORY]
+    digest_done = bool(await db.get_reading_text(user_id, _DIGEST_KEY))
     items = compute_achievements(
-        purchased_count=len(user.get("purchased", [])),
+        purchased_count=len(purchased_paid),
         ref_count=stats["count"],
         is_premium=db.is_premium(user),
         has_birthdate=bool(user.get("birth_date")),
         has_spun=user.get("last_spin_date") is not None,
-        digest_ready=bool(digest.get("digest_ready")),
+        digest_ready=digest_done,
     )
     return web.json_response({"items": items})
 

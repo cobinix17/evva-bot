@@ -14,10 +14,15 @@ if (tg) {
 
 const initData = tg?.initData || "";
 
+// Экранируем и кавычки тоже. Через textContent их не экранирует ни один
+// браузер, а результат мы подставляем не только в текст, но и внутрь
+// атрибутов (value="${...}"). Сейчас туда попадают только проверенные на
+// сервере значения — дата и email, — но защита не должна держаться на том,
+// что где-то дальше стоит нужная валидация.
+const _ESCAPE_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
 function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = s;
-  return div.innerHTML;
+  return String(s ?? "").replace(/[&<>"']/g, ch => _ESCAPE_MAP[ch]);
 }
 
 async function api(path, opts = {}) {
