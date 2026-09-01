@@ -84,10 +84,17 @@ Telegram-бот [@nnumerology_bot](https://t.me/nnumerology_bot) плюс Mini A
 python3 tests/check_static.py
 ```
 
-Денежные, нужен PostgreSQL (как поднять — см. `tests/README.md`):
+Постобработка текста ИИ — нужен только httpx:
 
 ```
-python3 tests/test_money.py
+python3 tests/test_ai_text.py
+```
+
+Денежные и миграции, нужен PostgreSQL (как поднять — см. `tests/README.md`):
+
+```
+DATABASE_URL=$(sh tests/pg_start.sh) python3 tests/test_money.py
+DATABASE_URL=$(sh tests/pg_start.sh) python3 tests/test_migrations.py
 ```
 
 Сегодняшний опыт: баги почти никогда не в арифметике. Они в том, **чего модели
