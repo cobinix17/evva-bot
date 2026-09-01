@@ -15,6 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     hunspell-ru \
     && rm -rf /var/lib/apt/lists/*
 
+# Всё расписание в боте считается в UTC (utc_now, рассылка в 08:00 UTC =
+# 11:00 МСК), но numerology берёт текущую дату через datetime.now() — то есть
+# по часовому поясу контейнера. На Railway он был UTC; чтобы при переезде на
+# другой хостинг личный день и личный месяц не поехали на сутки, фиксируем
+# пояс явно, а не полагаемся на дефолт площадки.
+ENV TZ=UTC
+
 WORKDIR /app
 
 COPY requirements.txt .
