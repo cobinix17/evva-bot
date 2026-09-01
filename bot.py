@@ -637,7 +637,7 @@ async def check_sub(callback: CallbackQuery, state: FSMContext):
     user   = await db.get_user(callback.from_user.id)
     is_sub = await check_subscription(callback.from_user.id)
     if not is_sub:
-        await callback.answer("❌ Ты ещё не подписалась!", show_alert=True)
+        await callback.answer("❌ Подписки пока не вижу!", show_alert=True)
         return
     user["subscribed_channel"] = True
     await db.save_user(callback.from_user.id, user)
@@ -3441,7 +3441,10 @@ async def send_daily_horoscope():
             now_naive = utc_now()
             for row in rows:
                 try:
-                    name    = row['first_name'] or ("дорогой" if (row['gender'] or 'f') == 'm' else "дорогая")
+                    # Пол мог остаться незаполненным — тогда обращение без рода,
+                    # а не «дорогая» наугад.
+                    name    = row['first_name'] or {"m": "дорогой", "f": "дорогая"}.get(
+                        row['gender'], "дорогой человек")
                     number  = row['destiny_number']
                     premium = row['premium_until'] is not None and row['premium_until'] > now_naive
                     if premium and calculate_personal_day(row['birth_date'], today) == number:
@@ -3468,7 +3471,7 @@ async def send_daily_horoscope():
 async def send_daily_channel_post():
     """UTC 7:00 = Москва 10:00 — пост в канал."""
     _CHANNEL_FALLBACK = [
-        "🔮 Сегодня особый день для тех, кто слушает своё сердце.\n\nЧисла говорят: доверяй интуиции — она не подведёт. Сделай один шаг к тому, что давно откладывала. Именно сегодня он будет правильным.\n\n✨ Узнайте свой личный разбор → @nnumerology_bot",
+        "🔮 Сегодня особый день для тех, кто слушает своё сердце.\n\nЧисла говорят: доверяй интуиции — она не подведёт. Сделай один шаг к тому, что давно откладываешь. Именно сегодня он будет правильным.\n\n✨ Узнайте свой личный разбор → @nnumerology_bot",
         "🌟 День, который напоминает: ты сильнее, чем думаешь.\n\nЧисловая энергия сегодня поддерживает смелые решения. Не жди идеального момента — он уже здесь.\n\n✨ Узнайте свой личный разбор → @nnumerology_bot",
         "💫 Числа сегодня говорят о переменах к лучшему.\n\nЕсли что-то давно требует твоего внимания — самое время действовать. Вселенная поддерживает тех, кто делает первый шаг.\n\n✨ Узнайте свой личный разбор → @nnumerology_bot",
     ]
