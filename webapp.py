@@ -597,7 +597,7 @@ async def api_referral(request: web.Request) -> web.Response:
         {
             "amount":     b["amount"],
             "razbor":     TITLES.get(b["razbor_key"], b["razbor_key"] or "разбор"),
-            "from_name":  b["first_name"] or "Подруга",
+            "from_name":  b["first_name"] or "приглашённого",
             "created_at": b["created_at"].isoformat(),
         }
         for b in stats["bonuses"]
@@ -857,7 +857,7 @@ async def api_matrix(request: web.Request) -> web.Response:
     """Публичный расчёт матрицы по дате — для гостевого превью без входа
     (человек ещё не открывал бота, но зашёл по ссылке на веб)."""
     date_str = request.query.get("date", "")
-    name     = request.query.get("name", "дорогая")
+    name     = request.query.get("name", "дорогой человек")
     if not is_valid_date(date_str):
         return _json_error("Неверная дата. Формат ДД.ММ.ГГГГ")
     try:

@@ -658,6 +658,11 @@ _PMONTH_MEANING = {
     9: "месяц завершения — закрывать хвосты, освобождать место",
 }
 
+# Подстановки вместо настоящего имени (разбор «без имени», пользователь без
+# first_name). Числа имени по ним считать нельзя — это не имя, а обращение:
+# «дорогой» дало бы человеку чужие числа души и личности.
+PLACEHOLDER_NAMES = {"", "дорогая", "дорогой", "дорогой человек", "без имени"}
+
 def build_numerology_context(name: str, date_str: str) -> str:
     """Строит текстовый контекст для промпта — числа и их значения.
     Этот текст вставляется в начало каждого промпта через {context}."""
@@ -665,7 +670,7 @@ def build_numerology_context(name: str, date_str: str) -> str:
     now  = datetime.now()
     year = now.year
 
-    has_name   = bool(name and name not in ("дорогая", ""))
+    has_name   = bool(name) and name.strip().lower() not in PLACEHOLDER_NAMES
     name_num   = calculate_name_number(name) if has_name else None
     soul_num   = calculate_soul_number(name) if has_name else None
     pers_num   = calculate_personality_number(name) if has_name else None
@@ -678,7 +683,10 @@ def build_numerology_context(name: str, date_str: str) -> str:
     year_arc = arcana_info(calculate_year_arcana(date_str, year))
 
     lines = [
-        f"Имя: {name}",
+        # Заглушку вместо имени в контекст не отдаём: иначе модель посчитала бы
+        # её настоящим именем и назвала бы человека «Дорогой».
+        (f"Имя: {name}" if has_name
+         else "Имя неизвестно — не обращайся по имени и не выдумывай его."),
         f"Дата рождения: {date_str}",
         f"",
         # Номер аркана даём АРАБСКОЙ цифрой, а не римской: римские цифры это
@@ -777,7 +785,7 @@ def numerology_summary(name: str, date_str: str) -> dict:
     pers_month = calculate_personal_month(date_str)
     pers_month_label = f"{_RU_MONTHS_NOM[now.month - 1].capitalize()} {year}"
 
-    has_name = bool(name and name not in ("дорогая", ""))
+    has_name = bool(name) and name.strip().lower() not in PLACEHOLDER_NAMES
     name_num = calculate_name_number(name) if has_name else None
     soul_num = calculate_soul_number(name) if has_name else None
     pers_num = calculate_personality_number(name) if has_name else None

@@ -1381,7 +1381,7 @@ async def other_name_skip_cb(callback: CallbackQuery, state: FSMContext):
     # РЕАЛЬНОЕ имя владельца аккаунта (у него есть first_name), и разбор для
     # чужой даты снова подписался бы, например, «Руслан».
     await callback.answer()
-    await state.update_data(other_name="дорогая")
+    await state.update_data(other_name="дорогой человек")
     await callback.message.answer("📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
     await state.set_state(Form.waiting_date)
 
@@ -3296,7 +3296,7 @@ async def balance_cmd(message: Message, state: FSMContext):
     if stats['bonuses']:
         lines.append("\n📋 Последние начисления:")
         for b in stats['bonuses']:
-            name     = b['first_name'] or "Подруга"
+            name     = b['first_name'] or "приглашённого"
             title    = TITLES.get(b['razbor_key'], b['razbor_key'] or "разбор")
             dt       = b['created_at'].strftime("%d.%m %H:%M")
             lines.append(f"  +{b['amount']} ⭐ от {name} за «{title}» — {dt}")
@@ -3472,7 +3472,8 @@ async def send_daily_channel_post():
                 f"🌟 Энергия дня — что несёт число {day_num} сегодня, какая атмосфера (2-3 предложения)\n"
                 f"💡 Что сделать сегодня — 3 конкретных практических совета под эту энергию\n"
                 f"✨ Настрой дня — одна тёплая мотивирующая фраза на день\n\n"
-                f"Обращайся на ТЫ, к женщине, в женском роде — тёплый живой тон, как подруга-нумеролог. "
+                f"Обращайся на ТЫ, без указания на пол читателя — тёплый живой тон нумеролога, "
+                f"который говорит с тобой лично. "
                 f"Ровно эти три блока, не больше и не меньше. Каждый блок с новой строки. "
                 f"150-200 слов. Только кириллица, эмодзи только перед заголовками блоков."
             )
