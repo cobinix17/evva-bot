@@ -3564,6 +3564,39 @@ async def send_monthly_days_post():
             logging.error(f"Monthly days post error: {e}")
         await asyncio.sleep(60)
 
+async def send_premium_renewal_reminders():
+    """UTC 9:00 — напоминание о продлении премиума тем, кто платил рублями.
+    После рублёвой оплаты бот прямо обещает: «через месяц пришлю напоминание
+    продлить» — раньше это обещание не выполнялось, и премиум за рубли просто
+    молча заканчивался. Звёздная подписка продлевается Telegram сама, её
+    владельцам напоминание не шлём."""
+    while True:
+        now    = utc_now()
+        target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            for row in await db.premium_expiring_rub():
+                try:
+                    name = row['first_name'] or {"m": "дорогой", "f": "дорогая"}.get(
+                        row['gender'], "дорогой человек")
+                    await bot.send_message(
+                        row['user_id'],
+                        f"💎 {name}, твой Премиум заканчивается "
+                        f"{row['premium_until'].strftime('%d.%m.%Y')}.\n\n"
+                        "Продлить — всё так же: все разборы открыты, утренний личный "
+                        "прогноз и генерация без очереди 🌸",
+                        reply_markup=_MENU_BACK_MARKUP
+                    )
+                    await asyncio.sleep(0.05)
+                except TelegramForbiddenError:
+                    pass
+                except Exception as e:
+                    logging.warning(f"Premium reminder error {row['user_id']}: {e}")
+        except Exception as e:
+            logging.error(f"Premium reminder batch error: {e}")
+
 async def send_weekly_poll():
     """Пятница, UTC 9:00 = Москва 12:00 — опрос в канал: и вовлечение (реакции
     поднимают охват), и исследование — что аудитории интереснее разбирать."""
@@ -3663,6 +3696,7 @@ async def main():
     asyncio.create_task(send_daily_channel_post())
     asyncio.create_task(send_monthly_days_post())
     asyncio.create_task(send_weekly_poll())
+    asyncio.create_task(send_premium_renewal_reminders())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

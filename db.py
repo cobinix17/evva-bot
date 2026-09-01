@@ -1068,3 +1068,30 @@ async def premium_stats() -> dict:
         'SELECT COUNT(*) FROM users WHERE premium_until IS NOT NULL'
     )
     return {"active": active or 0, "ever": ever or 0}
+
+
+async def premium_expiring_rub(hours_from: int = 12, hours_to: int = 36) -> list[dict]:
+    """Кому пора напомнить про продление премиума. Только те, кто платил
+    рублями: премиум за звёзды — это подписка Telegram, она продлевается сама,
+    и напоминание там было бы шумом. Окно (now+12ч, now+36ч) при ежедневном
+    запуске ловит каждого ровно один раз, поэтому отдельный флаг «напомнили»
+    не нужен.
+
+    Обещание «через месяц пришлю напоминание продлить» бот давал в сообщении
+    после рублёвой оплаты, а самой рассылки не существовало."""
+    rows = await db_pool.fetch(
+        '''
+        SELECT u.user_id, u.first_name, u.gender, u.premium_until
+        FROM users u
+        WHERE u.premium_until IS NOT NULL
+          AND u.premium_until >  NOW() + ($1 || ' hours')::interval
+          AND u.premium_until <= NOW() + ($2 || ' hours')::interval
+          AND (
+            SELECT p.currency FROM payments p
+            WHERE p.user_id = u.user_id AND p.razbor_key IS NULL
+            ORDER BY p.created_at DESC LIMIT 1
+          ) = 'RUB'
+        ''',
+        str(hours_from), str(hours_to)
+    )
+    return [dict(r) for r in rows]
