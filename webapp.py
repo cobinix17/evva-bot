@@ -1003,10 +1003,17 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
             await db.save_user(user_id, user)
         await db.log_payment(user_id, redate_key, stars_equiv, "RUB")
         try:
+            # Кнопкой, а не просьбой «пришли дату сюда»: у вебхука нет
+            # FSM-контекста, и введённая в ответ дата попадала бы в бота без
+            # ожидающего состояния — то есть в пустоту.
+            from aiogram.types import InlineKeyboardMarkup as _IKM, InlineKeyboardButton as _IKB
             await _bot.send_message(
                 user_id,
-                f"✅ Оплата прошла! Теперь введи дату рождения человека, "
-                f"которого разбираем — пришли её сюда в формате ДД.ММ.ГГГГ 🔮"
+                "✅ Оплата прошла! Нажми кнопку и введи данные человека, "
+                "которого разбираем 🔮",
+                reply_markup=_IKM(inline_keyboard=[[
+                    _IKB(text="▶️ Начать разбор", callback_data=f"startredate_{redate_key}")
+                ]])
             )
         except Exception as e:
             logging.warning(f"yookassa redate notify error: {e}")
@@ -1065,14 +1072,24 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
                     _IKB(text="▶️ Начать разбор", callback_data=f"startreading_{payload}")
                 ]])
             )
-        else:
+        elif user.get("birth_date"):
             await _bot.send_message(
                 user_id,
                 f"✅ Оплата «{title}» прошла!\n\n"
-                f"Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?"
-                if user.get("birth_date") else
-                f"✅ Оплата «{title}» прошла! Открой чат со мной и укажи дату рождения.",
-                reply_markup=date_choice_menu() if user.get("birth_date") else None
+                f"Делаешь разбор для себя ({user['birth_date']}) или введёшь другую дату?",
+                reply_markup=date_choice_menu()
+            )
+        else:
+            # Даты рождения ещё нет. Раньше тут была просьба «укажи дату» без
+            # кнопки: у вебхука нет FSM, ждущего состояния никто не выставлял,
+            # и отправленная дата уходила в никуда.
+            from aiogram.types import InlineKeyboardMarkup as _IKM, InlineKeyboardButton as _IKB
+            await _bot.send_message(
+                user_id,
+                f"✅ Оплата «{title}» прошла! Нажми кнопку и укажи дату рождения 👇",
+                reply_markup=_IKM(inline_keyboard=[[
+                    _IKB(text="▶️ Начать разбор", callback_data=f"startreading_{payload}")
+                ]])
             )
     except Exception as e:
         logging.warning(f"yookassa reading notify error: {e}")

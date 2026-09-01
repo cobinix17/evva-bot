@@ -2124,6 +2124,22 @@ async def startreading_cb(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await _start_date_flow(callback.message, state, user, key)
 
+@dp.callback_query(F.data.startswith("startredate_"))
+async def startredate_cb(callback: CallbackQuery, state: FSMContext):
+    """То же, что startreading_, но для ДОКУПЛЕННОЙ даты (разбор другого
+    человека): не предлагает «для себя». Тоже нужен рублёвому вебхуку —
+    там нет FSM, и без кнопки пользователь писал дату в пустоту: состояние
+    никто не выставлял, и бот просто молчал в ответ."""
+    key = callback.data.replace("startredate_", "")
+    user = await db.get_user(callback.from_user.id)
+    if key not in user.get("purchased", []):
+        await callback.answer()
+        return
+    user["waiting"] = key
+    await db.save_user(callback.from_user.id, user)
+    await callback.answer()
+    await _start_redate_flow(callback.message, state, user, key)
+
 _SUBJECT_RE = re.compile(r"[\r\n\t]+")
 
 def _sanitize_subject(raw: str) -> str:
