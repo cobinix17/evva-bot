@@ -158,7 +158,7 @@ async def global_error_handler(event: ErrorEvent):
     return True
 
 # ─── РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ ──────────────────────────────────────────────
-async def send_long(chat_id, text: str):
+async def send_long(chat_id, text: str, reply_markup=None):
     # Жирные emoji-заголовки разделов через HTML — разбор в чате читается как
     # документ, а не сплошной текст (см. ai.bolden_headers). Экранирование под
     # HTML там же, ДО разбиения — split идёт только по '\n', так что открывающий
@@ -166,7 +166,7 @@ async def send_long(chat_id, text: str):
     text  = bolden_headers(text)
     limit = 4000
     if len(text) <= limit:
-        await bot.send_message(chat_id, text, parse_mode="HTML")
+        await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
         return
     parts = []
     while len(text) > limit:
@@ -177,8 +177,12 @@ async def send_long(chat_id, text: str):
         text = text[split_at:].lstrip()
     if text:
         parts.append(text)
-    for part in parts:
-        await bot.send_message(chat_id, part, parse_mode="HTML")
+    # Клавиатура — только на последнем куске: иначе одни и те же кнопки
+    # повторятся под каждой частью разбора.
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        await bot.send_message(chat_id, part, parse_mode="HTML",
+                               reply_markup=reply_markup if last else None)
         await asyncio.sleep(0.3)
 
 # ─── FSM ─────────────────────────────────────────────────────────────────────
@@ -1262,6 +1266,10 @@ async def post_text_received(message: Message, state: FSMContext):
 async def broadcast_confirm(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
+    # Отвечаем на нажатие СРАЗУ: рассылка на тысячу человек идёт минуты, а
+    # Telegram ждёт ответа на callback секунды. Без этого кнопка всё время
+    # рассылки крутит спиннер, а в конце ответ отвергается как протухший.
+    await callback.answer("Запускаю рассылку")
     data = await state.get_data()
     text = data.get("broadcast_text", "")
     await state.clear()
@@ -1296,6 +1304,7 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext):
 async def broadcast_cancel(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
+    await callback.answer()
     await state.clear()
     await callback.message.edit_text("❌ Рассылка отменена.")
 
@@ -2706,7 +2715,7 @@ async def handle_ai_question(message: Message, state: FSMContext):
     try:
         from generation import answer_ask
         answer = await answer_ask(user_id, user, question)
-        await message.answer(answer, reply_markup=_ask_again_menu())
+        await send_long(message.chat.id, answer, reply_markup=_ask_again_menu())
     except Exception as e:
         logging.error(f"Ask Eva error: {e}", exc_info=True)
         await db.refund_ask_try(user_id)
@@ -2975,7 +2984,7 @@ async def handle_followup(message: Message, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❓ Спросить ещё по этому разбору", callback_data=f"followup_{key}")],
         ])
-        await message.answer(answer, reply_markup=kb)
+        await send_long(message.chat.id, answer, reply_markup=kb)
     except Exception as e:
         logging.error(f"Followup error: {e}", exc_info=True)
         await message.answer("❌ Что-то пошло не так — попробуй ещё раз чуть позже 🙏", reply_markup=_followup_menu(key))
