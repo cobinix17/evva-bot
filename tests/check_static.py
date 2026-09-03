@@ -227,24 +227,46 @@ def check_subject_name() -> None:
               str([c.replace("\n", " ")[:70] for c in bad]))
 
 
+_THIRD_PERSON = re.compile(r"\b(её|ее|она|ей|неё)\b", re.I)
+
+
+def _block_names(prompt: str) -> list[str]:
+    """Названия блоков — то, что клиент видит заголовком. Всё после тире это
+    пояснение для модели, в ответ оно попадать не должно."""
+    cov = _header_emoji()
+    out = []
+    for line in prompt.split("\n"):
+        s = line.strip().replace("\ufe0f", "")
+        if not any(s.startswith(e) for e in cov):
+            continue
+        out.append(s.split("—")[0].strip())
+    return out
+
+
 def check_reading_titles() -> None:
-    """Название разбора бот шлёт отдельной строкой перед текстом. Если первый
-    блок промпта назван так же, человек видит заголовок дважды подряд."""
+    """Два разных бага, оба видны клиенту прямо в заголовке.
+
+    Название разбора бот шлёт отдельной строкой перед текстом: если так же
+    назван любой блок, человек видит заголовок дважды. Сравниваем без эмодзи —
+    «🫀 Послания тела» и «💬 Послания тела» для читателя одно и то же.
+
+    И третье лицо: «Типичные телесные паттерны для ЕЁ числа» — это язык
+    инструкции, а не заголовок для того, кому пишут на «ты»."""
     import config
     import readings
 
-    norm = lambda x: re.sub(r"\s+", " ", x.replace("\ufe0f", "")).strip().lower()
-    clash = []
+    norm = lambda x: re.sub(r"^[^\w]+", "", re.sub(r"\s+", " ", x.replace("\ufe0f", ""))).strip().lower()
+
+    clash, third = [], {}
     for key, prompt in readings.PROMPTS.items():
-        title = config.TITLES.get(key, "")
-        for line in prompt.split("\n"):
-            m = _HEADER_RE.match(line.strip())
-            if not m:
-                continue
-            if norm(line.strip().split("—")[0]) == norm(title):
-                clash.append(key)
-            break
-    check("первый блок повторяет название разбора", not clash, str(clash))
+        title = norm(config.TITLES.get(key, ""))
+        for name in _block_names(prompt):
+            if norm(name) == title:
+                clash.append((key, name))
+            if _THIRD_PERSON.search(name):
+                third.setdefault(key, []).append(name)
+    check("блок назван так же, как сам разбор", not clash, str(clash))
+    check("третье лицо в названии блока", not third, str(third))
 
 
 def check_pdf_intro() -> None:
