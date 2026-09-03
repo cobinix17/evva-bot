@@ -21,8 +21,30 @@ db_pool = None
 # Бот и веб в одном процессе, поэтому один и тот же lock их сериализует.
 _user_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
+# Замок заводится на каждого, кто хоть раз что-то покупал, и раньше не
+# удалялся никогда: 172 байта на пользователя, 16 МБ на сто тысяч. Течёт
+# медленно, но бесконечно, а перезапуск контейнера — не способ управления
+# памятью.
+_USER_LOCKS_MAX = 10_000
+
+def _sweep_user_locks(keep: int) -> None:
+    """Выбрасывает замки, которые сейчас никто не держит и не ждёт.
+
+    Почему это безопасно: `async with db.user_lock(uid)` вычисляет
+    user_lock(uid) и уходит в await __aenter__ без единой точки
+    переключения между ними — событийный цикл не может вклиниться и
+    подменить объект замка. А тот, кого реально держат или ждут, отсеян
+    проверками locked()/_waiters, и удалён не будет."""
+    for uid, lock in list(_user_locks.items()):
+        if uid == keep or lock.locked() or getattr(lock, "_waiters", None):
+            continue
+        _user_locks.pop(uid, None)
+
 def user_lock(user_id: int) -> asyncio.Lock:
-    return _user_locks[user_id]
+    lock = _user_locks[user_id]
+    if len(_user_locks) > _USER_LOCKS_MAX:
+        _sweep_user_locks(keep=user_id)
+    return lock
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
