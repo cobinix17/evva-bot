@@ -911,6 +911,7 @@ async def index(request: web.Request) -> web.Response:
 # если есть (стабильно про пользователя), иначе IP. Главная цель — не дать
 # перебирать промокоды через /api/promo/check без ограничений (см. аудит).
 _RATE_LIMIT = 30          # запросов
+_WEBHOOK_RATE_LIMIT = 300 # для вебхука ЮKassa — см. комментарий в middleware
 _RATE_WINDOW = 60         # секунд
 _rate_buckets: dict[str, list[float]] = {}
 
@@ -922,10 +923,17 @@ async def _rate_limit_middleware(request: web.Request, handler):
     if not (request.path.startswith("/api/") or request.path == "/webhook/yookassa"):
         return await handler(request)
     key = request.headers.get("X-Telegram-Init-Data") or request.remote or "unknown"
+    # Вебхук приходит с адресов самой ЮKassa, то есть ВСЕ уведомления о всех
+    # платежах падают в одно ведро. С общим лимитом 30/мин пачка одновременных
+    # оплат упёрлась бы в 429, и разборы не доехали бы до людей, которые уже
+    # заплатили. Лимит ему нужен свой — высокий, но конечный: он ограничивает
+    # число исходящих обращений к API ЮKassa при потоке мусорных POST-ов.
+    is_webhook = request.path == "/webhook/yookassa"
+    limit = _WEBHOOK_RATE_LIMIT if is_webhook else _RATE_LIMIT
     now = time.time()
     bucket = _rate_buckets.setdefault(key, [])
     bucket[:] = [t for t in bucket if now - t < _RATE_WINDOW]
-    if len(bucket) >= _RATE_LIMIT:
+    if len(bucket) >= limit:
         return _json_error("Слишком много запросов — подожди немного 🙏", 429)
     bucket.append(now)
     # Периодически подчищаем мусорные ключи, чтобы словарь не рос бесконечно
