@@ -2,6 +2,7 @@ import os
 import re
 import time
 import logging
+import sys
 import asyncio
 import json
 import random
@@ -69,12 +70,40 @@ if not any([os.getenv("CEREBRAS_API_KEY"), os.getenv("GROQ_API_KEY"), os.getenv(
 CHANNEL         = "@eva_numerologg"
 REVIEWS_CHANNEL = "@eva_numerolog_otz"
 
-logging.basicConfig(level=logging.INFO)
-# fontTools.subset выводит десятки строк уровня INFO на каждую вставку шрифта
-# в PDF (список ID глифов и т.п.) — это не ошибки, но они забивают логи
-# Railway и прячут реальные warning/error. Поднимаем порог только для этого
-# модуля, остальное логирование бота не трогаем.
-logging.getLogger("fontTools.subset").setLevel(logging.WARNING)
+def _setup_logging() -> None:
+    """Обычные сообщения — в stdout, warning и ошибки — в stderr.
+
+    По умолчанию logging шлёт в stderr вообще всё, и Railway красит красным
+    каждую строку, включая рядовые INFO про обработанный апдейт. Настоящая
+    ошибка в такой ленте ничем не отличается от шума: TelegramConflictError
+    выглядит ровно так же, как «Update id=... is handled». Разводим потоки,
+    чтобы красным светилось только то, на что правда надо смотреть."""
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for h in root.handlers[:]:          # basicConfig мог успеть повесить свой
+        root.removeHandler(h)
+
+    fmt = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+
+    out = logging.StreamHandler(sys.stdout)
+    out.setLevel(logging.INFO)
+    # Без этого фильтра warning и error попали бы в оба потока сразу.
+    out.addFilter(lambda r: r.levelno < logging.WARNING)
+    out.setFormatter(fmt)
+
+    err = logging.StreamHandler(sys.stderr)
+    err.setLevel(logging.WARNING)
+    err.setFormatter(fmt)
+
+    root.addHandler(out)
+    root.addHandler(err)
+
+    # fontTools.subset выводит десятки строк уровня INFO на каждую вставку
+    # шрифта в PDF (список ID глифов и т.п.) — это не ошибки, но они забивают
+    # логи. Порог поднимаем только для этого модуля.
+    logging.getLogger("fontTools.subset").setLevel(logging.WARNING)
+
+_setup_logging()
 
 bot     = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
