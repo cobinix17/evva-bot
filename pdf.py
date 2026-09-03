@@ -45,11 +45,18 @@ def _clean_reading_title(title: str) -> str:
 
 _ROMAN = ["I","II","III","IV","V","VI","VII","VIII","IX","X","XI","XII","XIII","XIV"]
 
-def _split_sections(text: str) -> list[dict]:
-    """Режет текст разбора на блоки по строкам-заголовкам (эмодзи-маркер в
-    начале строки). Если заголовков нет вообще (нестандартный текст) —
-    весь текст идёт одним блоком, чтобы страница не осталась пустой."""
-    sections = []
+def split_reading(text: str) -> tuple[str, list[dict]]:
+    """Режет текст разбора на вступление и блоки по строкам-заголовкам
+    (эмодзи-маркер в начале строки). Если заголовков нет вообще
+    (нестандартный текст) — весь текст идёт одним блоком, чтобы страница
+    не осталась пустой.
+
+    Вступление — это абзацы ДО первого заголовка. Каждый промпт начинается
+    с «Начни так: ...», то есть вступление есть в любом разборе; раньше оно
+    просто выбрасывалось, потому что накапливать текст было некуда, и в PDF
+    разбор начинался сразу с первого блока."""
+    intro_lines: list[str] = []
+    sections: list[dict] = []
     cur = None
     for raw_line in text.split("\n"):
         line = raw_line.strip()
@@ -60,11 +67,20 @@ def _split_sections(text: str) -> list[dict]:
             sections.append(cur)
         elif cur is not None:
             cur["body"] = f"{cur['body']} {line}".strip() if cur["body"] else line
+        else:
+            intro_lines.append(line)
+    intro = " ".join(intro_lines).strip()
     if not sections:
         sections = [{"title": "Разбор", "body": text.strip()}]
+        intro = ""
     for i, s in enumerate(sections):
         s["rn"] = _ROMAN[i] if i < len(_ROMAN) else str(i + 1)
-    return sections
+    return intro, sections
+
+
+def _split_sections(text: str) -> list[dict]:
+    """Совместимость для fpdf-резерва, которому вступление отдельно не нужно."""
+    return split_reading(text)[1]
 
 # ── WEASYPRINT (основной рендер) ──────────────────────────────────────────────
 _TEMPLATE_DIR  = os.path.dirname(__file__)
@@ -87,6 +103,7 @@ def _generate_pdf_weasy(title: str, text: str, user_name: str, destiny_number: i
         {**u, "title": _clean_reading_title(u["title"])} for u in (upsells or [])
     ]
 
+    intro, sections = split_reading(text)
     env      = Environment(loader=FileSystemLoader(_TEMPLATE_DIR), autoescape=True)
     template = env.get_template(_TEMPLATE_NAME)
     html_str = template.render(
@@ -95,7 +112,8 @@ def _generate_pdf_weasy(title: str, text: str, user_name: str, destiny_number: i
         birthdate      = birth_date,
         destiny_number = destiny_number,
         numbers        = numbers,
-        sections       = _split_sections(text),
+        intro          = intro,
+        sections       = sections,
         upsells        = clean_upsells,
         bot_handle     = "@nnumerology_bot",
         ref_bonus_percent = ref_bonus_percent,

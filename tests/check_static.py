@@ -227,6 +227,48 @@ def check_subject_name() -> None:
               str([c.replace("\n", " ")[:70] for c in bad]))
 
 
+def check_reading_titles() -> None:
+    """Название разбора бот шлёт отдельной строкой перед текстом. Если первый
+    блок промпта назван так же, человек видит заголовок дважды подряд."""
+    import config
+    import readings
+
+    norm = lambda x: re.sub(r"\s+", " ", x.replace("\ufe0f", "")).strip().lower()
+    clash = []
+    for key, prompt in readings.PROMPTS.items():
+        title = config.TITLES.get(key, "")
+        for line in prompt.split("\n"):
+            m = _HEADER_RE.match(line.strip())
+            if not m:
+                continue
+            if norm(line.strip().split("—")[0]) == norm(title):
+                clash.append(key)
+            break
+    check("первый блок повторяет название разбора", not clash, str(clash))
+
+
+def check_pdf_intro() -> None:
+    """Каждый промпт начинается с «Начни так: ...», то есть у любого разбора
+    есть вступление до первого заголовка. Раньше оно молча выбрасывалось —
+    в PDF разбор начинался сразу со второго абзаца."""
+    src = read("pdf.py")
+    check("PDF собирает вступление отдельно", "def split_reading" in src)
+    check("вступление передаётся в шаблон", "intro          = intro," in src)
+    check("шаблон умеет его показать", "{% if intro %}" in read("pdf_template.html"))
+
+
+def check_gender_note() -> None:
+    """Тексты разборов написаны про женщину — «её числа», «что она делает»,
+    «передать именно ей». Мужчине модель повторяла женский род за
+    инструкцией, поэтому в примечании должно быть явное указание читать
+    эти слова в мужском роде."""
+    src = read("generation.py")
+    note = re.search(r"def _gender_note.*?\n    return \"\"", src, re.S)
+    body = note.group(0) if note else ""
+    check("_gender_note переопределяет род в самом задании",
+          "«она», «её», «ей»" in body and "читай их как" in body)
+
+
 def check_placeholder_names() -> None:
     """По заглушке нельзя считать числа имени: человек получит числа слова
     «дорогой» вместо своих. Все обращения-заглушки обязаны быть в списке."""
@@ -253,6 +295,9 @@ def main() -> int:
     check_admin_guards()
     check_web()
     check_subject_name()
+    check_reading_titles()
+    check_pdf_intro()
+    check_gender_note()
     check_placeholder_names()
 
     total = PASSED + len(FAILURES)
