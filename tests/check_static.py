@@ -291,6 +291,22 @@ def check_gender_note() -> None:
           "«она», «её», «ей»" in body and "читай их как" in body)
 
 
+def check_body_readings() -> None:
+    """Разборы про тело не должны выглядеть как медицинское заключение.
+    «Послания тела» называли учащённое сердцебиение и дискомфорт в груди и
+    трактовали их как сигнал «замедлись», а «Код здоровья» прямо просил
+    перечислить органы и системы — и тут же требовал не давать медицинских
+    советов. Человек с настоящей проблемой может прочитать это как объяснение
+    и не пойти к врачу."""
+    import readings
+
+    for key in ("body_message", "health_code"):
+        prompt = readings.PROMPTS[key]
+        check(f"{key}: отправляет к врачу при стойких симптомах", "врач" in prompt)
+        check(f"{key}: не просит называть органы",
+              not re.search(r"органы и системы|назови органы", prompt))
+
+
 def check_placeholder_names() -> None:
     """По заглушке нельзя считать числа имени: человек получит числа слова
     «дорогой» вместо своих. Все обращения-заглушки обязаны быть в списке."""
@@ -317,6 +333,7 @@ def main() -> int:
     check_admin_guards()
     check_web()
     check_subject_name()
+    check_body_readings()
     check_reading_titles()
     check_pdf_intro()
     check_gender_note()
