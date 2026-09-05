@@ -635,6 +635,23 @@ async def start(message: Message, state: FSMContext):
         await state.set_state(Form.waiting_name)
         return
 
+    # Род спрашивается в онбординге сразу после имени — но онбординг проходят
+    # только те, у кого ещё не использован бесплатный разбор. Админу free_used
+    # выставляется принудительно, старым пользователям он уже стоял, и все они
+    # знакомство пропускают. Пол остаётся пустым, а пустой пол означает женский:
+    # мужчина получает разбор со словами «ты получила» и «я свободна».
+    # Спрашиваем здесь у всех, у кого он не проставлен, — один раз.
+    if not user.get("gender"):
+        await message.answer(
+            "Уточню одну вещь, чтобы разборы звучали правильно.\n\n"
+            "Как мне к тебе обращаться?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🙋‍♀️ Я девушка", callback_data="gender_f"),
+                 InlineKeyboardButton(text="🙋‍♂️ Я мужчина", callback_data="gender_m")],
+            ])
+        )
+        return
+
     # Deep link из веб-кабинета: /start open_<key> — открыть уже купленный
     # разбор (после оплаты в Mini App пользователя возвращают в чат сюда).
     if len(args) > 1 and args[1].startswith("open_"):
@@ -716,6 +733,15 @@ async def _continue_after_gender(message: Message, state: FSMContext, user: dict
             "🎁 Выбери любой разбор — он будет бесплатным!\n\n"
             "Это твой подарок за подписку на канал 💫",
             reply_markup=free_choose_menu()
+        )
+        return
+    # Сюда попадают и те, кто отвечает на вопрос про род уже после онбординга
+    # (админ, старые пользователи). У них дата рождения давно есть — спрашивать
+    # её заново значит выкинуть человека в начало вместо меню.
+    if user.get("birth_date"):
+        await message.answer(
+            "Запомнила 🌸 Теперь разборы будут звучать правильно.",
+            reply_markup=main_menu_for(message.chat.id, user)
         )
         return
     await message.answer(
