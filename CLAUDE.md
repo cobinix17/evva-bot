@@ -71,7 +71,11 @@ Telegram-бот [@nnumerology_bot](https://t.me/nnumerology_bot) плюс Mini A
 
 ## Правила, которые легко нарушить
 
-**ИИ-провайдеры идут в порядке OpenRouter → Cerebras → Groq.** Не наоборот.
+**ИИ-провайдеры идут в порядке Experiential → OpenRouter → Cerebras → Groq.**
+Не наоборот. Experiential — шлюз с нулевой наценкой, API совместим с OpenAI;
+список его моделей задаётся переменной `EXPERIENTIAL_MODELS` (через запятую),
+потому что каталог у шлюза свой и зашитые имена устаревают молча. Неизвестная
+модель даёт 400/404, попытка отбрасывается, цепочка идёт дальше.
 Каждому даётся вторая попытка, ответ проверяется на полноту структуры (≥60%
 ожидаемых блоков) и на то, что не оборвался на полуслове. Общий бюджет
 `ASK_AI_BUDGET = 150с`. Когда у OpenRouter кончаются кредиты — 402, попытка
@@ -161,5 +165,6 @@ Railway, автоматически из `main`. Сборка по `Dockerfile` 
    после неё сервис становится обычным деплоем из GitHub.
 
 Переменные окружения: `BOT_TOKEN`, `DATABASE_URL`, `WEBAPP_URL`,
+`EXPERIENTIAL_API_KEY` (плюс необязательная `EXPERIENTIAL_MODELS`),
 `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `GROQ_API_KEY`, `YOOKASSA_SHOP_ID`,
 `YOOKASSA_SECRET_KEY`. `PORT` по умолчанию 8080.

@@ -34,7 +34,9 @@ Railway увидит `Dockerfile` и соберёт по нему — там у�
 | `BOT_TOKEN` | @BotFather |
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
 | `WEBAPP_URL` | домен из пункта 5 |
-| `OPENROUTER_API_KEY` | основной ИИ |
+| `EXPERIENTIAL_API_KEY` | основной ИИ, шлюз без наценки (ключ `xpl_…`) |
+| `EXPERIENTIAL_MODELS` | необязательно: имена моделей через запятую |
+| `OPENROUTER_API_KEY` | резервный ИИ |
 | `CEREBRAS_API_KEY` | резерв |
 | `GROQ_API_KEY` | резерв |
 | `YOOKASSA_SHOP_ID` | оплата картой |

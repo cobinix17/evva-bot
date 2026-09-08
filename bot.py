@@ -65,9 +65,11 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not BOT_TOKEN or not DATABASE_URL:
     raise EnvironmentError("BOT_TOKEN и DATABASE_URL должны быть установлены!")
-if not any([os.getenv("CEREBRAS_API_KEY"), os.getenv("GROQ_API_KEY"), os.getenv("OPENROUTER_API_KEY")]):
+if not any([os.getenv("CEREBRAS_API_KEY"), os.getenv("GROQ_API_KEY"),
+            os.getenv("OPENROUTER_API_KEY"), os.getenv("EXPERIENTIAL_API_KEY")]):
     raise EnvironmentError(
-        "Нужен хотя бы один ИИ-провайдер: CEREBRAS_API_KEY, GROQ_API_KEY или OPENROUTER_API_KEY."
+        "Нужен хотя бы один ИИ-провайдер: EXPERIENTIAL_API_KEY, CEREBRAS_API_KEY, "
+        "GROQ_API_KEY или OPENROUTER_API_KEY."
     )
 
 CHANNEL         = "@eva_numerologg"

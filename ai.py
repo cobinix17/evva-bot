@@ -1,4 +1,4 @@
-# ai.py — ИИ-провайдеры: OpenRouter → Cerebras → Groq
+# ai.py — ИИ-провайдеры: Experiential → OpenRouter → Cerebras → Groq
 # Синхронизировано с актуальным bot.py. Самодостаточный модуль: не импортирует
 # ничего из bot.py/config.py, держит свои копии HEADER_EMOJI и хелперов
 # постобработки текста — так модуль можно использовать независимо.
@@ -186,6 +186,17 @@ GROQ_MODELS  = [
     "openai/gpt-oss-120b",
     "qwen/qwen3.6-27b",
     "openai/gpt-oss-20b",
+]
+
+EXPERIENTIAL_API_KEY = os.getenv("EXPERIENTIAL_API_KEY")
+# Каталог шлюза свой и меняется — держим имена моделей в переменной окружения,
+# чтобы не выкладывать бота ради переименованной модели. Значения по умолчанию
+# взяты те же, что у OpenRouter: если их там нет, попытка просто не пройдёт.
+EXPERIENTIAL_MODELS = [
+    m.strip() for m in os.getenv(
+        "EXPERIENTIAL_MODELS",
+        "anthropic/claude-haiku-4.5,deepseek/deepseek-chat"
+    ).split(",") if m.strip()
 ]
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -845,6 +856,60 @@ async def _try_groq(prompt: str) -> str | None:
                 logging.warning(f"Groq {model} attempt {attempt+1} failed: {e}"); break
     return None
 
+# ── EXPERIENTIAL ──────────────────────────────────────────────────────────────
+async def _try_experiential(prompt: str) -> str | None:
+    """Experiential Labs — шлюз к чужим моделям с нулевой наценкой, API
+    совместим с OpenAI. Стоит первым: платит по токенам как OpenRouter, но без
+    надбавки, и через него доступны те же модели.
+
+    Список моделей задаётся переменной EXPERIENTIAL_MODELS (через запятую) —
+    каталог у шлюза свой и меняется, а зашитые идентификаторы устаревают молча.
+    Если модель не найдена, запрос вернёт 400/404, провайдер отдаст None и
+    цепочка спокойно уйдёт на следующего: неверное имя ломает не бота, а только
+    эту попытку.
+    """
+    if not EXPERIENTIAL_API_KEY:
+        return None
+    url     = "https://api.experientiallabs.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {EXPERIENTIAL_API_KEY}",
+        "Content-Type":  "application/json",
+    }
+    t0 = time.perf_counter()
+    for model in EXPERIENTIAL_MODELS:
+        try:
+            data = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _today_note() + SYSTEM_PROMPT},
+                    {"role": "user",   "content": prompt},
+                ],
+                "max_tokens":  8192,
+                "temperature": 0.7,
+            }
+            r = await _client().post(url, headers=headers, json=data, timeout=60)
+            if r.status_code in (400, 404):
+                # Чаще всего — неизвестное имя модели. Пробуем следующую.
+                logging.warning(f"Experiential {model} {r.status_code}: {r.text[:300]}")
+                continue
+            if r.status_code in (401, 403):
+                logging.warning("Experiential: ключ отклонён"); return None
+            if r.status_code == 402:
+                logging.warning("Experiential: кончился баланс"); return None
+            if r.status_code == 429:
+                logging.warning(f"Experiential {model} 429 rate limit"); continue
+            r.raise_for_status()
+            raw    = r.json()["choices"][0]["message"]["content"]
+            result = await asyncio.to_thread(_finalize, raw, f"Experiential {model}")
+            if result is None:
+                continue
+            _LAST_MODEL["Experiential"] = model.split("/")[-1]
+            logging.info(f"Experiential {model} ответил успешно за {time.perf_counter()-t0:.1f}с")
+            return result
+        except Exception as e:
+            logging.warning(f"Experiential {model} failed: {e}")
+    return None
+
 # ── OPENROUTER ────────────────────────────────────────────────────────────────
 async def _try_openrouter(prompt: str) -> str | None:
     """OpenRouter — основной провайдер. Платный по токенам, но умеет
@@ -888,7 +953,7 @@ async def _try_openrouter(prompt: str) -> str | None:
 
 # ── ГЛАВНАЯ ФУНКЦИЯ ───────────────────────────────────────────────────────────
 async def ask_ai(prompt: str) -> str:
-    """OpenRouter → Cerebras → Groq, с проверкой ПОЛНОТЫ структуры ответа
+    """Experiential → OpenRouter → Cerebras → Groq, с проверкой ПОЛНОТЫ структуры ответа
     И того, что генерация не оборвалась на полуслове.
 
     Если провайдер дал ответ, но он покрывает меньше 60% ожидаемых
@@ -906,6 +971,7 @@ async def ask_ai(prompt: str) -> str:
     результат, а не отказ."""
     t0 = time.perf_counter()
     providers = [
+        ("Experiential", _try_experiential),
         ("OpenRouter", _try_openrouter),
         ("Cerebras",   _try_cerebras),
         ("Groq",       _try_groq),
