@@ -603,6 +603,17 @@ async def get_person(owner_id: int, person_id: int) -> dict | None:
     )
     return dict(row) if row else None
 
+async def find_person_by_date(owner_id: int, birth_date: str) -> dict | None:
+    """Кто из близких родился в этот день. Нужно уточнениям после разбора:
+    разбор помнит только дату, а отвечать надо про того, о ком он.
+    Одна дата на двух близких — редкость; берём добавленного первым."""
+    row = await db_pool.fetchrow(
+        "SELECT id, name, birth_date, relation FROM people "
+        "WHERE owner_id = $1 AND birth_date = $2 ORDER BY created_at LIMIT 1",
+        owner_id, birth_date
+    )
+    return dict(row) if row else None
+
 async def count_people(owner_id: int) -> int:
     return await db_pool.fetchval(
         "SELECT COUNT(*) FROM people WHERE owner_id = $1", owner_id

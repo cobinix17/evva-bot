@@ -30,7 +30,7 @@ from config import (
     TITLES, PRICES, UPSELLS, PAID_RAZBORY, FREE_ELIGIBLE, RAZBOR_DESCRIPTIONS, TWO_DATE_KEYS,
     ADMIN_ID, REF_BONUS_PERCENT,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_DAILY_LIMIT, PREMIUM_MONTHLY_LIMIT,
-    PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT, YESNO_FREE_LIMIT,
+    PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, FOLLOWUP_LIMIT, FOLLOWUP_HISTORY, YESNO_FREE_LIMIT,
     YOOKASSA_SHOP_ID, PREMIUM_PRICE_RUB, rub_price, STARS_TO_RUB_RATE, REF_WELCOME_BONUS,
     REVIEW_BONUS,
     REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
@@ -40,7 +40,7 @@ from broadcasts import MORNING, PERSONAL_DAY, NEW_CYCLE_INTRO
 from pdf import generate_pdf
 from generation import (
     premium_gen_semaphore, generate_single, generate_compat, generate_name, _generating,
-    RegenLimitReached, DateCreditRequired,
+    RegenLimitReached, DateCreditRequired, _gender_note,
 )
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date, normalize_date,
@@ -3038,6 +3038,31 @@ async def handle_yesno(message: Message, state: FSMContext):
 # FOLLOWUP_LIMIT бесплатных вопросов на каждый разбор — воронка в премиум:
 # после лимита предлагаем безлимитный AI-чат "Спроси Еву" из подписки.
 # Премиум сразу без ограничений (у них уже есть общий безлимитный чат).
+# Подсказки задают тон: короткие, про «что с этим делать», а не «расскажи ещё».
+# Индекс уходит в callback_data вместо текста — в неё влезает 64 байта, а
+# вопрос по-русски это два байта на букву.
+FOLLOWUP_SUGGESTIONS = (
+    "С чего начать прямо сейчас?",
+    "Что мне мешает больше всего?",
+    "Чего ждать в ближайшие месяцы?",
+)
+
+# Без StateFilter: сообщение с подсказками остаётся в переписке, а состояние
+# после ответа сбрасывается — с фильтром кнопки умирали бы со второго нажатия.
+# Разбор берём из данных FSM, их _answer_followup и проверяет.
+@dp.callback_query(F.data.regexp(r"^fuq_\d+$"))
+async def followup_suggestion_cb(callback: CallbackQuery, state: FSMContext):
+    idx = int(callback.data.removeprefix("fuq_"))
+    if idx >= len(FOLLOWUP_SUGGESTIONS):
+        await callback.answer()
+        return
+    await callback.answer()
+    # Показываем выбранный вопрос как обычное сообщение, чтобы в переписке
+    # остался след: иначе ответ Евы висел бы без вопроса.
+    await callback.message.answer(f"❓ {FOLLOWUP_SUGGESTIONS[idx]}")
+    await _answer_followup(callback.message, callback.from_user.id,
+                           FOLLOWUP_SUGGESTIONS[idx], state)
+
 def _followup_menu(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❓ Задать вопрос по разбору", callback_data=f"followup_{key}")],
@@ -3047,23 +3072,39 @@ def _followup_menu(key: str) -> InlineKeyboardMarkup:
 async def followup_cb(callback: CallbackQuery, state: FSMContext):
     key  = callback.data.replace("followup_", "")
     user = await db.get_user(callback.from_user.id)
-    if key not in user.get("purchased", []):
-        await callback.answer("Этот разбор больше не в списке купленных.", show_alert=True)
+    # Право задавать вопросы даёт ПОЛУЧЕННЫЙ разбор, а не факт покупки — тот же
+    # принцип, что и с отзывами. Бесплатный разбор в purchased не попадает, и
+    # по старой проверке кнопка под ним отвечала «больше не в списке купленных»:
+    # тупик ровно в тот момент, когда человек впервые заинтересовался.
+    if not await db.has_reading(callback.from_user.id, key):
+        await callback.answer(
+            "Спросить можно после того, как получишь разбор 🌸", show_alert=True
+        )
         return
+    # История диалога привязана к КОНКРЕТНОМУ разбору: перешёл к другому —
+    # начинаем с чистого листа, иначе Ева продолжала бы прошлый разговор.
+    data = await state.get_data()
+    if data.get("followup_key") != key:
+        await state.update_data(followup_history=[])
     await state.update_data(followup_key=key)
     title = TITLES.get(key, "разбор")
+    # Готовые вопросы: чистое поле ввода — самый частый тупик, человек не
+    # знает, что вообще можно спросить, и уходит, не задав ни одного вопроса.
+    rows = [
+        [InlineKeyboardButton(text=q, callback_data=f"fuq_{i}")]
+        for i, q in enumerate(FOLLOWUP_SUGGESTIONS)
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")])
     await callback.message.answer(
-        f"❓ Что уточнить по разбору «{title}»? Спрашивай прямо 👇",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel_to_menu")]
-        ])
+        f"❓ Что уточнить по разбору «{title}»? Спрашивай своими словами "
+        "или выбери готовый вопрос 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
     )
     await state.set_state(Form.waiting_followup)
     await callback.answer()
 
 @dp.message(StateFilter(Form.waiting_followup))
 async def handle_followup(message: Message, state: FSMContext):
-    user_id  = message.from_user.id
     question = (message.text or "").strip()
     if len(question) < 3:
         await message.answer("Напиши вопрос текстом, хотя бы пару слов 🙂")
@@ -3071,11 +3112,16 @@ async def handle_followup(message: Message, state: FSMContext):
     if len(question) > ASK_QUESTION_MAX_LEN:
         await message.answer(f"Вопрос слишком длинный — сократи до {ASK_QUESTION_MAX_LEN} символов, пожалуйста.")
         return
+    await _answer_followup(message, message.from_user.id, question, state)
 
+async def _answer_followup(message: Message, user_id: int, question: str, state: FSMContext):
+    """Общее тело уточнения: сюда приходит и напечатанный вопрос, и выбранный
+    кнопкой-подсказкой. Проверки длины остаются снаружи — у подсказок они
+    заведомо выполнены."""
     data = await state.get_data()
     key  = data.get("followup_key")
     user = await db.get_user(user_id)
-    if not key or key not in user.get("purchased", []):
+    if not key or not await db.has_reading(user_id, key):
         await state.clear()
         await message.answer("Разбор не найден — выбери его заново в «Мои разборы» и нажми «Задать вопрос».", reply_markup=_MENU_BACK_MARKUP)
         return
@@ -3104,25 +3150,55 @@ async def handle_followup(message: Message, state: FSMContext):
     _generating.add(user_id)
     wait_msg = await message.answer("⏳ Ева думает над ответом...")
     try:
-        name     = db.default_name(user)
-        title    = TITLES.get(key, "разбор")
-        context  = build_numerology_context(name, user["birth_date"])
-        saved    = await db.get_reading_text(user_id, key)
+        title = TITLES.get(key, "разбор")
+        saved = await db.get_reading_text(user_id, key)
+        # Разбор мог быть на ЧУЖУЮ дату (близкий из списка). Тогда числа надо
+        # брать у того же человека, о ком разбор: раньше контекст считался
+        # всегда по владельцу аккаунта, и Ева отвечала про числа хозяина,
+        # держа перед глазами текст про его дочь.
+        subject_date = (saved or {}).get("date_str") or user["birth_date"]
+        subject      = await db.find_person_by_date(user_id, subject_date)
+        if subject and subject_date != user.get("birth_date"):
+            name    = subject["name"]
+            about   = (
+                f"Разбор сделан не про самого клиента, а про другого человека — "
+                f"это {name}. Отвечай о {name}, а не о клиенте. "
+            )
+        else:
+            name, about = db.default_name(user), ""
+        context = build_numerology_context(name, subject_date)
+
         reading_block = (
-            f"\n\nВот текст самого разбора, который ты ей уже прислала — отвечай ИМЕННО по нему, "
+            f"\n\nВот текст самого разбора, который клиент уже получил — отвечай ИМЕННО по нему, "
             f"не противоречь и не повторяй общие фразы, если в разборе уже есть конкретика:\n«{saved['text']}»"
             if saved and saved.get("text") else ""
         )
-        prompt  = (
-            f"Вот нумерологические данные {name}:\n{context}"
-            f"{reading_block}\n\n"
-            f"Она только что получила от тебя платный разбор «{title}» и теперь уточняет: «{question}»\n\n"
-            "Ответь как Ева — тепло, конкретно, опираясь на её числа и на то, что уже написано в разборе. "
+        # Память диалога: без неё каждый вопрос уходил в пустоту, и на «а
+        # почему?» Ева не понимала, к чему это относится — она не видела
+        # собственного предыдущего ответа.
+        history = data.get("followup_history") or []
+        history_block = ""
+        if history:
+            pairs = "\n\n".join(f"Вопрос: «{q}»\nТвой ответ: «{a}»" for q, a in history)
+            history_block = (
+                f"\n\nВы уже говорили об этом разборе — вот предыдущие вопросы и "
+                f"твои ответы. Не повторяй сказанное, продолжай мысль:\n{pairs}"
+            )
+        prompt = (
+            _gender_note(user)
+            + f"Вот нумерологические данные — {name}:\n{context}"
+            f"{reading_block}{history_block}\n\n"
+            f"{about}Клиент получил разбор «{title}» и теперь уточняет: «{question}»\n\n"
+            "Ответь как Ева — тепло, конкретно, опираясь на числа и на то, что уже написано в разборе. "
             "Это часть живого диалога: не используй emoji-заголовки, не структурируй ответ на "
             "блоки, пиши связным текстом. 3-6 предложений, по делу, без воды."
         )
         async with premium_gen_semaphore(user):
             answer = await ask_ai(prompt)
+        # Держим только последние обмены: весь разбор и так уходит в промпт,
+        # а длинная история вытесняла бы его и раздувала каждый запрос.
+        history = (history + [[question, answer]])[-FOLLOWUP_HISTORY:]
+        await state.update_data(followup_history=history, followup_key=key)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❓ Спросить ещё по этому разбору", callback_data=f"followup_{key}")],
         ])
@@ -3136,7 +3212,14 @@ async def handle_followup(message: Message, state: FSMContext):
             await wait_msg.delete()
         except Exception:
             pass
+        # state.clear() стирал и историю диалога — следующий вопрос снова уходил
+        # без памяти. Чистим всё (иначе, например, чужое имя из прерванного
+        # разбора протекло бы в следующий флоу) и возвращаем только своё.
+        data = await state.get_data()
+        keep = {k: data[k] for k in ("followup_key", "followup_history") if k in data}
         await state.clear()
+        if keep:
+            await state.update_data(**keep)
 
 # ─── ОБРАТНАЯ СВЯЗЬ (приватно админу, без модерации/публикации) ──────────────
 FEEDBACK_MAX_LEN = 800
