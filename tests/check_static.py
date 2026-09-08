@@ -53,6 +53,29 @@ def check_catalog() -> None:
     check("в TITLES только free сверх платных",
           titles - paid == {"free"}, str(titles - paid))
 
+    # Порог бесплатных разборов должен оставаться НИЖЕ верхней цены. Пока он
+    # был числом в выражении ("<= 99"), снижение цен молча накрыло бы им все
+    # разборы — и самые дорогие начали бы раздаваться бесплатно.
+    top_price = max(config.PRICES.values())
+    check("бесплатным доступен самый дорогой разбор",
+          config.FREE_ELIGIBLE_MAX_PRICE < top_price,
+          f"порог {config.FREE_ELIGIBLE_MAX_PRICE} >= верхней цены {top_price}")
+    check("верхний ценовой уровень не бесплатный",
+          not any(config.PRICES[k] == top_price for k in config.FREE_ELIGIBLE),
+          str(sorted(k for k in config.FREE_ELIGIBLE if config.PRICES[k] == top_price)))
+
+    # Цены не должны быть вбиты числом в интерфейсе — иначе витрина и списание
+    # разъезжаются при первом же изменении config.py.
+    # Смотрим только строки, которые реально уходят в интерфейс: в пояснениях
+    # и докстрингах цифры рядом со звёздочкой — это примеры, а не цена.
+    for path in ("keyboards.py", "webapp/static/app.js"):
+        stale = [
+            line.strip() for line in read(path).splitlines()
+            if re.search(r"\b\d{2,4}\s*⭐", line)
+            and ("text=" in line or "<button" in line)
+        ]
+        check(f"цена вбита числом в {path}", not stale, str(stale))
+
     ups = getattr(config, "UPSELL", getattr(config, "UPSELLS", {})) or {}
     dead = {k: [v for v in vs if v not in titles] for k, vs in ups.items()
             if any(v not in titles for v in vs)}

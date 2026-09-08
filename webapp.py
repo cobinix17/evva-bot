@@ -154,6 +154,9 @@ async def api_me(request: web.Request) -> web.Response:
         "email":         user.get("email"),
         "yookassa":      bool(YOOKASSA_SHOP_ID),
         "premium_price_rub": PREMIUM_PRICE_RUB if YOOKASSA_SHOP_ID else None,
+        # Звёздная цена тоже с сервера: во фронте она была вбита числом и
+        # разъехалась бы с config.py при первом же изменении цен.
+        "premium_price_stars": PREMIUM_PRICE,
         "can_spin":      user.get("last_spin_date") is None or user["last_spin_date"] < db.utc_now().date(),
         **await _digest_status(user_id, user),
     })

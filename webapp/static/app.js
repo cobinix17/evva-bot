@@ -914,7 +914,7 @@ function renderPremium() {
           <li>⚡ Приоритетная генерация без очереди</li>
         </ul>
         ${ME.yookassa ? `<input id="pay-email" placeholder="email для чека (для оплаты ₽)" inputmode="email" value="${ME.email ? escapeHtml(ME.email) : ""}" style="margin-bottom:6px">` : ""}
-        <button id="premium-buy-btn">⭐ Оформить за 399 ⭐/мес</button>
+        <button id="premium-buy-btn">⭐ Оформить за ${ME.premium_price_stars} ⭐/мес</button>
         ${ME.yookassa ? `
         <button id="premium-card-btn" style="margin-top:8px">💳 Картой — ${ME.premium_price_rub}₽ (на месяц)</button>
         <button id="premium-sbp-btn" style="margin-top:8px">📱 СБП / QR — ${ME.premium_price_rub}₽ (на месяц)</button>` : ""}

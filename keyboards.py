@@ -5,7 +5,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import (
     TITLES, PRICES, PAID_RAZBORY, FREE_ELIGIBLE, UPSELLS, YOOKASSA_SHOP_ID,
     rub_price, price_of, get_discount, redate_price, REDATE_PREFIX, REDATE_DISCOUNT,
-    REVIEW_BONUS,
+    REVIEW_BONUS, PREMIUM_PRICE,
 )
 
 CONTACT_URL = "https://t.me/eva_numer"
@@ -135,7 +135,7 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
         )])
     else:
         buttons.append([InlineKeyboardButton(
-            text="💎 Ева Премиум — 30 разборов за 399 ⭐/мес",
+            text=f"💎 Ева Премиум — 30 разборов за {PREMIUM_PRICE} ⭐/мес",
             callback_data="premium_info"
         )])
 
@@ -221,7 +221,7 @@ def premium_subscribe_menu(invoice_url: str, rub_price: int | None = None) -> In
     premium_pay_rub_cb в bot.py): там это РАЗОВЫЙ платёж на месяц, не
     автопродление (в отличие от Stars-подписки), поэтому подписан отдельным
     текстом. callback, не url — сначала нужно спросить email для чека."""
-    buttons = [[InlineKeyboardButton(text="💎 Оформить за 399 ⭐/мес", url=invoice_url)]]
+    buttons = [[InlineKeyboardButton(text=f"💎 Оформить за {PREMIUM_PRICE} ⭐/мес", url=invoice_url)]]
     if rub_price:
         buttons.append([InlineKeyboardButton(
             text=f"💳 Картой — {rub_price}₽ (на месяц)",

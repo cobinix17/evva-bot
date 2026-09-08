@@ -45,53 +45,57 @@ TITLES = {
 }
 
 PRICES = {
-    "matrix_full":   149,
-    "forecast_2026": 149,
-    "wealth_blocks": 149,
-    "freedom_path":  149,
-    "mission":       99,
-    "karma":         99,
-    "compat":        99,
-    "own_business":  99,
-    "finance":       99,
-    "promotion":     99,
-    "calling":       79,
-    "career":        79,
-    "money":         79,
-    "when":          79,
-    "portrait":      79,
-    "breakup":       79,
-    "toxic":         79,
-    "hidden_talents":79,
-    "days":          79,
-    "unlucky":       49,
-    "ex":            49,
-    "cold":          49,
-    "lonely":        49,
-    "main_fear":     49,
-    "strong_weak":   49,
-    "health_code":   79,
-    "energy_drain":  49,
-    "body_message":  49,
-    "stress_number": 49,
-    "intuition":     79,
-    "past_life":     99,
-    "future_portal": 149,
-    "turning_point": 79,
-    "ancestor_code": 99,
-    "name_secret":   79,
-    "business_name": 99,
-    "psychomatrix":  99,
-    "mother":        79,
-    "attachment":    79,
+    "matrix_full":   89,
+    "forecast_2026": 89,
+    "wealth_blocks": 89,
+    "freedom_path":  89,
+    "mission":       59,
+    "karma":         59,
+    "compat":        59,
+    "own_business":  59,
+    "finance":       59,
+    "promotion":     59,
+    "calling":       47,
+    "career":        47,
+    "money":         47,
+    "when":          47,
+    "portrait":      47,
+    "breakup":       47,
+    "toxic":         47,
+    "hidden_talents":47,
+    "days":          47,
+    "unlucky":       29,
+    "ex":            29,
+    "cold":          29,
+    "lonely":        29,
+    "main_fear":     29,
+    "strong_weak":   29,
+    "health_code":   47,
+    "energy_drain":  29,
+    "body_message":  29,
+    "stress_number": 29,
+    "intuition":     47,
+    "past_life":     59,
+    "future_portal": 89,
+    "turning_point": 47,
+    "ancestor_code": 59,
+    "name_secret":   47,
+    "business_name": 59,
+    "psychomatrix":  59,
+    "mother":        47,
+    "attachment":    47,
 }
 
 PAID_RAZBORY  = {k: v for k, v in TITLES.items() if k != "free"}
 
-# Разборы которые могут быть бесплатными (до 99⭐ включительно).
+# Разборы которые могут быть бесплатными — все, кроме верхнего ценового
+# уровня. Порог задан константой, а не числом в выражении: при снижении цен
+# «до 99⭐» внезапно накрыло бы ВСЕ разборы, включая самые дорогие, и бот
+# начал бы раздавать их бесплатно.
 # name_secret/business_name исключены: это новые премиум-фичи, и business_name
 # идёт по своему текстовому флоу (не date), где бесплатная логика не заведена.
-FREE_ELIGIBLE = {k for k, v in PRICES.items() if v <= 99 and k not in ("name_secret", "business_name")}
+FREE_ELIGIBLE_MAX_PRICE = 59
+FREE_ELIGIBLE = {k for k, v in PRICES.items() if v <= FREE_ELIGIBLE_MAX_PRICE and k not in ("name_secret", "business_name")}
 
 UPSELLS = {
     "matrix_full":    ("psychomatrix",   "attachment"),
@@ -157,7 +161,7 @@ REF_BONUS_PERCENT = 25  # % от суммы покупки реферала, н�
 # ─── ПРЕМИУМ-ПОДПИСКА (Telegram Stars, рекуррентная) ─────────────────────────
 # Подписка списывает звёзды раз в месяц автоматически. PREMIUM_PERIOD —
 # единственный разрешённый Telegram период для Stars-подписок (ровно 30 суток).
-PREMIUM_PRICE         = 399        # ⭐ в месяц
+PREMIUM_PRICE         = 239        # ⭐ в месяц
 PREMIUM_PERIOD        = 2592000    # 30*24*60*60 — обязательное значение для Stars
 # С даты ниже цена для НОВЫХ подписчиков поднимется — у кого уже активна
 # подписка по старой цене, останутся на ней навсегда (Telegram привязывает
@@ -231,7 +235,9 @@ def rub_price(price_stars: int) -> int:
     """Округляем до десятков рублей — ровные цифры выглядят опрятнее."""
     return round(price_stars * STARS_TO_RUB_RATE / 10) * 10
 
-PREMIUM_PRICE_RUB = rub_price(PREMIUM_PRICE)  # 399⭐ → 640₽
+# Рублёвая цена премиума задана явно, а не через rub_price: 399₽ — витринная
+# цифра, курс дал бы 430₽. Звёздная цена от неё не зависит.
+PREMIUM_PRICE_RUB = 399
 
 # ─── АКЦИЯ / СКИДКА НА РАЗБОРЫ ────────────────────────────────────────────────
 # Глобальный процент скидки на ВСЕ разборы (не на премиум). 0 = акции нет.
