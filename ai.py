@@ -616,8 +616,12 @@ def _similar_enough(a, b):
     (вставка/удаление/замена буквы) и та же первая буква. Раньше проверка
     была слишком слабой (совпадение половины букв в любом порядке) — из-за
     этого спеллчекер подменял верные слова похожими по буквам ('идут' →
-    'дитя', 'кончина' → 'кончин'). Claude Haiku почти не делает орфографических
-    ошибок, поэтому здесь лучше перестраховаться и не трогать слово."""
+    'дитя', 'кончина' → 'кончин'), поэтому здесь лучше перестраховаться.
+
+    Осторожность рассчитана на модель, которая почти не ошибается. Когда
+    отвечает запасной провайдер, ошибки другие — он роняет окончание второго
+    лица целиком («ты може», «ты умее»), а это две-три правки, и сюда такое
+    не проходит. Для того класса есть отдельное правило ниже."""
     if a.lower() == b.lower():
         return False
     if a[:1].lower() != b[:1].lower():
@@ -664,6 +668,47 @@ def _fix_known_words(text: str) -> str:
         text = re.sub(pat, _sub, text)
     return _fix_dangling_negatives(text)
 
+# Второе лицо с оторванным окончанием: «ты може», «ты умее», «ты чувству».
+# Обычный спеллчекер это не берёт — во-первых, слова короче пяти букв он
+# пропускает, во-вторых, тут выпало две-три буквы, а он правит только одну.
+# Правила намеренно узкие: чиним, только если результат — настоящее слово.
+_TY_RE = re.compile(r"\b([Тт]ы\s+)([а-яё]+)\b")
+
+def _fix_truncated_verbs(text: str) -> str:
+    spell = _get_spell_dict()
+    if spell is None:
+        return text
+
+    def in_dict(w: str) -> bool:
+        try:
+            return spell.check(w)
+        except Exception:
+            return False
+
+    def fix_word(w: str) -> str:
+        # «може» → «можешь»: само по себе не слово, а с окончанием — слово.
+        if not in_dict(w) and in_dict(w + "шь"):
+            return w + "шь"
+        return w
+
+    def after_ty(m):
+        head, w = m.group(1), m.group(2)
+        fixed = fix_word(w)
+        if fixed != w:
+            return head + fixed
+        # «ты чувству» → «ты чувствуешь». Само «чувству» — законное слово
+        # (дательный падеж), поэтому чиним только сразу после «ты», где
+        # существительное в дательном стоять не может, и только если слово
+        # кончается на -у/-ю, а с окончанием даёт настоящий глагол.
+        if w.lower().endswith(("у", "ю")) and in_dict(w + "ешь"):
+            return head + w + "ешь"
+        return m.group(0)
+
+    text = _TY_RE.sub(after_ty, text)
+    # Тот же обрыв бывает и без «ты» рядом — чиним только несуществующие слова.
+    return re.sub(r"\b[а-яё]{3,}\b", lambda m: fix_word(m.group(0)), text)
+
+
 def _fix_spelling(text: str) -> str:
     """Проверяет каждое кириллическое слово длиннее 4 букв через hunspell;
     если слово отсутствует в словаре и первый вариант исправления отличается
@@ -708,7 +753,7 @@ def _finalize(raw: str, source: str) -> str | None:
     if ratio > MAX_FOREIGN_RATIO:
         logging.warning(f"{source} — {ratio:.1%} иностранных символов"); return None
     cleaned = _fix_allcaps(cleaned)
-    return _fix_known_words(_fix_spelling(cleaned))
+    return _fix_known_words(_fix_spelling(_fix_truncated_verbs(cleaned)))
 
 # ── CEREBRAS ──────────────────────────────────────────────────────────────────
 async def _try_cerebras(prompt: str) -> str | None:
