@@ -1425,6 +1425,10 @@ async def use_my_date(callback: CallbackQuery, state: FSMContext):
     await state.update_data(other_name=None)
     await _process_date(callback.message, callback.from_user.id, user, user["birth_date"], state, is_free=is_free)
 
+# Состояния, в которых ждём ДВЕ даты: выбор человека из списка ведёт себя
+# в них иначе — вторая дата берётся у него, первая своя.
+_TWO_DATE_STATES = (Form.waiting_second_date.state, Form.waiting_free_second_date.state)
+
 async def _ask_who(message: Message, user_id: int, state: FSMContext):
     """Спрашивает, о ком разбор. Если в списке близких уже кто-то есть —
     показывает их кнопками: имя и дата тогда не нужны вовсе. Пустой список
@@ -1467,6 +1471,13 @@ async def person_new_cb(callback: CallbackQuery, state: FSMContext):
     """«Другой человек» из списка выбора — обычный ввод имени и даты.
     Зарегистрирован ДО person_<id>, иначе тот перехватил бы «new» как id."""
     await callback.answer()
+    # Совместимость просит две даты, а не имя: состояние менять не надо, оно
+    # уже waiting_second_date — иначе человек ввёл бы даты в пустоту.
+    if (await state.get_state()) in _TWO_DATE_STATES:
+        await callback.message.answer(
+            "💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
+        )
+        return
     await callback.message.answer(
         "👤 Для кого этот разбор? Введи имя.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1487,6 +1498,14 @@ async def person_pick_cb(callback: CallbackQuery, state: FSMContext):
     user = await db.get_user(callback.from_user.id)
     data = await state.get_data()
     is_free = bool(data.get("pick_free"))
+    # Совместимость: своя дата плюс дата выбранного человека — вводить нечего.
+    if (await state.get_state()) in _TWO_DATE_STATES:
+        key = user.get("waiting") if user.get("waiting") in TWO_DATE_KEYS else "compat"
+        await _process_two_dates(
+            callback.message, callback.from_user.id, user,
+            [user["birth_date"], person["birth_date"]], state, is_free=is_free, key=key
+        )
+        return
     await state.update_data(other_name=person["name"])
     await _process_date(
         callback.message, callback.from_user.id, user,
@@ -1603,9 +1622,21 @@ async def _start_date_flow(message: Message, state: FSMContext, user: dict, key:
     is_free переключает на free_-состояния, чтобы неудачная генерация не
     сжигала платный счёт за бесплатную попытку (см. _process_date/_process_two_dates)."""
     if key in TWO_DATE_KEYS:
-        intro = "💑 Введи две даты через запятую"
-        await message.answer(f"{intro}:\nНапример: 15.03.1995, 22.07.1998")
         await state.set_state(Form.waiting_free_second_date if is_free else Form.waiting_second_date)
+        # Совместимость — ровно тот разбор, ради которого партнёра и сохраняют.
+        # Если он в списке и своя дата известна, обе даты уже есть: незачем
+        # просить вводить их руками.
+        people = await db.list_people(user["user_id"]) if user.get("birth_date") else []
+        if people:
+            await state.update_data(pick_free=is_free)
+            await message.answer(
+                "💑 С кем сравниваем?",
+                reply_markup=people_pick_menu(people, db.person_label)
+            )
+            return
+        await message.answer(
+            "💑 Введи две даты через запятую:\nНапример: 15.03.1995, 22.07.1998"
+        )
     elif key == "business_name":
         # Разбор по НАЗВАНИЮ, а не по дате — просим текст, а не дату рождения.
         await message.answer(
