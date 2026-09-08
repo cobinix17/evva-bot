@@ -107,6 +107,41 @@ async def main():
     check(await db.set_person_relation(902, who["id"], "child") is False,
           "чужому человеку роль не поменять")
 
+    # ─── дни рождения ────────────────────────────────────────────────────────
+    from datetime import timedelta
+    await db.db_pool.execute("DELETE FROM people WHERE owner_id IN (901, 902)")
+    await db.db_pool.execute(
+        "INSERT INTO users (user_id, notifications) VALUES (901, TRUE), (902, FALSE) "
+        "ON CONFLICT (user_id) DO UPDATE SET notifications = EXCLUDED.notifications"
+    )
+    soon = db.utc_now().date() + timedelta(days=db.BIRTHDAY_NOTICE_DAYS)
+    later = db.utc_now().date() + timedelta(days=db.BIRTHDAY_NOTICE_DAYS + 1)
+    await db.add_person(901, "Именинник", soon.strftime("%d.%m.1990"), "friend", limit=None)
+    await db.add_person(901, "Потом", later.strftime("%d.%m.1990"), "friend", limit=None)
+    # Уведомления выключены — владелец 902 в рассылку попадать не должен.
+    await db.add_person(902, "Тихий", soon.strftime("%d.%m.1990"), "friend", limit=None)
+
+    first = await db.claim_upcoming_birthdays()
+    names = {r["name"] for r in first}
+    check(names == {"Именинник"}, f"выбран только именинник ({names})")
+
+    second = await db.claim_upcoming_birthdays()
+    check(second == [], "повторный вызов ничего не возвращает")
+
+    # Отметка стоит за год именинника, а не за сегодняшний: под Новый год это
+    # разные числа, и по «сегодняшнему» пришло бы второе напоминание.
+    year = await db.db_pool.fetchval(
+        "SELECT bday_year FROM people WHERE owner_id = 901 AND name = 'Именинник'")
+    check(year == soon.year, f"отметка за год дня рождения ({year} vs {soon.year})")
+
+    # Следующий год — напоминание снова уходит.
+    await db.db_pool.execute(
+        "UPDATE people SET bday_year = bday_year - 1 WHERE owner_id = 901 AND name = 'Именинник'")
+    third = await db.claim_upcoming_birthdays()
+    check({r["name"] for r in third} == {"Именинник"}, "через год напоминание повторяется")
+
+    await db.db_pool.execute("DELETE FROM users WHERE user_id IN (901, 902)")
+
     # ─── подпись для кнопки ──────────────────────────────────────────────────
     check(db.person_label({"name": "Соня", "birth_date": "12.05.2015", "relation": "child"})
           == "👧 Соня · 12.05.2015", "подпись с известной ролью")

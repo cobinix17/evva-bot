@@ -264,6 +264,11 @@ async def init_db(database_url: str):
     await db_pool.execute(
         "CREATE INDEX IF NOT EXISTS people_owner_idx ON people (owner_id)"
     )
+    # Год, за который уже отправили напоминание о дне рождения. Без него
+    # перезапуск бота в день рассылки слал бы напоминание повторно.
+    await db_pool.execute(
+        "ALTER TABLE people ADD COLUMN IF NOT EXISTS bday_year SMALLINT"
+    )
     # Простое key-value хранилище настроек (скидка/акция и т.п.) — переживает
     # рестарты Railway, в отличие от переменных в памяти процесса.
     await db_pool.execute('''
@@ -653,6 +658,40 @@ async def delete_person(owner_id: int, person_id: int) -> bool:
         "DELETE FROM people WHERE owner_id = $1 AND id = $2", owner_id, person_id
     )
     return res.endswith(" 1")
+
+BIRTHDAY_NOTICE_DAYS = 3
+
+async def claim_upcoming_birthdays(days_ahead: int = BIRTHDAY_NOTICE_DAYS) -> list[dict]:
+    """Близкие, у кого день рождения через `days_ahead` дней, — и сразу
+    помечает их отправленными за этот год.
+
+    Выборка и пометка одним запросом: иначе перезапуск бота посреди рассылки
+    отправлял бы напоминания заново по второму кругу. Год берётся у самой
+    даты рождения, а не у «сегодня»: 30 декабря напоминание про 2 января
+    относится уже к следующему году, и по «сегодняшнему» году такой человек
+    получил бы второе напоминание.
+
+    Дата хранится строкой ДД.ММ.ГГГГ — сравниваем по дню и месяцу, год
+    рождения в расчёте не участвует. 29 февраля в невисокосный год просто не
+    совпадёт ни с одним днём и напоминание пропускается: подгонять чужую дату
+    к 28-му или 1 марта — решение за пользователя, а не за бот.
+    """
+    target = (utc_now().date() + timedelta(days=days_ahead))
+    rows = await db_pool.fetch(
+        """
+        UPDATE people SET bday_year = $2
+        WHERE id IN (
+            SELECT p.id FROM people p
+            JOIN users u ON u.user_id = p.owner_id
+            WHERE substring(p.birth_date from 1 for 5) = $1
+              AND (p.bday_year IS NULL OR p.bday_year <> $2)
+              AND COALESCE(u.notifications, TRUE)
+        )
+        RETURNING owner_id, id, name, birth_date, relation
+        """,
+        target.strftime("%d.%m"), target.year
+    )
+    return [dict(r) for r in rows]
 
 async def set_person_relation(owner_id: int, person_id: int, relation: str) -> bool:
     res = await db_pool.execute(

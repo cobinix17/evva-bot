@@ -46,6 +46,7 @@ from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date, normalize_date,
     build_numerology_context, calculate_personal_month, calculate_personal_day,
     DAY_ENERGY, personal_day_info, calculate_name_number, PLACEHOLDER_NAMES,
+    calculate_personal_year,
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
@@ -3971,6 +3972,69 @@ async def send_premium_renewal_reminders():
         except Exception as e:
             logging.error(f"Premium reminder batch error: {e}")
 
+# Короткие нейтральные по роду формулировки: в _PERSONAL_YEAR_MEANING они
+# женского рода («заслужила», «первой»), а тут речь о чужом человеке — ребёнке,
+# брате, отце. Писать про сына «ты заслужила» нельзя.
+_BDAY_YEAR_NOTE = {
+    1: "год новых начинаний — всё, что начнётся сейчас, определит следующие девять лет",
+    2: "год терпения и союзов — давить бесполезно, работают связи и умение слушать",
+    3: "год самовыражения — время говорить о себе, творить и не перегружаться",
+    4: "год фундамента — то, что строится честно и методично, будет держать годами",
+    5: "год перемен — жизнь может резко повернуть, и сопротивляться не стоит",
+    6: "год дома и ответственности — в фокусе семья, близкие и забота о себе",
+    7: "год паузы и глубины — суета не даёт результата, ответы приходят в тишине",
+    8: "год результатов и денег — приходит то, что заработано прошлыми годами",
+    9: "год завершения — важно отпустить лишнее, чтобы начать заново налегке",
+}
+
+def _bday_menu(person_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Выбрать разбор", callback_data="show_menu")],
+        [InlineKeyboardButton(text="👥 Мои близкие",   callback_data="people_list")],
+    ])
+
+async def send_birthday_reminders():
+    """UTC 7:00 — за три дня до дня рождения близкого.
+
+    Три дня, а не в сам день: это единственное сообщение, которое человек ждёт,
+    и запас нужен, чтобы успеть что-то сделать — заказать разбор в подарок.
+    Одно напоминание на человека в год: отметку ставит сама выборка в базе,
+    поэтому перезапуск бота посреди рассылки её не повторит."""
+    while True:
+        now    = utc_now()
+        target = now.replace(hour=7, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            people = await db.claim_upcoming_birthdays()
+        except Exception as e:
+            logging.error(f"Birthday batch error: {e}")
+            continue
+        for row in people:
+            try:
+                # Личный год именинника считается от ГОДА ДНЯ РОЖДЕНИЯ, а не от
+                # сегодняшнего: 30 декабря напоминание касается уже следующего
+                # года, и год по «сегодня» был бы чужим.
+                bday = utc_now().date() + timedelta(days=db.BIRTHDAY_NOTICE_DAYS)
+                py   = calculate_personal_year(row["birth_date"], bday.year)
+                turns = bday.year - int(row["birth_date"].split(".")[2])
+                await bot.send_message(
+                    row["owner_id"],
+                    f"🎂 Через {db.BIRTHDAY_NOTICE_DAYS} дня день рождения — "
+                    f"{db.person_label(row)}, исполняется {turns}.\n\n"
+                    f"С этого дня начинается новый личный год: {py} — "
+                    f"{_BDAY_YEAR_NOTE.get(py, '')}.\n\n"
+                    "Хороший повод подарить разбор — он расскажет, чем этот год "
+                    "будет для человека на самом деле 🌸",
+                    reply_markup=_bday_menu(row["id"])
+                )
+                await asyncio.sleep(0.05)
+            except TelegramForbiddenError:
+                pass
+            except Exception as e:
+                logging.warning(f"Birthday reminder error {row['owner_id']}: {e}")
+
 async def send_weekly_poll():
     """Пятница, UTC 9:00 = Москва 12:00 — опрос в канал: и вовлечение (реакции
     поднимают охват), и исследование — что аудитории интереснее разбирать."""
@@ -4071,6 +4135,7 @@ async def main():
     asyncio.create_task(send_monthly_days_post())
     asyncio.create_task(send_weekly_poll())
     asyncio.create_task(send_premium_renewal_reminders())
+    asyncio.create_task(send_birthday_reminders())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
