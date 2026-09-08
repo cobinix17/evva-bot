@@ -36,6 +36,56 @@ def date_choice_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📅 Другая дата", callback_data="use_new_date")],
     ])
 
+# ─── БЛИЗКИЕ ─────────────────────────────────────────────────────────────────
+def people_pick_menu(people: list, label) -> InlineKeyboardMarkup:
+    """Выбор человека вместо ввода имени и даты. `label` — db.person_label;
+    передаём функцией, чтобы клавиатуры не зависели от db (иначе получился бы
+    цикл импортов: db тянет config, а keyboards — db)."""
+    rows = [
+        [InlineKeyboardButton(text=label(p), callback_data=f"person_{p['id']}")]
+        for p in people
+    ]
+    rows.append([InlineKeyboardButton(text="➕ Другой человек", callback_data="person_new")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def people_list_menu(people: list, label, can_add: bool) -> InlineKeyboardMarkup:
+    """Раздел «Мои близкие»: нажатие на человека открывает карточку."""
+    rows = [
+        [InlineKeyboardButton(text=label(p), callback_data=f"personcard_{p['id']}")]
+        for p in people
+    ]
+    if can_add:
+        rows.append([InlineKeyboardButton(text="➕ Добавить человека", callback_data="person_add")])
+    else:
+        rows.append([InlineKeyboardButton(
+            text="💎 Больше близких — в премиуме", callback_data="premium_info"
+        )])
+    rows.append([InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def person_card_menu(person_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Сделать разбор", callback_data="show_menu")],
+        [InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"personren_{person_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить",       callback_data=f"persondel_{person_id}")],
+        [InlineKeyboardButton(text="⬅️ К списку",      callback_data="people_list")],
+    ])
+
+def person_delete_confirm_menu(person_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Да, удалить", callback_data=f"persondelok_{person_id}")],
+        [InlineKeyboardButton(text="⬅️ Отмена",      callback_data="people_list")],
+    ])
+
+def relation_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👧 Ребёнок",  callback_data="rel_child"),
+         InlineKeyboardButton(text="💑 Партнёр",  callback_data="rel_partner")],
+        [InlineKeyboardButton(text="👵 Родитель", callback_data="rel_parent"),
+         InlineKeyboardButton(text="🤝 Друг",     callback_data="rel_friend")],
+        [InlineKeyboardButton(text="👤 Другое",   callback_data="rel_other")],
+    ])
+
 def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:
     if notifications_on:
         return InlineKeyboardMarkup(inline_keyboard=[
@@ -95,6 +145,10 @@ def main_menu(user=None, is_admin=False, is_premium=False) -> InlineKeyboardMark
     buttons.append([InlineKeyboardButton(text="💑 Любовь и отношения",   callback_data="section_love")])
     buttons.append([InlineKeyboardButton(text="🌙 Здоровье и энергия",   callback_data="section_health")])
     buttons.append([InlineKeyboardButton(text="✨ Прошлое и будущее",    callback_data="section_past")])
+    buttons.append([InlineKeyboardButton(
+        text="👥 Мои близкие",
+        callback_data="people_list"
+    )])
     buttons.append([InlineKeyboardButton(
         text="👤 Мой профиль",
         callback_data="my_profile"

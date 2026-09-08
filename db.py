@@ -242,6 +242,28 @@ async def init_db(database_url: str):
         ''')
     except Exception as e:
         logging.warning(f"перенос слотов дат не выполнен: {e}")
+    # Близкие: люди, которых пользователь разбирает кроме себя. Раньше имя и
+    # дата другого человека собирались в FSM и выбрасывались после генерации —
+    # на второй разбор про того же ребёнка их приходилось вводить заново.
+    await db_pool.execute('''
+        CREATE TABLE IF NOT EXISTS people (
+            id         SERIAL PRIMARY KEY,
+            owner_id   BIGINT NOT NULL,
+            name       TEXT   NOT NULL,
+            birth_date TEXT   NOT NULL,
+            relation   TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    ''')
+    # Один и тот же человек не должен задваиваться, если его добавили дважды
+    # (разбор на ту же дату с тем же именем). Регистр имени не считаем разным.
+    await db_pool.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS people_owner_uniq
+            ON people (owner_id, lower(name), birth_date)
+    ''')
+    await db_pool.execute(
+        "CREATE INDEX IF NOT EXISTS people_owner_idx ON people (owner_id)"
+    )
     # Простое key-value хранилище настроек (скидка/акция и т.п.) — переживает
     # рестарты Railway, в отличие от переменных в памяти процесса.
     await db_pool.execute('''
@@ -538,6 +560,110 @@ def default_name(user: dict) -> str:
     """Имя для обращения с фолбэком по полу — вместо разбросанных по коду
     `user.get("first_name") or "дорогая"`."""
     return user.get("first_name") or ("дорогой" if is_male(user) else "дорогая")
+
+# ─── БЛИЗКИЕ ─────────────────────────────────────────────────────────────────
+# Сколько людей помещается в список без премиума. Премиум снимает ограничение —
+# это одна из немногих его функций, которую видно до покупки разбора.
+PEOPLE_FREE_LIMIT = 3
+
+RELATION_EMOJI = {
+    "child":   "👧",
+    "partner": "💑",
+    "parent":  "👵",
+    "friend":  "🤝",
+    "other":   "👤",
+}
+
+def person_label(person: dict) -> str:
+    """Строка для кнопки: «👧 Соня · 12.05.2015»."""
+    emoji = RELATION_EMOJI.get(person.get("relation") or "other", "👤")
+    return f"{emoji} {person['name']} · {person['birth_date']}"
+
+async def list_people(owner_id: int) -> list[dict]:
+    rows = await db_pool.fetch(
+        "SELECT id, name, birth_date, relation FROM people "
+        "WHERE owner_id = $1 ORDER BY created_at",
+        owner_id
+    )
+    return [dict(r) for r in rows]
+
+async def get_person(owner_id: int, person_id: int) -> dict | None:
+    """Всегда с owner_id в WHERE: id идёт из callback_data, то есть приходит
+    от клиента, и без владельца чужой список читался бы по подобранному id."""
+    row = await db_pool.fetchrow(
+        "SELECT id, name, birth_date, relation FROM people "
+        "WHERE owner_id = $1 AND id = $2",
+        owner_id, person_id
+    )
+    return dict(row) if row else None
+
+async def count_people(owner_id: int) -> int:
+    return await db_pool.fetchval(
+        "SELECT COUNT(*) FROM people WHERE owner_id = $1", owner_id
+    ) or 0
+
+async def add_person(
+    owner_id: int, name: str, birth_date: str,
+    relation: str | None = None, limit: int | None = None,
+) -> dict | None:
+    """Добавляет человека. Возвращает None, если список уже полон.
+
+    Повторное добавление того же человека не ошибка и лимит не тратит —
+    ON CONFLICT возвращает уже существующую запись.
+
+    Проверка лимита идёт под advisory-блокировкой владельца. Одним запросом
+    (`INSERT ... WHERE (SELECT COUNT(*)) < limit`) это не решается: подзапрос
+    читает снимок, и параллельные вставки видят одно и то же старое число.
+    Тест на 10 одновременных добавлений так и клал в список 4 человека вместо
+    трёх — цифра плавала от запуска к запуску, что для лимита неприемлемо.
+    """
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            # Блокировка на время транзакции и только по этому владельцу:
+            # чужие списки не ждут друг друга.
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", owner_id)
+            if limit is not None:
+                used = await conn.fetchval(
+                    "SELECT COUNT(*) FROM people WHERE owner_id = $1", owner_id
+                )
+                if used >= limit:
+                    # Список полон — но человек мог уже быть в нём, и тогда это
+                    # не отказ, а обычный повтор.
+                    existing = await conn.fetchrow(
+                        "SELECT id, name, birth_date, relation FROM people "
+                        "WHERE owner_id = $1 AND lower(name) = lower($2) AND birth_date = $3",
+                        owner_id, name, birth_date
+                    )
+                    return dict(existing) if existing else None
+            row = await conn.fetchrow(
+                """
+                INSERT INTO people (owner_id, name, birth_date, relation)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (owner_id, lower(name), birth_date) DO UPDATE
+                    SET relation = COALESCE(EXCLUDED.relation, people.relation)
+                RETURNING id, name, birth_date, relation
+                """,
+                owner_id, name, birth_date, relation
+            )
+            return dict(row) if row else None
+
+async def delete_person(owner_id: int, person_id: int) -> bool:
+    res = await db_pool.execute(
+        "DELETE FROM people WHERE owner_id = $1 AND id = $2", owner_id, person_id
+    )
+    return res.endswith(" 1")
+
+async def rename_person(owner_id: int, person_id: int, name: str) -> bool:
+    try:
+        res = await db_pool.execute(
+            "UPDATE people SET name = $3 WHERE owner_id = $1 AND id = $2",
+            owner_id, person_id, name
+        )
+    except asyncpg.UniqueViolationError:
+        # Переименовали в того, кто уже есть с той же датой — молча не трогаем,
+        # иначе пришлось бы объяснять пользователю конфликт индекса.
+        return False
+    return res.endswith(" 1")
 
 async def set_email(user_id: int, email: str):
     """Сохраняет email для чеков ЮKassa — чтобы не спрашивать заново на

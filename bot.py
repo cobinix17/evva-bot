@@ -45,7 +45,7 @@ from generation import (
 from numerology import (
     calculate_destiny, calculate_day_number, is_valid_date, normalize_date,
     build_numerology_context, calculate_personal_month, calculate_personal_day,
-    DAY_ENERGY, personal_day_info, calculate_name_number,
+    DAY_ENERGY, personal_day_info, calculate_name_number, PLACEHOLDER_NAMES,
 )
 from keyboards import (
     check_menu, date_choice_menu, notifications_menu, main_menu,
@@ -55,6 +55,8 @@ from keyboards import (
     notif_off_menu, admin_menu, balance_pay_menu, payment_choice_menu,
     redate_offer_menu, review_sent_menu, reviews_channel_button,
     premium_subscribe_menu, premium_active_menu, gift_sections_menu, profile_menu,
+    people_pick_menu, people_list_menu, person_card_menu, person_delete_confirm_menu,
+    relation_menu,
 )
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
@@ -209,6 +211,9 @@ class Form(StatesGroup):
     waiting_other_name       = State()
     waiting_destiny_calc     = State()
     waiting_destiny_other    = State()
+    waiting_person_name      = State()
+    waiting_person_date      = State()
+    waiting_person_rename    = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1419,12 +1424,47 @@ async def use_my_date(callback: CallbackQuery, state: FSMContext):
     await state.update_data(other_name=None)
     await _process_date(callback.message, callback.from_user.id, user, user["birth_date"], state, is_free=is_free)
 
+async def _ask_who(message: Message, user_id: int, state: FSMContext):
+    """Спрашивает, о ком разбор. Если в списке близких уже кто-то есть —
+    показывает их кнопками: имя и дата тогда не нужны вовсе. Пустой список
+    ведёт себя как раньше — ввод имени вручную."""
+    people = await db.list_people(user_id)
+    # Бесплатность разбора определялась по текущему состоянию FSM. Список
+    # близких это состояние меняет, поэтому запоминаем признак в данных —
+    # иначе бесплатный разбор после выбора человека считался бы платным.
+    is_free = (await state.get_state()) == Form.waiting_free_date.state
+    await state.update_data(pick_free=is_free)
+    if people:
+        await message.answer(
+            "👥 О ком делаем разбор?",
+            reply_markup=people_pick_menu(people, db.person_label)
+        )
+        # Состояние «жду имя», а не «жду дату»: пока висит список, введённая
+        # руками дата ушла бы в разбор БЕЗ имени — то есть под именем владельца
+        # аккаунта, хотя разбор делается на другого человека.
+        await state.set_state(Form.waiting_other_name)
+        return
+    await message.answer(
+        "👤 Для кого этот разбор? Введи имя.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Без имени", callback_data="other_name_skip")]
+        ])
+    )
+    await state.set_state(Form.waiting_other_name)
+
 @dp.callback_query(F.data == "use_new_date")
 async def use_new_date(callback: CallbackQuery, state: FSMContext):
     # Другая дата = чужой разбор — числа имени (душа/личность/имя) в контексте
     # промпта иначе считались бы по ИМЕНИ ВЛАДЕЛЬЦА АККАУНТА, а не того, о ком
     # разбор. Раньше это молча пролезало (см. _process_date): бот писал "разбор
     # для Руслана" даже когда дату вводили для другого человека.
+    await callback.answer()
+    await _ask_who(callback.message, callback.from_user.id, state)
+
+@dp.callback_query(F.data == "person_new")
+async def person_new_cb(callback: CallbackQuery, state: FSMContext):
+    """«Другой человек» из списка выбора — обычный ввод имени и даты.
+    Зарегистрирован ДО person_<id>, иначе тот перехватил бы «new» как id."""
     await callback.answer()
     await callback.message.answer(
         "👤 Для кого этот разбор? Введи имя.",
@@ -1433,6 +1473,24 @@ async def use_new_date(callback: CallbackQuery, state: FSMContext):
         ])
     )
     await state.set_state(Form.waiting_other_name)
+
+@dp.callback_query(F.data.regexp(r"^person_\d+$"))
+async def person_pick_cb(callback: CallbackQuery, state: FSMContext):
+    """Выбран близкий из списка — имя и дата уже известны, сразу к разбору."""
+    person_id = int(callback.data.removeprefix("person_"))
+    person = await db.get_person(callback.from_user.id, person_id)
+    await callback.answer()
+    if not person:
+        await callback.message.answer("Этого человека уже нет в списке 🌸")
+        return
+    user = await db.get_user(callback.from_user.id)
+    data = await state.get_data()
+    is_free = bool(data.get("pick_free"))
+    await state.update_data(other_name=person["name"])
+    await _process_date(
+        callback.message, callback.from_user.id, user,
+        person["birth_date"], state, is_free=is_free
+    )
 
 @dp.message(StateFilter(Form.waiting_other_name))
 async def handle_other_name(message: Message, state: FSMContext):
@@ -1571,14 +1629,10 @@ async def _start_redate_flow(message: Message, state: FSMContext, user: dict, ke
     else:
         # Сначала имя, потом дата: без этого числа имени (душа, личность, имя)
         # считались бы по имени ВЛАДЕЛЬЦА аккаунта, и разбор для другого
-        # человека подписывался бы его именем.
-        await message.answer(
-            "👤 Как зовут человека, которого разбираем?",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Без имени", callback_data="other_name_skip")]
-            ])
-        )
-        await state.set_state(Form.waiting_other_name)
+        # человека подписывался бы его именем. Если близкие уже сохранены —
+        # предлагаем выбрать из списка, тогда вводить нечего.
+        await state.set_state(Form.waiting_date)
+        await _ask_who(message, user["user_id"], state)
 
 async def _redate_ref_bonus(user: dict, user_id: int, amount: int, key: str):
     """Реферальный бонус с докупки даты — та же логика, что и с обычной покупки."""
@@ -2056,6 +2110,18 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         user["destiny_number"] = number
         await db.save_user(user_id, user)
 
+    # Разбор на другого человека — запоминаем его, чтобы в следующий раз не
+    # вводить имя и дату заново. Заглушки («дорогой человек») не сохраняем:
+    # список из трёх «дорогих человек» с разными датами бесполезен.
+    people_full = False
+    if subject_name and subject_name.strip().lower() not in PLACEHOLDER_NAMES:
+        try:
+            limit = None if db.is_premium(user) else db.PEOPLE_FREE_LIMIT
+            saved = await db.add_person(user_id, subject_name, date_str, limit=limit)
+            people_full = saved is None
+        except Exception as e:
+            logging.warning(f"не удалось сохранить близкого для {user_id}: {e}")
+
     wait_msg = await message.answer(f"⏳ Ева составляет разбор для {name}... Подожди немного ✨")
 
     async def send_intermediate():
@@ -2099,6 +2165,18 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             )
         except Exception as pdf_err:
             logging.warning(f"PDF generation failed for {waiting}: {pdf_err}")
+
+        if people_full:
+            await message.answer(
+                f"👥 {subject_name} не поместился в список близких — "
+                f"без премиума в нём {db.PEOPLE_FREE_LIMIT} человека. "
+                "Разбор это никак не затронуло, но в следующий раз имя и дату "
+                "придётся ввести заново.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="💎 Снять лимит", callback_data="premium_info")],
+                    [InlineKeyboardButton(text="👥 Мои близкие", callback_data="people_list")],
+                ])
+            )
 
         await message.answer(
             "❓ Остались вопросы по этому разбору? Уточни у меня напрямую 👇",
@@ -2430,7 +2508,13 @@ async def handle_date(message: Message, state: FSMContext):
     if not is_valid_date(text):
         await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
         return
-    await _process_date(message, message.from_user.id, user, text, state)
+    # Бесплатный разбор на ЧУЖУЮ дату приходит сюда, а не в handle_free_date:
+    # ввод имени переводит состояние в waiting_date. Без pick_free он считался
+    # бы платным — слот даты не занимался, и бесплатный разбор можно было взять
+    # второй раз.
+    data = await state.get_data()
+    await _process_date(message, message.from_user.id, user, text, state,
+                        is_free=bool(data.get("pick_free")))
 
 # ─── ОТЗЫВЫ ──────────────────────────────────────────────────────────────────
 @dp.callback_query(F.data.startswith("leave_review_"))
@@ -3293,6 +3377,156 @@ async def admin_disc_set_cb(callback: CallbackQuery):
         await callback.message.edit_reply_markup(reply_markup=_discount_menu())
     except Exception:
         pass
+
+# ─── БЛИЗКИЕ ─────────────────────────────────────────────────────────────────
+async def _show_people(message: Message, user_id: int, user: dict):
+    people = await db.list_people(user_id)
+    unlimited = db.is_premium(user)
+    can_add = unlimited or len(people) < db.PEOPLE_FREE_LIMIT
+    if people:
+        limit_line = (
+            "Премиум — без ограничений."
+            if unlimited else
+            f"Занято {len(people)} из {db.PEOPLE_FREE_LIMIT}."
+        )
+        text = (
+            "👥 Твои близкие\n\n"
+            "Их даты я помню — когда делаешь разбор на другого человека, "
+            f"достаточно выбрать его из списка.\n\n{limit_line}"
+        )
+    else:
+        text = (
+            "👥 Твои близкие\n\n"
+            "Здесь появятся люди, которых ты разбираешь кроме себя — ребёнок, "
+            "партнёр, родители. Их имена и даты я запомню, и вводить заново "
+            "не придётся.\n\n"
+            f"Без премиума в списке до {db.PEOPLE_FREE_LIMIT} человек."
+        )
+    await message.answer(text, reply_markup=people_list_menu(people, db.person_label, can_add))
+
+@dp.message(Command("people"), StateFilter("*"))
+async def people_cmd(message: Message, state: FSMContext):
+    await state.clear()
+    user = await db.get_user(message.from_user.id)
+    await _show_people(message, message.from_user.id, user)
+
+@dp.callback_query(F.data == "people_list")
+async def people_list_cb(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer()
+    user = await db.get_user(callback.from_user.id)
+    await _show_people(callback.message, callback.from_user.id, user)
+
+@dp.callback_query(F.data == "person_add")
+async def person_add_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer("👤 Как зовут человека?")
+    await state.set_state(Form.waiting_person_name)
+
+@dp.message(StateFilter(Form.waiting_person_name))
+async def handle_person_name(message: Message, state: FSMContext):
+    name = sanitize_name(message.text or "")
+    if len(name) < 2 or len(name) > 30:
+        await message.answer("Введи имя текстом — только буквы, от 2 до 30 символов 😊")
+        return
+    await state.update_data(person_name=name)
+    await message.answer(f"📅 Дата рождения {name} — в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
+    await state.set_state(Form.waiting_person_date)
+
+@dp.message(StateFilter(Form.waiting_person_date))
+async def handle_person_date(message: Message, state: FSMContext):
+    date_str = normalize_date(message.text or "")
+    if not is_valid_date(date_str):
+        await message.answer("❌ Неверная дата. Введи в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
+        return
+    await state.update_data(person_date=date_str)
+    await message.answer("Кто это для тебя?", reply_markup=relation_menu())
+
+@dp.callback_query(F.data.startswith("rel_"), StateFilter(Form.waiting_person_date))
+async def person_relation_cb(callback: CallbackQuery, state: FSMContext):
+    relation = callback.data.removeprefix("rel_")
+    data = await state.get_data()
+    name, date_str = data.get("person_name"), data.get("person_date")
+    await callback.answer()
+    await state.clear()
+    if not name or not date_str:
+        await callback.message.answer("Что-то потерялось — начни заново 🌸")
+        return
+    user = await db.get_user(callback.from_user.id)
+    limit = None if db.is_premium(user) else db.PEOPLE_FREE_LIMIT
+    saved = await db.add_person(callback.from_user.id, name, date_str, relation, limit=limit)
+    if saved is None:
+        await callback.message.answer(
+            f"👥 Список полон — без премиума в нём {db.PEOPLE_FREE_LIMIT} человека. "
+            "Удали кого-то или сними лимит премиумом.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💎 Снять лимит", callback_data="premium_info")],
+                [InlineKeyboardButton(text="👥 Мои близкие", callback_data="people_list")],
+            ])
+        )
+        return
+    await callback.message.answer(f"✅ {db.person_label(saved)} — в списке.")
+    await _show_people(callback.message, callback.from_user.id, user)
+
+@dp.callback_query(F.data.startswith("personcard_"))
+async def person_card_cb(callback: CallbackQuery):
+    person_id = int(callback.data.removeprefix("personcard_"))
+    person = await db.get_person(callback.from_user.id, person_id)
+    await callback.answer()
+    if not person:
+        await callback.message.answer("Этого человека уже нет в списке 🌸")
+        return
+    destiny = calculate_destiny(person["birth_date"])
+    await callback.message.answer(
+        f"{db.person_label(person)}\n\nЧисло судьбы: {destiny}",
+        reply_markup=person_card_menu(person_id)
+    )
+
+@dp.callback_query(F.data.startswith("persondelok_"))
+async def person_delete_ok_cb(callback: CallbackQuery, state: FSMContext):
+    """Зарегистрирован ДО persondel_, иначе тот перехватил бы подтверждение:
+    'persondelok_5' начинается с 'persondel_'."""
+    person_id = int(callback.data.removeprefix("persondelok_"))
+    await db.delete_person(callback.from_user.id, person_id)
+    await callback.answer("Удалено")
+    user = await db.get_user(callback.from_user.id)
+    await _show_people(callback.message, callback.from_user.id, user)
+
+@dp.callback_query(F.data.startswith("persondel_"))
+async def person_delete_cb(callback: CallbackQuery):
+    person_id = int(callback.data.removeprefix("persondel_"))
+    person = await db.get_person(callback.from_user.id, person_id)
+    await callback.answer()
+    if not person:
+        return
+    await callback.message.answer(
+        f"Удалить {db.person_label(person)} из списка?\n\n"
+        "Сделанные разборы останутся — пропадут только имя и дата.",
+        reply_markup=person_delete_confirm_menu(person_id)
+    )
+
+@dp.callback_query(F.data.startswith("personren_"))
+async def person_rename_cb(callback: CallbackQuery, state: FSMContext):
+    person_id = int(callback.data.removeprefix("personren_"))
+    await callback.answer()
+    await state.update_data(rename_person_id=person_id)
+    await callback.message.answer("✏️ Введи новое имя:")
+    await state.set_state(Form.waiting_person_rename)
+
+@dp.message(StateFilter(Form.waiting_person_rename))
+async def handle_person_rename(message: Message, state: FSMContext):
+    name = sanitize_name(message.text or "")
+    if len(name) < 2 or len(name) > 30:
+        await message.answer("Введи имя текстом — только буквы, от 2 до 30 символов 😊")
+        return
+    data = await state.get_data()
+    person_id = data.get("rename_person_id")
+    await state.clear()
+    ok = await db.rename_person(message.from_user.id, person_id, name) if person_id else False
+    if not ok:
+        await message.answer("Не получилось переименовать — возможно, такой человек уже есть в списке.")
+    user = await db.get_user(message.from_user.id)
+    await _show_people(message, message.from_user.id, user)
 
 @dp.message(Command("profile"), StateFilter("*"))
 async def profile_cmd(message: Message, state: FSMContext):
