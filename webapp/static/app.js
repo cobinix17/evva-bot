@@ -672,6 +672,7 @@ function renderReadingDateForm(key, forceNew) {
       <p>${forceNew
             ? "Для кого этот разбор? Введи дату рождения и имя."
             : "Для кого делаем разбор? Введи дату рождения."}</p>
+      ${forceNew ? `<div id="rd-people"></div>` : ""}
       <input id="rd-date" placeholder="ДД.ММ.ГГГГ" inputmode="numeric" value="${prefill}">
       ${nameField}
     `;
@@ -686,6 +687,32 @@ function renderReadingDateForm(key, forceNew) {
   `;
   document.getElementById("reading-back").addEventListener("click", render);
   document.getElementById("rd-submit").addEventListener("click", () => generateReading(key));
+  // Разбор на другого человека: если близкие уже сохранены — показываем их
+  // кнопками, чтобы имя и дату не вводить заново. Подгружаем после отрисовки,
+  // форма при этом доступна сразу.
+  if (forceNew && !isCompat && key !== "business_name") fillPeoplePicker();
+}
+
+async function fillPeoplePicker() {
+  const data = await loadPeople();
+  if (!data.people.length) return;
+  const box = document.getElementById("rd-people");
+  if (!box) return;
+  box.innerHTML = `
+    <p style="margin-bottom:8px">Уже в твоём списке:</p>
+    ${data.people.map(p => `
+      <button class="person-pick" data-date="${escapeHtml(p.birth_date)}"
+              data-name="${escapeHtml(p.name)}" style="margin-bottom:8px">
+        ${escapeHtml(p.label)}
+      </button>
+    `).join("")}
+  `;
+  box.querySelectorAll(".person-pick").forEach(el =>
+    el.addEventListener("click", () => {
+      document.getElementById("rd-date").value = el.dataset.date;
+      document.getElementById("rd-name").value = el.dataset.name;
+    })
+  );
 }
 
 async function generateReading(key) {
@@ -709,6 +736,8 @@ async function generateReading(key) {
   app.innerHTML = `<div class="empty">⏳ Ева составляет разбор…<br>Это занимает до минуты 🔮</div>`;
   try {
     const r = await api(`/api/reading/${key}/generate`, { method: "POST", body: JSON.stringify(body) });
+    // Разбор на чужую дату мог добавить человека в список — кэш устарел.
+    PEOPLE = null;
     await boot();               // подтянуть обновлённую дату рождения/каталог
     renderReadingResult(key, r.title, r.text);
   } catch (e) {
@@ -1008,6 +1037,8 @@ function renderMore() {
     </div>
     <div id="ref-block" class="onboard"><p>Загрузка…</p></div>
 
+    <div id="people-block" class="onboard"><p>Загрузка…</p></div>
+
     <div class="onboard">
       <div class="toggle-row">
         <div>
@@ -1055,6 +1086,82 @@ function renderMore() {
 
 // Смена имени убрана из веба — имя для чужого разбора теперь спрашивается в
 // боте при вводе другой даты, а смена своего имени осталась в профиле бота.
+
+// ── БЛИЗКИЕ ─────────────────────────────────────────────────────────────────
+// Список людей, которых пользователь разбирает кроме себя. Дальше он нужен в
+// двух местах: в разделе «Ещё» (управление) и в форме разбора на другую дату
+// (выбор вместо ввода). Держим в памяти, чтобы форма открывалась без запроса.
+let PEOPLE = null;
+
+async function loadPeople(force) {
+  if (PEOPLE && !force) return PEOPLE;
+  try {
+    PEOPLE = await api("/api/people");
+  } catch (e) {
+    PEOPLE = { people: [], limit: null, can_add: false };
+  }
+  return PEOPLE;
+}
+
+function renderPeopleBlock(data) {
+  const rows = data.people.map(p => `
+    <div class="toggle-row">
+      <div>${escapeHtml(p.label)}</div>
+      <button class="person-del" data-id="${p.id}" style="width:auto;padding:6px 12px;margin:0">🗑</button>
+    </div>
+  `).join("");
+  const limitLine = data.limit === null
+    ? "Премиум — без ограничений."
+    : `Занято ${data.people.length} из ${data.limit}.`;
+  const form = data.can_add ? `
+    <input id="person-name" placeholder="Имя" maxlength="30" style="margin-top:10px">
+    <input id="person-date" placeholder="ДД.ММ.ГГГГ" inputmode="numeric" style="margin-top:8px">
+    <button id="person-add-btn" style="margin-top:8px">➕ Добавить</button>
+  ` : `<p style="margin-top:10px">Список полон. Премиум снимает лимит.</p>`;
+  return `
+    <div class="section-t" style="margin-bottom:10px">Мои близкие</div>
+    <p>Их даты я помню — при разборе на другого человека достаточно выбрать
+       его из списка. ${escapeHtml(limitLine)}</p>
+    ${rows}
+    ${form}
+  `;
+}
+
+async function loadPeopleBlock(force) {
+  const block = document.getElementById("people-block");
+  if (!block) return;
+  const data = await loadPeople(force);
+  block.innerHTML = renderPeopleBlock(data);
+  block.querySelectorAll(".person-del").forEach(el =>
+    el.addEventListener("click", () => deletePerson(el.dataset.id))
+  );
+  document.getElementById("person-add-btn")?.addEventListener("click", addPerson);
+}
+
+async function addPerson() {
+  const name = document.getElementById("person-name").value.trim();
+  const date = document.getElementById("person-date").value.trim();
+  if (name.length < 2) { tg?.showAlert("Введи имя 🌸"); return; }
+  if (!date)           { tg?.showAlert("Введи дату рождения 🌸"); return; }
+  try {
+    await api("/api/people", {
+      method: "POST",
+      body: JSON.stringify({ name, birth_date: date })
+    });
+    await loadPeopleBlock(true);
+  } catch (e) {
+    tg?.showAlert(e.message || "Не получилось добавить");
+  }
+}
+
+async function deletePerson(id) {
+  try {
+    await api(`/api/people/${id}`, { method: "DELETE" });
+    await loadPeopleBlock(true);
+  } catch (e) {
+    tg?.showAlert(e.message || "Не получилось удалить");
+  }
+}
 
 async function toggleNotifications(e) {
   try {
@@ -1168,6 +1275,7 @@ function render() {
   } else if (currentTab === "more") {
     app.innerHTML = renderMore();
     loadReferralBlock();
+    loadPeopleBlock();
     document.getElementById("notif-toggle").addEventListener("change", toggleNotifications);
     // openTelegramLink открывает канал внутри Telegram, не выкидывая в браузер.
     document.getElementById("ch-main-btn")?.addEventListener("click",

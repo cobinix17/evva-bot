@@ -35,6 +35,11 @@ Telegram-бот [@nnumerology_bot](https://t.me/nnumerology_bot) плюс Mini A
 | `header_emoji.py` | **единый** список эмодзи-заголовков блоков |
 | `achievements.py` | значки-достижения, общие для бота и веба |
 
+Список близких (таблица `people`) — люди, которых разбирают кроме себя. Имя и
+дата сохраняются автоматически после разбора на чужую дату; заглушки из
+`PLACEHOLDER_NAMES` не сохраняются. Без премиума 3 человека
+(`db.PEOPLE_FREE_LIMIT`), премиум снимает лимит.
+
 ## Цифры, которые важно не перепутать
 
 - **40** ключей в `TITLES`, из них **39** платных (`PAID_RAZBORY`); 40-й — `free`.
@@ -88,6 +93,12 @@ python3 tests/check_static.py
 
 ```
 python3 tests/test_ai_text.py
+```
+
+Список близких, нужен PostgreSQL:
+
+```
+DATABASE_URL=$(sh tests/pg_start.sh) python3 tests/test_people.py
 ```
 
 Денежные и миграции, нужен PostgreSQL (как поднять — см. `tests/README.md`):

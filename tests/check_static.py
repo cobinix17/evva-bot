@@ -185,7 +185,11 @@ def check_web() -> None:
     """Эндпоинт без проверки initData отдаёт чужие данные по подставленному
     user_id. Публичными задуманы только каталог, матрица по дате и статика."""
     src = read("webapp.py")
-    routes = re.findall(r'app\.router\.add_(?:get|post)\("([^"]+)", (\w+)\)', src)
+    # Все методы, а не только get/post: add_delete проходил мимо этой проверки,
+    # то есть DELETE-эндпоинт мог остаться без проверки авторизации незамеченным.
+    routes = re.findall(
+        r'app\.router\.add_(?:get|post|put|patch|delete)\("([^"]+)", (\w+)\)', src
+    )
     public = {"/api/catalog", "/api/matrix", "/webhook/yookassa", "/app", "/app/", "/app/static"}
     unguarded = []
     for path, fn in routes:

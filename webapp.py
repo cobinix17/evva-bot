@@ -26,7 +26,10 @@ from config import (
     PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price, price_of, get_discount,
     REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
 )
-from numerology import numerology_summary, is_valid_date, build_numerology_context, calculate_destiny, normalize_date
+from numerology import (
+    numerology_summary, is_valid_date, build_numerology_context, calculate_destiny,
+    normalize_date, PLACEHOLDER_NAMES,
+)
 from keyboards import date_choice_menu
 from ai import ask_ai, is_rude, rude_reply
 
@@ -215,6 +218,67 @@ async def api_set_name(request: web.Request) -> web.Response:
     user["first_name"] = name
     await db.save_user(user_id, user)
     return web.json_response({"ok": True, "name": name})
+
+# ── БЛИЗКИЕ ───────────────────────────────────────────────────────────────────
+def _person_json(p: dict) -> dict:
+    return {
+        "id":         p["id"],
+        "name":       p["name"],
+        "birth_date": p["birth_date"],
+        "relation":   p.get("relation"),
+        "label":      db.person_label(p),
+    }
+
+async def api_people(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    user   = await db.get_user(user_id)
+    people = await db.list_people(user_id)
+    unlimited = db.is_premium(user)
+    return web.json_response({
+        "people":  [_person_json(p) for p in people],
+        "limit":   None if unlimited else db.PEOPLE_FREE_LIMIT,
+        "can_add": unlimited or len(people) < db.PEOPLE_FREE_LIMIT,
+    })
+
+async def api_people_add(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    body = await request.json()
+    name = _sanitize_name((body.get("name") or "").strip())
+    if len(name) < 2 or len(name) > 30:
+        return _json_error("Введи имя — только буквы, от 2 до 30 символов")
+    date_str = normalize_date(body.get("birth_date") or "")
+    if not is_valid_date(date_str):
+        return _json_error("Введи дату в формате ДД.ММ.ГГГГ")
+    relation = body.get("relation")
+    if relation not in db.RELATION_EMOJI:
+        relation = None
+    user  = await db.get_user(user_id)
+    saved = await db.add_person(
+        user_id, name, date_str, relation,
+        limit=None if db.is_premium(user) else db.PEOPLE_FREE_LIMIT
+    )
+    if saved is None:
+        return _json_error(
+            f"В списке уже {db.PEOPLE_FREE_LIMIT} человека — премиум снимает лимит", 402
+        )
+    return web.json_response({"ok": True, "person": _person_json(saved)})
+
+async def api_people_delete(request: web.Request) -> web.Response:
+    user_id = await _authed_user_id(request)
+    if not user_id:
+        return _json_error("unauthorized", 401)
+    try:
+        person_id = int(request.match_info["person_id"])
+    except ValueError:
+        return _json_error("bad id", 400)
+    # delete_person сам проверяет владельца — id приходит от клиента, и без
+    # этого чужого человека удалили бы подбором номера.
+    ok = await db.delete_person(user_id, person_id)
+    return web.json_response({"ok": ok})
 
 async def api_set_notifications(request: web.Request) -> web.Response:
     user_id = await _authed_user_id(request)
@@ -533,6 +597,16 @@ async def api_reading_generate(request: web.Request) -> web.Response:
                     subject_name = "дорогой человек"
             title, text, from_cache = await generate_single(
                 user_id, user, key, date_str, subject_name=subject_name)
+            # Тот же список близких, что в боте: чужого человека запоминаем,
+            # чтобы в следующий раз его выбирали из списка, а не вводили заново.
+            if subject_name and subject_name.strip().lower() not in PLACEHOLDER_NAMES:
+                try:
+                    await db.add_person(
+                        user_id, subject_name, date_str,
+                        limit=None if db.is_premium(user) else db.PEOPLE_FREE_LIMIT
+                    )
+                except Exception as e:
+                    logging.warning(f"не удалось сохранить близкого для {user_id}: {e}")
     except GenerationBusy:
         return _json_error("Разбор уже готовится — подожди пару секунд 🔮", 409)
     except DateCreditRequired as e:
@@ -1130,6 +1204,9 @@ def setup_webapp_routes(app: web.Application, bot):
     app.router.add_get("/api/me", api_me)
     app.router.add_post("/api/spin", api_spin)
     app.router.add_post("/api/me/birthdate", api_set_birthdate)
+    app.router.add_get("/api/people", api_people)
+    app.router.add_post("/api/people", api_people_add)
+    app.router.add_delete("/api/people/{person_id}", api_people_delete)
     app.router.add_get("/api/catalog", api_catalog)
     app.router.add_get("/api/matrix", api_matrix)
     app.router.add_post("/api/buy/{key}", api_buy)
