@@ -3442,7 +3442,18 @@ async def handle_person_date(message: Message, state: FSMContext):
     await state.update_data(person_date=date_str)
     await message.answer("Кто это для тебя?", reply_markup=relation_menu())
 
-@dp.callback_query(F.data.startswith("rel_"), StateFilter(Form.waiting_person_date))
+@dp.callback_query(F.data.regexp(r"^rel_[a-z]+_\d+$"))
+async def person_relation_change_cb(callback: CallbackQuery):
+    """Смена роли уже сохранённого человека. Зарегистрирован ДО хендлера
+    добавления: у того callback_data без id, и по startswith он перехватил бы
+    и эти нажатия тоже."""
+    relation, _, raw_id = callback.data.removeprefix("rel_").rpartition("_")
+    ok = await db.set_person_relation(callback.from_user.id, int(raw_id), relation)
+    await callback.answer("Готово" if ok else "Не получилось")
+    user = await db.get_user(callback.from_user.id)
+    await _show_people(callback.message, callback.from_user.id, user)
+
+@dp.callback_query(F.data.regexp(r"^rel_[a-z]+$"), StateFilter(Form.waiting_person_date))
 async def person_relation_cb(callback: CallbackQuery, state: FSMContext):
     relation = callback.data.removeprefix("rel_")
     data = await state.get_data()
@@ -3503,6 +3514,18 @@ async def person_delete_cb(callback: CallbackQuery):
         f"Удалить {db.person_label(person)} из списка?\n\n"
         "Сделанные разборы останутся — пропадут только имя и дата.",
         reply_markup=person_delete_confirm_menu(person_id)
+    )
+
+@dp.callback_query(F.data.startswith("personrel_"))
+async def person_relation_ask_cb(callback: CallbackQuery):
+    person_id = int(callback.data.removeprefix("personrel_"))
+    person = await db.get_person(callback.from_user.id, person_id)
+    await callback.answer()
+    if not person:
+        return
+    await callback.message.answer(
+        f"Кем тебе приходится {person['name']}?",
+        reply_markup=relation_menu(person_id)
     )
 
 @dp.callback_query(F.data.startswith("personren_"))

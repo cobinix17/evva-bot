@@ -67,6 +67,7 @@ def person_card_menu(person_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔮 Сделать разбор", callback_data="show_menu")],
         [InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"personren_{person_id}")],
+        [InlineKeyboardButton(text="🔗 Кем приходится", callback_data=f"personrel_{person_id}")],
         [InlineKeyboardButton(text="🗑 Удалить",       callback_data=f"persondel_{person_id}")],
         [InlineKeyboardButton(text="⬅️ К списку",      callback_data="people_list")],
     ])
@@ -77,13 +78,17 @@ def person_delete_confirm_menu(person_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Отмена",      callback_data="people_list")],
     ])
 
-def relation_menu() -> InlineKeyboardMarkup:
+def relation_menu(person_id: int | None = None) -> InlineKeyboardMarkup:
+    """Роль близкого. person_id задан — меняем роль уже сохранённого человека,
+    и callback_data несёт его id (иначе непонятно, кого правим)."""
+    sfx = f"_{person_id}" if person_id is not None else ""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👧 Ребёнок",  callback_data="rel_child"),
-         InlineKeyboardButton(text="💑 Партнёр",  callback_data="rel_partner")],
-        [InlineKeyboardButton(text="👵 Родитель", callback_data="rel_parent"),
-         InlineKeyboardButton(text="🤝 Друг",     callback_data="rel_friend")],
-        [InlineKeyboardButton(text="👤 Другое",   callback_data="rel_other")],
+        [InlineKeyboardButton(text="👧 Ребёнок",  callback_data=f"rel_child{sfx}"),
+         InlineKeyboardButton(text="💑 Партнёр",  callback_data=f"rel_partner{sfx}")],
+        [InlineKeyboardButton(text="👵 Родитель",      callback_data=f"rel_parent{sfx}"),
+         InlineKeyboardButton(text="👫 Брат / сестра", callback_data=f"rel_sibling{sfx}")],
+        [InlineKeyboardButton(text="🤝 Друг",     callback_data=f"rel_friend{sfx}"),
+         InlineKeyboardButton(text="👤 Другое",   callback_data=f"rel_other{sfx}")],
     ])
 
 def notifications_menu(notifications_on: bool) -> InlineKeyboardMarkup:

@@ -98,6 +98,15 @@ async def main():
     check(await db.delete_person(901, own["id"]) is True, "удаление своего")
     check(await db.get_person(901, own["id"]) is None, "удалённого больше нет")
 
+    # ─── смена роли ──────────────────────────────────────────────────────────
+    who = await db.add_person(901, "Сестра", "05.05.2010", "other", limit=None)
+    check(db.person_label(who).startswith("👤"), "сохранено как «другое»")
+    check(await db.set_person_relation(901, who["id"], "sibling") is True, "роль меняется")
+    after = await db.get_person(901, who["id"])
+    check(db.person_label(after).startswith("👫"), "значок роли обновился")
+    check(await db.set_person_relation(902, who["id"], "child") is False,
+          "чужому человеку роль не поменять")
+
     # ─── подпись для кнопки ──────────────────────────────────────────────────
     check(db.person_label({"name": "Соня", "birth_date": "12.05.2015", "relation": "child"})
           == "👧 Соня · 12.05.2015", "подпись с известной ролью")

@@ -570,6 +570,7 @@ RELATION_EMOJI = {
     "child":   "👧",
     "partner": "💑",
     "parent":  "👵",
+    "sibling": "👫",
     "friend":  "🤝",
     "other":   "👤",
 }
@@ -650,6 +651,13 @@ async def add_person(
 async def delete_person(owner_id: int, person_id: int) -> bool:
     res = await db_pool.execute(
         "DELETE FROM people WHERE owner_id = $1 AND id = $2", owner_id, person_id
+    )
+    return res.endswith(" 1")
+
+async def set_person_relation(owner_id: int, person_id: int, relation: str) -> bool:
+    res = await db_pool.execute(
+        "UPDATE people SET relation = $3 WHERE owner_id = $1 AND id = $2",
+        owner_id, person_id, relation
     )
     return res.endswith(" 1")
 
