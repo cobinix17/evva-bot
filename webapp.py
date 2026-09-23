@@ -23,6 +23,7 @@ from config import (
     SECTION_DESTINY, SECTION_MONEY, SECTION_LOVE, SECTION_HEALTH, SECTION_PAST,
     ADMIN_ID, REF_BONUS_PERCENT, REF_WELCOME_BONUS,
     PREMIUM_PRICE, PREMIUM_PERIOD, PREMIUM_PAYLOAD, PREMIUM_TITLE, ASK_DAILY_LIMIT, YESNO_FREE_LIMIT,
+    PREMIUM_MONTHLY_LIMIT,
     PREMIUM_PRICE_RUB, YOOKASSA_SHOP_ID, STARS_TO_RUB_RATE, rub_price, price_of, get_discount,
     REDATE_PREFIX, REDATE_DISCOUNT, redate_price,
 )
@@ -157,6 +158,10 @@ async def api_me(request: web.Request) -> web.Response:
         # Звёздная цена тоже с сервера: во фронте она была вбита числом и
         # разъехалась бы с config.py при первом же изменении цен.
         "premium_price_stars": PREMIUM_PRICE,
+        # Лимиты тоже с сервера: во фронте они были вбиты числами и разошлись бы
+        # с config.py при первом изменении — та же ловушка, что была с ценой.
+        "premium_monthly_limit": PREMIUM_MONTHLY_LIMIT,
+        "people_free_limit":     db.PEOPLE_FREE_LIMIT,
         "can_spin":      user.get("last_spin_date") is None or user["last_spin_date"] < db.utc_now().date(),
         **await _digest_status(user_id, user),
     })

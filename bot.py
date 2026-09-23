@@ -2698,6 +2698,7 @@ _PREMIUM_OFFER = (
     "💎 Ева Премиум\n\n"
     f"Подписка за {PREMIUM_PRICE} ⭐ в месяц — и я рядом каждый день, без ограничений:\n\n"
     "💬 «Спроси Еву» без лимита — задавай личные вопросы по своим числам когда угодно\n"
+    f"👥 Близкие без ограничений — разбирай хоть всю семью, а не {db.PEOPLE_FREE_LIMIT} человека\n"
     "🎱 «Да / Нет» без лимита — быстрые ответы в любой момент, а не 3 в день\n"
     "🌟 Число дня с личным толкованием под твоё число судьбы\n"
     "🌅 Твой личный прогноз каждое утро — по твоим числам, а не общий\n"
@@ -2711,7 +2712,10 @@ _PREMIUM_OFFER = (
 async def _create_premium_invoice() -> str:
     return await bot.create_invoice_link(
         title=PREMIUM_TITLE,
-        description="Безлимитный доступ ко всем разборам, личный прогноз каждое утро и приоритетная генерация.",
+        description=(
+            "Безлимитный доступ ко всем разборам, разборы на любое число близких, "
+            "личный прогноз каждое утро и приоритетная генерация."
+        ),
         payload=PREMIUM_PAYLOAD,
         currency="XTR",
         prices=[LabeledPrice(label="Ева Премиум — месяц", amount=PREMIUM_PRICE)],
@@ -2723,8 +2727,9 @@ async def _show_premium(target: Message, user: dict):
         until = user["premium_until"].strftime("%d.%m.%Y")
         await target.answer(
             f"💎 Премиум активен до {until}.\n\n"
-            "Тебе открыты все разборы, каждое утро приходит личный прогноз, "
-            "а генерация идёт без очереди. Спасибо, что со мной 🌸",
+            "Тебе открыты все разборы, список близких без ограничений, "
+            "каждое утро приходит личный прогноз, а генерация идёт без очереди. "
+            "Спасибо, что со мной 🌸",
             reply_markup=premium_active_menu()
         )
         return
@@ -3504,7 +3509,8 @@ async def _show_people(message: Message, user_id: int, user: dict):
         limit_line = (
             "Премиум — без ограничений."
             if unlimited else
-            f"Занято {len(people)} из {db.PEOPLE_FREE_LIMIT}."
+            f"Занято {len(people)} из {db.PEOPLE_FREE_LIMIT}. "
+            "В премиуме список без ограничений — хоть вся семья."
         )
         text = (
             "👥 Твои близкие\n\n"
@@ -3517,7 +3523,8 @@ async def _show_people(message: Message, user_id: int, user: dict):
             "Здесь появятся люди, которых ты разбираешь кроме себя — ребёнок, "
             "партнёр, родители. Их имена и даты я запомню, и вводить заново "
             "не придётся.\n\n"
-            f"Без премиума в списке до {db.PEOPLE_FREE_LIMIT} человек."
+            f"Без премиума в списке до {db.PEOPLE_FREE_LIMIT} человек, "
+            "в премиуме — без ограничений."
         )
     await message.answer(text, reply_markup=people_list_menu(people, db.person_label, can_add))
 

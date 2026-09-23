@@ -907,10 +907,11 @@ function renderPremium() {
       <div class="onboard">
         <ul class="prem-list">
           <li>💬 «Спроси Еву» без лимита — вопросы по числам когда угодно</li>
+          <li>👥 Близкие без ограничений — разбирай хоть всю семью, а не ${ME.people_free_limit}</li>
           <li>🎱 «Да / Нет» без лимита — а не 3 в день</li>
           <li>🌟 Число дня с личным толкованием под твоё число судьбы</li>
           <li>🌅 Личный прогноз каждое утро</li>
-          <li>✨ До 30 разборов в месяц без поштучной покупки</li>
+          <li>✨ До ${ME.premium_monthly_limit} разборов в месяц без поштучной покупки</li>
           <li>⚡ Приоритетная генерация без очереди</li>
         </ul>
         ${ME.yookassa ? `<input id="pay-email" placeholder="email для чека (для оплаты ₽)" inputmode="email" value="${ME.email ? escapeHtml(ME.email) : ""}" style="margin-bottom:6px">` : ""}
@@ -1112,7 +1113,7 @@ function renderPeopleBlock(data) {
   `).join("");
   const limitLine = data.limit === null
     ? "Премиум — без ограничений."
-    : `Занято ${data.people.length} из ${data.limit}.`;
+    : `Занято ${data.people.length} из ${data.limit}. В премиуме — без ограничений.`;
   const form = data.can_add ? `
     <input id="person-name" placeholder="Имя" maxlength="30" style="margin-top:10px">
     <input id="person-date" placeholder="ДД.ММ.ГГГГ" inputmode="numeric" style="margin-top:8px">
