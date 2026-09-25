@@ -71,8 +71,13 @@ Telegram-бот [@nnumerology_bot](https://t.me/nnumerology_bot) плюс Mini A
 
 ## Правила, которые легко нарушить
 
-**ИИ-провайдеры идут в порядке Experiential → OpenRouter → Cerebras → Groq.**
-Не наоборот. Experiential — шлюз с нулевой наценкой, API совместим с OpenAI;
+**ИИ-провайдеры идут в порядке: свой шлюз → Experiential → OpenRouter →
+Cerebras → Groq.** Не наоборот. «Свой шлюз» — любой OpenAI-совместимый адрес
+из `CUSTOM_BASE_URL` + `CUSTOM_API_KEY` (обе обязательны, иначе провайдер
+выключен); модели — `CUSTOM_MODELS`. Он подключён к перепродавцу с жёстким
+пакетом токенов, поэтому 402 и 429 гасят провайдера целиком и отдают цепочку
+дальше: пакет кончается без предупреждения, а разбор в этот момент уже
+оплачен человеком. Experiential — шлюз с нулевой наценкой, API совместим с OpenAI;
 список его моделей задаётся переменной `EXPERIENTIAL_MODELS` (через запятую),
 потому что каталог у шлюза свой и зашитые имена устаревают молча. Неизвестная
 модель даёт 400/404, попытка отбрасывается, цепочка идёт дальше.
@@ -165,6 +170,7 @@ Railway, автоматически из `main`. Сборка по `Dockerfile` 
    после неё сервис становится обычным деплоем из GitHub.
 
 Переменные окружения: `BOT_TOKEN`, `DATABASE_URL`, `WEBAPP_URL`,
+`CUSTOM_API_KEY` и `CUSTOM_BASE_URL` (плюс необязательная `CUSTOM_MODELS`),
 `EXPERIENTIAL_API_KEY` (плюс необязательная `EXPERIENTIAL_MODELS`),
 `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `GROQ_API_KEY`, `YOOKASSA_SHOP_ID`,
 `YOOKASSA_SECRET_KEY`. `PORT` по умолчанию 8080.

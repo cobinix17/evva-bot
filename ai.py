@@ -1,4 +1,4 @@
-# ai.py — ИИ-провайдеры: Experiential → OpenRouter → Cerebras → Groq
+# ai.py — ИИ-провайдеры: свой шлюз (CUSTOM_BASE_URL) → Experiential → OpenRouter → Cerebras → Groq
 # Синхронизировано с актуальным bot.py. Самодостаточный модуль: не импортирует
 # ничего из bot.py/config.py, держит свои копии HEADER_EMOJI и хелперов
 # постобработки текста — так модуль можно использовать независимо.
@@ -184,6 +184,32 @@ GROQ_MODELS  = [
     "qwen/qwen3.6-27b",
     "openai/gpt-oss-20b",
 ]
+
+# Произвольный шлюз с OpenAI-совместимым API: адрес, ключ и модель задаются
+# переменными окружения. Отдельный провайдер, а не правка Experiential, потому
+# что такие перепродавцы приходят и уходят — при смене сервиса меняются только
+# переменные, код остаётся. Работает, только если заданы И ключ, И адрес.
+CUSTOM_API_KEY  = os.getenv("CUSTOM_API_KEY")
+CUSTOM_BASE_URL = (os.getenv("CUSTOM_BASE_URL") or "").rstrip("/")
+CUSTOM_MODELS   = [
+    m.strip() for m in os.getenv("CUSTOM_MODELS", "claude-haiku-4-5").split(",") if m.strip()
+]
+
+def _custom_url() -> str:
+    """Base URL у таких шлюзов дают в двух видах: с /v1 на конце и без. Путь
+    дописываем сами, но если он уже есть — не дублируем."""
+    base = CUSTOM_BASE_URL
+    if base.endswith("/chat/completions"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
+
+def _custom_label() -> str:
+    """Имя для логов и статистики — по домену шлюза, чтобы в /admin было видно,
+    кто именно отвечает, а не безликое «Custom»."""
+    m = re.search(r"https?://([^/]+)", CUSTOM_BASE_URL)
+    return m.group(1) if m else "Custom"
 
 EXPERIENTIAL_API_KEY = os.getenv("EXPERIENTIAL_API_KEY")
 # Каталог шлюза свой и меняется — держим имена моделей в переменной окружения,
@@ -853,6 +879,59 @@ async def _try_groq(prompt: str) -> str | None:
                 logging.warning(f"Groq {model} attempt {attempt+1} failed: {e}"); break
     return None
 
+# ── ПРОИЗВОЛЬНЫЙ ШЛЮЗ (CUSTOM_BASE_URL) ───────────────────────────────────────
+async def _try_custom(prompt: str) -> str | None:
+    """Сторонний OpenAI-совместимый шлюз. Стоит первым, когда настроен.
+
+    Отдельно ловим исчерпание пакета: у перепродавцов квота жёсткая и кончается
+    без предупреждения, а разбор в этот момент уже оплачен человеком. Любой
+    отказ — деньги, ключ, сеть — гасит провайдера и возвращает None, чтобы
+    цепочка спокойно ушла на следующего.
+    """
+    if not CUSTOM_API_KEY or not CUSTOM_BASE_URL:
+        return None
+    label   = _custom_label()
+    url     = _custom_url()
+    headers = {
+        "Authorization": f"Bearer {CUSTOM_API_KEY}",
+        "Content-Type":  "application/json",
+    }
+    t0 = time.perf_counter()
+    for model in CUSTOM_MODELS:
+        try:
+            data = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _today_note() + SYSTEM_PROMPT},
+                    {"role": "user",   "content": prompt},
+                ],
+                "max_tokens":  8192,
+                "temperature": 0.7,
+            }
+            r = await _client().post(url, headers=headers, json=data, timeout=60)
+            if r.status_code in (401, 403):
+                logging.warning(f"{label}: ключ отклонён"); return None
+            if r.status_code in (402, 429):
+                # 402 — кончился пакет, 429 — упёрлись в лимит. И то и другое
+                # не лечится следующей моделью: уходим к другому провайдеру.
+                logging.warning(f"{label}: {r.status_code} — пакет кончился или лимит, "
+                                f"{r.text[:200]}")
+                return None
+            if r.status_code in (400, 404):
+                logging.warning(f"{label} {model} {r.status_code}: {r.text[:300]}")
+                continue
+            r.raise_for_status()
+            raw    = r.json()["choices"][0]["message"]["content"]
+            result = await asyncio.to_thread(_finalize, raw, f"{label} {model}")
+            if result is None:
+                continue
+            _LAST_MODEL[label] = model.split("/")[-1]
+            logging.info(f"{label} {model} ответил успешно за {time.perf_counter()-t0:.1f}с")
+            return result
+        except Exception as e:
+            logging.warning(f"{label} {model} failed: {e}")
+    return None
+
 # ── EXPERIENTIAL ──────────────────────────────────────────────────────────────
 async def _try_experiential(prompt: str) -> str | None:
     """Experiential Labs — шлюз к чужим моделям с нулевой наценкой, API
@@ -950,7 +1029,7 @@ async def _try_openrouter(prompt: str) -> str | None:
 
 # ── ГЛАВНАЯ ФУНКЦИЯ ───────────────────────────────────────────────────────────
 async def ask_ai(prompt: str) -> str:
-    """Experiential → OpenRouter → Cerebras → Groq, с проверкой ПОЛНОТЫ структуры ответа
+    """CUSTOM_BASE_URL → Experiential → OpenRouter → Cerebras → Groq, с проверкой ПОЛНОТЫ структуры ответа
     И того, что генерация не оборвалась на полуслове.
 
     Если провайдер дал ответ, но он покрывает меньше 60% ожидаемых
@@ -968,6 +1047,7 @@ async def ask_ai(prompt: str) -> str:
     результат, а не отказ."""
     t0 = time.perf_counter()
     providers = [
+        (_custom_label(), _try_custom),
         ("Experiential", _try_experiential),
         ("OpenRouter", _try_openrouter),
         ("Cerebras",   _try_cerebras),
