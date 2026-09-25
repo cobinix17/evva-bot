@@ -283,7 +283,8 @@ def _gender_note(user: dict, subject_male: bool | None = "owner") -> str:
 
 async def generate_single(user_id: int, user: dict, key: str, date_str: str,
                           subject_name: str | None = None,
-                          subject_male: bool | None = "owner") -> tuple[str, str, bool]:
+                          subject_male: bool | None = "owner",
+                          force: bool = False) -> tuple[str, str, bool]:
     """Генерирует (или достаёт из кэша) одиночный разбор. Возвращает
     (title, text, from_cache). from_cache=True — тот же текст на ту же дату мы
     уже делали, показываем его без перегенерации, чтобы не было противоречий.
@@ -292,14 +293,18 @@ async def generate_single(user_id: int, user: dict, key: str, date_str: str,
 
     subject_name — когда разбор не для владельца аккаунта, а для кого-то ещё
     (флоу «другая дата»): без этого числа имени/души/личности считались бы по
-    имени владельца аккаунта на ЧУЖУЮ дату рождения — числовая мешанина."""
+    имени владельца аккаунта на ЧУЖУЮ дату рождения — числовая мешанина.
+
+    force — сгенерировать заново, игнорируя кэш. Нужен админу: после правки
+    промпта старый текст замораживался навсегда, и проверить исправление на
+    тех же числах было нельзя — приходилось подбирать новую дату."""
     if user_id in _generating:
         raise GenerationBusy()
     _generating.add(user_id)
     try:
         name  = subject_name or _default_name(user)
         title = TITLES.get(key, "🔮 Разбор")
-        cached = await db.get_reading_text(user_id, key, date_str)
+        cached = None if force else await db.get_reading_text(user_id, key, date_str)
         if cached:
             return title, cached["text"], True
         spent = await _consume_regen(user_id, user, key)

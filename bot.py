@@ -2120,15 +2120,22 @@ async def successful_payment(message: Message, state: FSMContext):
     await _start_date_flow(message, state, user, payload)
 
 # ─── ОБРАБОТКА ДАТ ───────────────────────────────────────────────────────────
-def _repeat_choice_menu(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def _repeat_choice_menu(key: str, user_id: int | None = None) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton(text="📖 Показать этот разбор", callback_data=f"showcache_{key}")],
         [InlineKeyboardButton(text="📅 Сделать на другую дату", callback_data=f"redate_{key}")],
-        [InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")],
-    ])
+    ]
+    # Только админу: после правки промпта кэш замораживает старый текст
+    # навсегда, и проверить исправление на тех же числах иначе нельзя.
+    if user_id == ADMIN_ID:
+        rows.append([InlineKeyboardButton(text="♻️ Перегенерировать (админ)",
+                                          callback_data=f"regen_{key}")])
+    rows.append([InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 async def _process_date(message: Message, user_id: int, user: dict, date_str: str,
-                        state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False):
+                        state: FSMContext, is_free: bool = False, confirmed_repeat: bool = False,
+                        force: bool = False):
     number  = calculate_destiny(date_str)
     waiting = user.get("waiting")
     fsm_data = await state.get_data()
@@ -2151,7 +2158,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             await message.answer(
                 f"🌸 Этот разбор для {date_str} у тебя уже готов — твои числа не меняются, "
                 "поэтому и разбор останется тем же.\n\nОткрыть его снова или сделать на другую дату?",
-                reply_markup=_repeat_choice_menu(waiting)
+                reply_markup=_repeat_choice_menu(waiting, user_id)
             )
             return
 
@@ -2212,7 +2219,7 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     try:
         title, answer, from_cache = await generate_single(
             user_id, user, waiting, date_str,
-            subject_name=subject_name, subject_male=subject_male,
+            subject_name=subject_name, subject_male=subject_male, force=force,
         )
         await stop_intermediate()
         await send_long(message.chat.id, f"{title}\n\n{answer}")
@@ -2284,6 +2291,39 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
         )
         await message.answer(retry_text, reply_markup=retry_menu(waiting, is_free=is_free))
         await state.clear()
+
+@dp.callback_query(F.data.startswith("regen_"))
+async def regen_cb(callback: CallbackQuery, state: FSMContext):
+    """Перегенерация того же разбора на тех же числах. Только админу: обычному
+    человеку новый текст на ту же дату не нужен и может противоречить уже
+    прочитанному. Нужна, чтобы после правки промпта сравнить «до» и «после» на
+    одинаковых данных, а не подбирать новую дату под каждую проверку."""
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer()
+        return
+    key    = callback.data.replace("regen_", "")
+    cached = await db.get_reading_text(callback.from_user.id, key)
+    await callback.answer()
+    if not cached or not cached.get("date_str"):
+        await callback.message.answer("Нечего перегенерировать — разбора на дату нет.")
+        return
+    if key in TWO_DATE_KEYS or key == "business_name":
+        # У этих в date_str лежат две даты или название, а не дата: гнать их
+        # через _process_date нельзя, там calculate_destiny упадёт.
+        await callback.message.answer("Перегенерация пока только для разборов на одну дату.")
+        return
+    user = await db.get_user(callback.from_user.id)
+    user["waiting"] = key
+    await db.save_user(callback.from_user.id, user)
+    # Пол субъекта восстанавливаем из списка близких по дате — иначе
+    # перегенерация вернула бы род владельца и «починка» выглядела бы сломанной.
+    person = await db.find_person_by_date(callback.from_user.id, cached["date_str"])
+    if person:
+        await state.update_data(other_name=person["name"],
+                                other_male=db.person_is_male(person))
+    await callback.message.answer("♻️ Перегенерирую заново, кэш игнорирую…")
+    await _process_date(callback.message, callback.from_user.id, user,
+                        cached["date_str"], state, confirmed_repeat=True, force=True)
 
 @dp.callback_query(F.data.startswith("showcache_"))
 async def showcache_cb(callback: CallbackQuery, state: FSMContext):
@@ -2480,7 +2520,7 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
             await message.answer(
                 f"🌸 Разбор для {parts[0]} и {parts[1]} у тебя уже готов.\n\n"
                 "Открыть его снова или взять другие даты?",
-                reply_markup=_repeat_choice_menu(key)
+                reply_markup=_repeat_choice_menu(key, user_id)
             )
             return
 
