@@ -57,7 +57,7 @@ from keyboards import (
     redate_offer_menu, review_sent_menu, reviews_channel_button,
     premium_subscribe_menu, premium_active_menu, gift_sections_menu, profile_menu,
     people_pick_menu, people_list_menu, person_card_menu, person_delete_confirm_menu,
-    relation_menu,
+    relation_menu, person_gender_menu,
 )
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
@@ -218,6 +218,7 @@ class Form(StatesGroup):
     waiting_person_name      = State()
     waiting_person_date      = State()
     waiting_person_rename    = State()
+    waiting_person_gender    = State()
 
 # ─── ЗАМОК ГЕНЕРАЦИИ ─────────────────────────────────────────────────────────
 # Один платный разбор за раз на пользователя. Защищает от параллельного
@@ -1509,7 +1510,16 @@ async def person_pick_cb(callback: CallbackQuery, state: FSMContext):
             [user["birth_date"], person["birth_date"]], state, is_free=is_free, key=key
         )
         return
-    await state.update_data(other_name=person["name"])
+    male = db.person_is_male(person)
+    if male is None:
+        # Пол у этого человека ещё не спрашивали (например, он сохранился
+        # автоматически после разбора). Спросим один раз — и запомним.
+        await state.update_data(pending_person_id=person["id"])
+        await callback.message.answer(
+            f"{person['name']} — это…", reply_markup=person_gender_menu(person["id"])
+        )
+        return
+    await state.update_data(other_name=person["name"], other_male=male)
     await _process_date(
         callback.message, callback.from_user.id, user,
         person["birth_date"], state, is_free=is_free
@@ -1522,7 +1532,20 @@ async def handle_other_name(message: Message, state: FSMContext):
         await message.answer("Введи имя текстом — только буквы, от 2 до 30 символов, или нажми «Без имени» 😊")
         return
     await state.update_data(other_name=name)
-    await message.answer("📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
+    # Пол спрашиваем ДО генерации и ровно один раз на человека: дальше он
+    # сохраняется вместе с ним. Без этого род в разборе брался у владельца
+    # аккаунта — разбор на дочь приходил в мужском роде.
+    await message.answer(f"{name} — это…", reply_markup=person_gender_menu())
+    await state.set_state(Form.waiting_person_gender)
+
+@dp.callback_query(F.data.regexp(r"^pgen_[mf]$"), StateFilter(Form.waiting_person_gender))
+async def person_gender_pick_cb(callback: CallbackQuery, state: FSMContext):
+    """Пол введённого вручную человека — дальше идём к дате, как раньше."""
+    await callback.answer()
+    await state.update_data(other_male=callback.data.endswith("_m"))
+    await callback.message.answer(
+        "📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995"
+    )
     await state.set_state(Form.waiting_date)
 
 @dp.callback_query(F.data == "other_name_skip")
@@ -1531,7 +1554,7 @@ async def other_name_skip_cb(callback: CallbackQuery, state: FSMContext):
     # РЕАЛЬНОЕ имя владельца аккаунта (у него есть first_name), и разбор для
     # чужой даты снова подписался бы, например, «Руслан».
     await callback.answer()
-    await state.update_data(other_name="дорогой человек")
+    await state.update_data(other_name="дорогой человек", other_male=None)
     await callback.message.answer("📅 Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1995")
     await state.set_state(Form.waiting_date)
 
@@ -2110,6 +2133,8 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     waiting = user.get("waiting")
     fsm_data = await state.get_data()
     subject_name = fsm_data.get("other_name")
+    # "owner" = разбор о самом владельце; True/False/None — о другом человеке.
+    subject_male = fsm_data.get("other_male", "owner") if subject_name else "owner"
     name    = subject_name or db.default_name(user)
     if not waiting:
         await message.answer("Выбери разбор из меню 👇", reply_markup=main_menu_for(message.from_user.id, user))
@@ -2152,7 +2177,10 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     if subject_name and subject_name.strip().lower() not in PLACEHOLDER_NAMES:
         try:
             limit = None if db.is_premium(user) else db.PEOPLE_FREE_LIMIT
-            saved = await db.add_person(user_id, subject_name, date_str, limit=limit)
+            saved = await db.add_person(
+                user_id, subject_name, date_str, limit=limit,
+                gender={True: "m", False: "f"}.get(subject_male),
+            )
             people_full = saved is None
         except Exception as e:
             logging.warning(f"не удалось сохранить близкого для {user_id}: {e}")
@@ -2182,7 +2210,10 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
             pass
 
     try:
-        title, answer, from_cache = await generate_single(user_id, user, waiting, date_str, subject_name=subject_name)
+        title, answer, from_cache = await generate_single(
+            user_id, user, waiting, date_str,
+            subject_name=subject_name, subject_male=subject_male,
+        )
         await stop_intermediate()
         await send_long(message.chat.id, f"{title}\n\n{answer}")
 
@@ -3193,7 +3224,8 @@ async def _answer_followup(message: Message, user_id: int, question: str, state:
                 f"твои ответы. Не повторяй сказанное, продолжай мысль:\n{pairs}"
             )
         prompt = (
-            _gender_note(user)
+            # Род — по субъекту разбора, а не по владельцу аккаунта.
+            _gender_note(user, db.person_is_male(subject) if subject else "owner")
             + f"Вот нумерологические данные — {name}:\n{context}"
             f"{reading_block}{history_block}\n\n"
             f"{about}Клиент получил разбор «{title}» и теперь уточняет: «{question}»\n\n"
@@ -3601,8 +3633,10 @@ async def person_relation_cb(callback: CallbackQuery, state: FSMContext):
             ])
         )
         return
-    await callback.message.answer(f"✅ {db.person_label(saved)} — в списке.")
-    await _show_people(callback.message, callback.from_user.id, user)
+    await callback.message.answer(
+        f"✅ {db.person_label(saved)} — в списке.\n\n{saved['name']} — это…",
+        reply_markup=person_gender_menu(saved["id"])
+    )
 
 @dp.callback_query(F.data.startswith("personcard_"))
 async def person_card_cb(callback: CallbackQuery):
@@ -3640,6 +3674,43 @@ async def person_delete_cb(callback: CallbackQuery):
         "Сделанные разборы останутся — пропадут только имя и дата.",
         reply_markup=person_delete_confirm_menu(person_id)
     )
+
+@dp.callback_query(F.data.startswith("persongen_"))
+async def person_gender_ask_cb(callback: CallbackQuery):
+    person_id = int(callback.data.removeprefix("persongen_"))
+    person = await db.get_person(callback.from_user.id, person_id)
+    await callback.answer()
+    if not person:
+        return
+    await callback.message.answer(
+        f"{person['name']} — это…", reply_markup=person_gender_menu(person_id)
+    )
+
+@dp.callback_query(F.data.regexp(r"^pgen_[mf]_\d+$"))
+async def person_gender_set_cb(callback: CallbackQuery, state: FSMContext):
+    """Пол сохранённого человека. Если его спросили посреди заказа разбора
+    (выбрали из списка, а пола там не было) — сразу продолжаем разбор, чтобы
+    человек не начинал заново."""
+    body = callback.data.removeprefix("pgen_")
+    gender, _, raw_id = body.partition("_")
+    person_id = int(raw_id)
+    ok = await db.set_person_gender(callback.from_user.id, person_id, gender)
+    await callback.answer("Готово" if ok else "Не получилось")
+    person = await db.get_person(callback.from_user.id, person_id)
+    data = await state.get_data()
+    if person and data.get("pending_person_id") == person_id:
+        user = await db.get_user(callback.from_user.id)
+        await state.update_data(
+            other_name=person["name"], other_male=(gender == "m"),
+            pending_person_id=None,
+        )
+        await _process_date(
+            callback.message, callback.from_user.id, user,
+            person["birth_date"], state, is_free=bool(data.get("pick_free"))
+        )
+        return
+    user = await db.get_user(callback.from_user.id)
+    await _show_people(callback.message, callback.from_user.id, user)
 
 @dp.callback_query(F.data.startswith("personrel_"))
 async def person_relation_ask_cb(callback: CallbackQuery):

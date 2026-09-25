@@ -312,10 +312,18 @@ def check_gender_note() -> None:
     инструкцией, поэтому в примечании должно быть явное указание читать
     эти слова в мужском роде."""
     src = read("generation.py")
-    note = re.search(r"def _gender_note.*?\n    return \"\"", src, re.S)
+    note = re.search(r"def _gender_note.*?(?=\ndef |\nasync def )", src, re.S)
     body = note.group(0) if note else ""
     check("_gender_note переопределяет род в самом задании",
           "«она», «её», «ей»" in body and "читай их как" in body)
+    # Пол субъекта и пол заказчика — разные вещи. Разбор на дочь, заказанный
+    # отцом, приходил в мужском роде, потому что род брался у владельца.
+    check("_gender_note принимает пол субъекта", "subject_male" in body)
+    check("неизвестный пол — отдельная ветка, а не женский по умолчанию",
+          "НЕИЗВЕСТЕН" in body)
+    check("пол субъекта доезжает до генерации",
+          "subject_male=subject_male" in read("bot.py")
+          and "_gender_note(user, subject_male)" in src)
 
 
 def check_body_readings() -> None:

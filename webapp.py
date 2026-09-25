@@ -599,12 +599,19 @@ async def api_reading_generate(request: web.Request) -> web.Response:
             # заглушку: по ней числа имени не считаются вовсе (см.
             # numerology.PLACEHOLDER_NAMES), и это честнее, чем чужие числа.
             subject_name = None
+            subject_male = "owner"
             if date_str != (user.get("birth_date") or ""):
                 subject_name = _sanitize_name(body.get("name") or "")
                 if len(subject_name) < 2:
                     subject_name = "дорогой человек"
+                # Пол берём у ТОГО, О КОМ разбор, а не у владельца аккаунта.
+                # Если человека нет в списке — пол неизвестен, и _gender_note
+                # попросит обойтись без родовых форм.
+                known = await db.find_person_by_date(user_id, date_str)
+                subject_male = db.person_is_male(known)
             title, text, from_cache = await generate_single(
-                user_id, user, key, date_str, subject_name=subject_name)
+                user_id, user, key, date_str,
+                subject_name=subject_name, subject_male=subject_male)
             # Тот же список близких, что в боте: чужого человека запоминаем,
             # чтобы в следующий раз его выбирали из списка, а не вводили заново.
             if subject_name and subject_name.strip().lower() not in PLACEHOLDER_NAMES:

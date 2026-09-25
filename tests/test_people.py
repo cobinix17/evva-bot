@@ -107,6 +107,20 @@ async def main():
     check(await db.set_person_relation(902, who["id"], "child") is False,
           "чужому человеку роль не поменять")
 
+    # ─── пол близкого ────────────────────────────────────────────────────────
+    kid = await db.add_person(901, "Айда", "15.03.2008", "child", limit=None)
+    check(db.person_is_male(kid) is None, "пол не спрашивали — None, а не женский")
+    check(await db.set_person_gender(901, kid["id"], "f") is True, "пол проставляется")
+    check(db.person_is_male(await db.get_person(901, kid["id"])) is False, "прочитан как женский")
+    check(await db.set_person_gender(901, kid["id"], "m") is True, "пол меняется")
+    check(db.person_is_male(await db.get_person(901, kid["id"])) is True, "прочитан как мужской")
+    check(await db.set_person_gender(902, kid["id"], "f") is False, "чужому пол не поменять")
+    # Повторное добавление не должно затирать уже известный пол.
+    again2 = await db.add_person(901, "Айда", "15.03.2008", "child", limit=None)
+    check(db.person_is_male(again2) is True, "повтор без пола не стирает известный")
+    check(db.person_is_male({"gender": "x"}) is None, "мусор в поле читается как «неизвестно»")
+    await db.delete_person(901, kid["id"])
+
     # ─── дни рождения ────────────────────────────────────────────────────────
     from datetime import timedelta
     await db.db_pool.execute("DELETE FROM people WHERE owner_id IN (901, 902)")

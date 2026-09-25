@@ -269,6 +269,12 @@ async def init_db(database_url: str):
     await db_pool.execute(
         "ALTER TABLE people ADD COLUMN IF NOT EXISTS bday_year SMALLINT"
     )
+    # Пол близкого. Раньше род в разборе брался у ВЛАДЕЛЬЦА аккаунта: разбор на
+    # дочь, заказанный отцом, приходил в мужском роде («ты родился», «твоя
+    # партнёрша»). NULL = не спросили, тогда просим не использовать род вовсе.
+    await db_pool.execute(
+        "ALTER TABLE people ADD COLUMN IF NOT EXISTS gender TEXT"
+    )
     # Простое key-value хранилище настроек (скидка/акция и т.п.) — переживает
     # рестарты Railway, в отличие от переменных в памяти процесса.
     await db_pool.execute('''
@@ -587,7 +593,7 @@ def person_label(person: dict) -> str:
 
 async def list_people(owner_id: int) -> list[dict]:
     rows = await db_pool.fetch(
-        "SELECT id, name, birth_date, relation FROM people "
+        "SELECT id, name, birth_date, relation, gender FROM people "
         "WHERE owner_id = $1 ORDER BY created_at",
         owner_id
     )
@@ -597,7 +603,7 @@ async def get_person(owner_id: int, person_id: int) -> dict | None:
     """Всегда с owner_id в WHERE: id идёт из callback_data, то есть приходит
     от клиента, и без владельца чужой список читался бы по подобранному id."""
     row = await db_pool.fetchrow(
-        "SELECT id, name, birth_date, relation FROM people "
+        "SELECT id, name, birth_date, relation, gender FROM people "
         "WHERE owner_id = $1 AND id = $2",
         owner_id, person_id
     )
@@ -608,7 +614,7 @@ async def find_person_by_date(owner_id: int, birth_date: str) -> dict | None:
     разбор помнит только дату, а отвечать надо про того, о ком он.
     Одна дата на двух близких — редкость; берём добавленного первым."""
     row = await db_pool.fetchrow(
-        "SELECT id, name, birth_date, relation FROM people "
+        "SELECT id, name, birth_date, relation, gender FROM people "
         "WHERE owner_id = $1 AND birth_date = $2 ORDER BY created_at LIMIT 1",
         owner_id, birth_date
     )
@@ -622,6 +628,7 @@ async def count_people(owner_id: int) -> int:
 async def add_person(
     owner_id: int, name: str, birth_date: str,
     relation: str | None = None, limit: int | None = None,
+    gender: str | None = None,
 ) -> dict | None:
     """Добавляет человека. Возвращает None, если список уже полон.
 
@@ -647,20 +654,21 @@ async def add_person(
                     # Список полон — но человек мог уже быть в нём, и тогда это
                     # не отказ, а обычный повтор.
                     existing = await conn.fetchrow(
-                        "SELECT id, name, birth_date, relation FROM people "
+                        "SELECT id, name, birth_date, relation, gender FROM people "
                         "WHERE owner_id = $1 AND lower(name) = lower($2) AND birth_date = $3",
                         owner_id, name, birth_date
                     )
                     return dict(existing) if existing else None
             row = await conn.fetchrow(
                 """
-                INSERT INTO people (owner_id, name, birth_date, relation)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO people (owner_id, name, birth_date, relation, gender)
+                VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (owner_id, lower(name), birth_date) DO UPDATE
-                    SET relation = COALESCE(EXCLUDED.relation, people.relation)
-                RETURNING id, name, birth_date, relation
+                    SET relation = COALESCE(EXCLUDED.relation, people.relation),
+                        gender   = COALESCE(EXCLUDED.gender,   people.gender)
+                RETURNING id, name, birth_date, relation, gender
                 """,
-                owner_id, name, birth_date, relation
+                owner_id, name, birth_date, relation, gender
             )
             return dict(row) if row else None
 
@@ -698,11 +706,25 @@ async def claim_upcoming_birthdays(days_ahead: int = BIRTHDAY_NOTICE_DAYS) -> li
               AND (p.bday_year IS NULL OR p.bday_year <> $2)
               AND COALESCE(u.notifications, TRUE)
         )
-        RETURNING owner_id, id, name, birth_date, relation
+        RETURNING owner_id, id, name, birth_date, relation, gender
         """,
         target.strftime("%d.%m"), target.year
     )
     return [dict(r) for r in rows]
+
+async def set_person_gender(owner_id: int, person_id: int, gender: str) -> bool:
+    res = await db_pool.execute(
+        "UPDATE people SET gender = $3 WHERE owner_id = $1 AND id = $2",
+        owner_id, person_id, gender
+    )
+    return res.endswith(" 1")
+
+def person_is_male(person: dict | None) -> bool | None:
+    """True / False / None. None — пол не спрашивали: это ЗНАЧИМОЕ состояние,
+    в промпте оно превращается в просьбу писать без родовых форм, а не в
+    молчаливое «значит женщина»."""
+    g = (person or {}).get("gender")
+    return None if g not in ("m", "f") else (g == "m")
 
 async def set_person_relation(owner_id: int, person_id: int, relation: str) -> bool:
     res = await db_pool.execute(
