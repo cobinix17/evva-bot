@@ -14,7 +14,7 @@ from datetime import datetime
 
 import db
 from readings import PROMPTS
-from config import TITLES, REGEN_DAILY_LIMIT, REGEN_DAILY_LIMIT_PREMIUM
+from config import TITLES, REGEN_DAILY_LIMIT, REGEN_DAILY_LIMIT_PREMIUM, ADMIN_ID
 from numerology import (
     build_numerology_context, build_name_context, calculate_destiny,
     calculate_personal_year, calculate_personal_month, build_psychomatrix_context,
@@ -221,9 +221,13 @@ async def _consume_regen(user_id: int, user: dict, key: str) -> bool:
     списан — значит при ошибке ИИ его надо вернуть."""
     if not await db.has_reading(user_id, key):
         return False  # первая генерация — уже оплачена самой покупкой
-    credits, used = await db.reading_credit_status(user_id, key)
-    if used >= credits:
-        raise DateCreditRequired(key)
+    # Админу get_user выдаёт все разборы, но СЛОТЫ ДАТ — отдельная сущность,
+    # и их никто не выдавал: со второй даты бот предлагал ему купить разбор,
+    # который у него и так открыт. Проверять свои же правки было невозможно.
+    if user_id != ADMIN_ID:
+        credits, used = await db.reading_credit_status(user_id, key)
+        if used >= credits:
+            raise DateCreditRequired(key)
     limit = _regen_limit(user)
     if not await db.regen_try_consume(user_id, limit):
         raise RegenLimitReached(limit)
