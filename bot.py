@@ -2120,16 +2120,19 @@ async def successful_payment(message: Message, state: FSMContext):
     await _start_date_flow(message, state, user, payload)
 
 # ─── ОБРАБОТКА ДАТ ───────────────────────────────────────────────────────────
-def _repeat_choice_menu(key: str, user_id: int | None = None) -> InlineKeyboardMarkup:
+def _repeat_choice_menu(key: str, user_id: int | None = None,
+                        date_str: str | None = None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📖 Показать этот разбор", callback_data=f"showcache_{key}")],
         [InlineKeyboardButton(text="📅 Сделать на другую дату", callback_data=f"redate_{key}")],
     ]
     # Только админу: после правки промпта кэш замораживает старый текст
     # навсегда, и проверить исправление на тех же числах иначе нельзя.
-    if user_id == ADMIN_ID:
+    if user_id == ADMIN_ID and date_str:
+        # Дата в callback_data: без неё кнопка брала самый свежий разбор по
+        # ключу, а он у человека с несколькими датами — чужой.
         rows.append([InlineKeyboardButton(text="♻️ Перегенерировать (админ)",
-                                          callback_data=f"regen_{key}")])
+                                          callback_data=f"regen_{key}_{date_str}")])
     rows.append([InlineKeyboardButton(text="🔮 Меню разборов", callback_data="show_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2152,13 +2155,19 @@ async def _process_date(message: Message, user_id: int, user: dict, date_str: st
     # противоречить прошлому тексту), но и не вываливаем старый текст с сухой
     # оговоркой: спрашиваем заранее — показать тот же или взять другую дату.
     if not confirmed_repeat:
-        cached = await db.get_reading_text(user_id, waiting)
-        if cached and cached.get("date_str") == date_str:
+        # Спрашиваем РОВНО эту дату. Без неё возвращался самый свежий разбор по
+        # ключу — у человека с разборами на несколько дат он почти никогда не
+        # совпадал с запрошенной, экран «уже готов» не показывался, и дальше
+        # generate_single (он ищет ПО ДАТЕ) молча отдавал старый текст сразу
+        # после «Ева составляет разбор…». Обе проверки обязаны спрашивать
+        # одинаково, иначе одна из них бессмысленна.
+        cached = await db.get_reading_text(user_id, waiting, date_str)
+        if cached:
             await state.clear()
             await message.answer(
                 f"🌸 Этот разбор для {date_str} у тебя уже готов — твои числа не меняются, "
                 "поэтому и разбор останется тем же.\n\nОткрыть его снова или сделать на другую дату?",
-                reply_markup=_repeat_choice_menu(waiting, user_id)
+                reply_markup=_repeat_choice_menu(waiting, user_id, date_str)
             )
             return
 
@@ -2301,11 +2310,11 @@ async def regen_cb(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer()
         return
-    key    = callback.data.replace("regen_", "")
-    cached = await db.get_reading_text(callback.from_user.id, key)
+    key, _, date_str = callback.data.removeprefix("regen_").rpartition("_")
+    cached = await db.get_reading_text(callback.from_user.id, key, date_str)
     await callback.answer()
-    if not cached or not cached.get("date_str"):
-        await callback.message.answer("Нечего перегенерировать — разбора на дату нет.")
+    if not cached:
+        await callback.message.answer("Нечего перегенерировать — разбора на эту дату нет.")
         return
     if key in TWO_DATE_KEYS or key == "business_name":
         # У этих в date_str лежат две даты или название, а не дата: гнать их
@@ -2317,13 +2326,13 @@ async def regen_cb(callback: CallbackQuery, state: FSMContext):
     await db.save_user(callback.from_user.id, user)
     # Пол субъекта восстанавливаем из списка близких по дате — иначе
     # перегенерация вернула бы род владельца и «починка» выглядела бы сломанной.
-    person = await db.find_person_by_date(callback.from_user.id, cached["date_str"])
+    person = await db.find_person_by_date(callback.from_user.id, date_str)
     if person:
         await state.update_data(other_name=person["name"],
                                 other_male=db.person_is_male(person))
     await callback.message.answer("♻️ Перегенерирую заново, кэш игнорирую…")
     await _process_date(callback.message, callback.from_user.id, user,
-                        cached["date_str"], state, confirmed_repeat=True, force=True)
+                        date_str, state, confirmed_repeat=True, force=True)
 
 @dp.callback_query(F.data.startswith("showcache_"))
 async def showcache_cb(callback: CallbackQuery, state: FSMContext):
@@ -2514,8 +2523,11 @@ async def _process_two_dates(message: Message, user_id: int, user: dict, parts: 
     # Тот же разбор совместимости на те же две даты уже есть — спрашиваем,
     # а не перегенерируем (см. _process_date).
     if not confirmed_repeat:
-        cached = await db.get_reading_text(user_id, key)
-        if cached and cached.get("date_str") == f"{parts[0]},{parts[1]}":
+        # По той же причине, что и в _process_date: спрашиваем ровно эту пару
+        # дат, иначе экран «уже готов» не покажется, а generate_compat всё
+        # равно отдаст сохранённый текст.
+        cached = await db.get_reading_text(user_id, key, f"{parts[0]},{parts[1]}")
+        if cached:
             await state.clear()
             await message.answer(
                 f"🌸 Разбор для {parts[0]} и {parts[1]} у тебя уже готов.\n\n"

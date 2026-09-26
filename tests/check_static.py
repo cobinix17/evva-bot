@@ -326,6 +326,17 @@ def check_gender_note() -> None:
           and "_gender_note(user, subject_male)" in src)
 
 
+def check_reading_cache_lookup() -> None:
+    """Обе проверки кэша разбора обязаны спрашивать базу ОДИНАКОВО — по дате.
+    Экран «уже готов» спрашивал без даты (то есть «самый свежий разбор по
+    ключу»), а generation.py — по дате. У человека с разборами на несколько
+    дат они расходились: экран не показывался, и старый текст прилетал сразу
+    после «Ева составляет разбор…», без объяснения и без кнопок."""
+    src = read("bot.py")
+    bad = re.findall(r"get_reading_text\((?:user_id|callback\.from_user\.id), (?:waiting|key)\)\s*\n\s*if cached and cached\.get\(\"date_str\"\) ==", src)
+    check("экран «уже готов» ищет кэш без даты", not bad, str(bad))
+
+
 def check_body_readings() -> None:
     """Разборы про тело не должны выглядеть как медицинское заключение.
     «Послания тела» называли учащённое сердцебиение и дискомфорт в груди и
@@ -368,6 +379,7 @@ def main() -> int:
     check_admin_guards()
     check_web()
     check_subject_name()
+    check_reading_cache_lookup()
     check_body_readings()
     check_reading_titles()
     check_pdf_intro()
