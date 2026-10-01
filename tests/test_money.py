@@ -227,6 +227,33 @@ async def test_limits() -> None:
           ["ok", "ok", "ok", "month"])
 
 
+async def test_sales_breakdown() -> None:
+    """Разбивка продаж для админки: покупки считаются без админских, премиум
+    отдельной строкой, покупатели отличаются от покупок."""
+    from config import ADMIN_ID
+    ids = [ADMIN_ID, 7001, 7002]
+    # Чистим таблицу целиком: sales_breakdown считает по всей базе, а другие
+    # тесты в этом файле тоже платят за премиум и своими строками портили
+    # подсчёт. На боевой базе скрипт не запускается — проверка DSN в main().
+    await db.db_pool.execute("DELETE FROM payments")
+    await db.log_payment(7001, "matrix_full", 89, "XTR")
+    await db.log_payment(7001, "matrix_full", 89, "XTR")
+    await db.log_payment(7002, "matrix_full", 89, "XTR")
+    await db.log_payment(7002, None, 239, "XTR")             # премиум
+    await db.log_payment(ADMIN_ID, "matrix_full", 89, "XTR")  # свои — не выручка
+
+    rows = {r["razbor_key"]: r for r in await db.sales_breakdown(ADMIN_ID)}
+    mf = rows.get("matrix_full", {})
+    check("продажи: админские не считаются", mf.get("cnt"), 3)
+    check("продажи: покупателей меньше, чем покупок", mf.get("buyers"), 2)
+    check("продажи: звёзды просуммированы", mf.get("stars"), 267)
+    check("продажи: премиум отдельной строкой", rows.get(None, {}).get("cnt"), 1)
+
+    week = {r["razbor_key"]: r for r in await db.sales_breakdown(ADMIN_ID, days=7)}
+    check("продажи: за 7 дней видны свежие", week.get("matrix_full", {}).get("cnt"), 3)
+    await db.db_pool.execute("DELETE FROM payments WHERE user_id = ANY($1)", ids)
+
+
 async def main() -> int:
     url = os.environ.get("DATABASE_URL")
     if not url:
@@ -239,7 +266,7 @@ async def main() -> int:
     await db.init_db(url)
     for t in (test_coupons, test_balance, test_daily_spin, test_referrals,
               test_reviews, test_gifts, test_yookassa_idempotency,
-              test_premium_reminders, test_limits):
+              test_premium_reminders, test_limits, test_sales_breakdown):
         await t()
 
     total = PASSED + len(FAILURES)

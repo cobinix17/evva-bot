@@ -1038,6 +1038,50 @@ async def admin_stats(callback: CallbackQuery):
     )
     await callback.answer()
 
+def _sales_text(rows: list[dict], period: str) -> str:
+    """Список продаж. Премиум (razbor_key = NULL) показываем отдельной
+    строкой: это подписка, а не разбор, и смешивать их в одном рейтинге
+    значит сравнивать несравнимое."""
+    if not rows:
+        return f"🛒 Что покупают ({period})\n\nПокупок пока нет."
+    premium = next((r for r in rows if not r["razbor_key"]), None)
+    readings = [r for r in rows if r["razbor_key"]]
+    lines = [f"🛒 Что покупают ({period})", ""]
+    if readings:
+        total_cnt   = sum(r["cnt"] for r in readings)
+        total_stars = sum(r["stars"] or 0 for r in readings)
+        lines.append(f"Разборов продано: {total_cnt} на ~{total_stars} ⭐")
+        lines.append("")
+        for i, r in enumerate(readings, 1):
+            title = TITLES.get(r["razbor_key"], r["razbor_key"])
+            # Покупатели важнее покупок: пять продаж одному человеку и пять
+            # разным — разные новости.
+            who = f", {r['buyers']} чел." if r["buyers"] != r["cnt"] else ""
+            lines.append(f"{i}. {title} — {r['cnt']}×{who}, {r['stars'] or 0} ⭐")
+    else:
+        lines.append("Разборов пока не покупали.")
+    if premium:
+        lines += ["", f"💎 Премиум: {premium['cnt']}× "
+                      f"({premium['buyers']} чел.), {premium['stars'] or 0} ⭐"]
+    return "\n".join(lines)
+
+@dp.callback_query(F.data.in_({"admin_sales", "admin_sales_7", "admin_sales_all"}))
+async def admin_sales(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    days   = 7 if callback.data == "admin_sales_7" else None
+    period = "за 7 дней" if days else "за всё время"
+    rows   = await db.sales_breakdown(ADMIN_ID, days)
+    other  = ("admin_sales_all", "📅 За всё время") if days else ("admin_sales_7", "📅 За 7 дней")
+    await callback.message.answer(
+        _sales_text(rows, period),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=other[1], callback_data=other[0])],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_panel")],
+        ])
+    )
+    await callback.answer()
+
 @dp.callback_query(F.data == "admin_models")
 async def admin_models(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:

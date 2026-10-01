@@ -1368,6 +1368,37 @@ async def log_payment(user_id: int, razbor_key: str | None, amount_xtr: int, cur
         user_id, razbor_key, amount_xtr, currency
     )
 
+async def sales_breakdown(admin_id: int, days: int | None = None) -> list[dict]:
+    """Что покупали: по разбору — сколько раз, на сколько звёзд, когда в
+    последний раз. Премиум идёт отдельной строкой с razbor_key = NULL.
+
+    Считаем агрегатом в базе, а не перебором строк в Python: таблица растёт
+    с каждой оплатой, и тянуть её целиком ради подсчёта — то, что начинает
+    болеть позже всех и неожиданно.
+
+    Свои покупки исключаем: админ тестирует, и его оплаты — не выручка.
+    """
+    where = "user_id != $1"
+    args: list = [admin_id]
+    if days is not None:
+        where += f" AND created_at >= NOW() - ($2 || ' days')::interval"
+        args.append(str(days))
+    rows = await db_pool.fetch(
+        f"""
+        SELECT razbor_key,
+               COUNT(*)            AS cnt,
+               SUM(amount_xtr)     AS stars,
+               COUNT(DISTINCT user_id) AS buyers,
+               MAX(created_at)     AS last_at
+        FROM payments
+        WHERE {where}
+        GROUP BY razbor_key
+        ORDER BY cnt DESC, stars DESC
+        """,
+        *args
+    )
+    return [dict(r) for r in rows]
+
 async def premium_stats() -> dict:
     active = await db_pool.fetchval(
         'SELECT COUNT(*) FROM users WHERE premium_until IS NOT NULL AND premium_until > NOW()'
