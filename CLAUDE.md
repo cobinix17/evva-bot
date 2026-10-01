@@ -57,6 +57,14 @@ Telegram-бот [@nnumerology_bot](https://t.me/nnumerology_bot) плюс Mini A
 она же восстанавливает пол субъекта из списка близких, иначе вернулся бы род
 владельца.
 
+Через `db.WINBACK_AFTER_DAYS` (3) дня после разбора тем, кто ничего не купил,
+уходит ОДНО письмо-возврат (UTC 10:00, `send_winback`). Одно за всю жизнь
+аккаунта: отметку `users.winback_at` ставит сама выборка
+`claim_winback_candidates`. Следующий разбор берётся из `UPSELLS` для того,
+что человек реально читал; не нашлось продолжения — письма нет, безликое
+«купи что-нибудь» хуже молчания. Факт покупки и премиум перепроверяются ПЕРЕД
+отправкой: между выборкой и письмом человек мог купить сам.
+
 Уточнения после разбора (`_answer_followup`) помнят последние
 `FOLLOWUP_HISTORY` пар «вопрос-ответ» — они живут в данных FSM и переживают
 сброс состояния в `finally`. История привязана к ключу разбора и обнуляется
@@ -157,10 +165,11 @@ python3 tests/check_static.py
 python3 tests/test_ai_text.py
 ```
 
-Список близких, нужен PostgreSQL:
+Список близких и письмо-возврат, нужен PostgreSQL:
 
 ```
 DATABASE_URL=$(sh tests/pg_start.sh) python3 tests/test_people.py
+DATABASE_URL=$(sh tests/pg_start.sh) python3 tests/test_winback.py
 ```
 
 Денежные и миграции, нужен PostgreSQL (как поднять — см. `tests/README.md`):

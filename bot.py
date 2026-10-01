@@ -4282,6 +4282,87 @@ async def send_birthday_reminders():
             except Exception as e:
                 logging.warning(f"Birthday reminder error {row['owner_id']}: {e}")
 
+def _winback_next(received: list[str], purchased: list[str]) -> str | None:
+    """Какой разбор предложить. Берём продолжения из UPSELLS для того, что
+    человек уже читал, — это связный следующий шаг, а не случайный товар.
+    Самый свежий разбор идёт первым, значит и его продолжения предпочтительнее.
+    Ничего не нашлось (например, читал разбор без упомянутых продолжений) —
+    возвращаем None, и письмо не уходит: безликое «купи что-нибудь» хуже
+    молчания."""
+    seen = set(received) | set(purchased)
+    for key in received:
+        for nxt in UPSELLS.get(key, ()):
+            if nxt not in seen and nxt in PAID_RAZBORY:
+                return nxt
+    return None
+
+def _winback_text(name: str, read_title: str, next_key: str, male: bool) -> str:
+    price = config.price_of(next_key, 29)
+    rub   = rub_price(price)
+    desc  = RAZBOR_DESCRIPTIONS.get(next_key, "")
+    line  = f"{price} ⭐" + (f" или {rub} ₽" if YOOKASSA_SHOP_ID else "")
+    opened = "открыл" if male else "открыла"
+    return (
+        f"🌸 {name}, несколько дней назад ты {opened} у меня «{read_title}».\n\n"
+        f"Если захочется копнуть дальше — по твоим числам логичнее всего идёт "
+        f"«{TITLES.get(next_key, next_key)}».\n"
+        f"{desc}\n\n"
+        f"Это {line}. Если сейчас не до этого — просто не отвечай, "
+        f"я больше с этим не приду 🌙"
+    )
+
+async def send_winback():
+    """UTC 10:00 — одно письмо тем, кто получил разбор и ничего не купил.
+
+    Одно за всю жизнь аккаунта: отметку ставит сама выборка, повторов не
+    бывает. Текст опирается на то, что человек РЕАЛЬНО читал, и предлагает
+    связное продолжение из UPSELLS — безликая реклама тут только злит.
+    Концовка явно разрешает не отвечать: это снижает отписки сильнее, чем
+    любая скидка."""
+    while True:
+        now    = utc_now()
+        target = now.replace(hour=10, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            rows = await db.claim_winback_candidates()
+        except Exception as e:
+            logging.error(f"Winback batch error: {e}")
+            continue
+        for row in rows:
+            try:
+                user = await db.get_user(row["user_id"])
+                # Перепроверка на свежих данных: между выборкой и отправкой
+                # человек мог купить разбор или оформить премиум.
+                if user.get("purchased") or db.is_premium(user):
+                    continue
+                received = await db.list_received_readings(row["user_id"])
+                if not received:
+                    continue
+                next_key = _winback_next(received, user.get("purchased", []))
+                if not next_key:
+                    continue
+                name = user.get("first_name") or {"m": "дорогой", "f": "дорогая"}.get(
+                    user.get("gender"), "дорогой человек")
+                await bot.send_message(
+                    row["user_id"],
+                    _winback_text(name, TITLES.get(received[0], "разбор"),
+                                  next_key, db.is_male(user)),
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text=f"🔮 {TITLES.get(next_key, next_key)}",
+                            callback_data=f"buy_{next_key}")],
+                        [InlineKeyboardButton(text="🔕 Не присылать такое",
+                                              callback_data="notif_off")],
+                    ])
+                )
+                await asyncio.sleep(0.05)
+            except TelegramForbiddenError:
+                pass
+            except Exception as e:
+                logging.warning(f"Winback error {row['user_id']}: {e}")
+
 async def send_weekly_poll():
     """Пятница, UTC 9:00 = Москва 12:00 — опрос в канал: и вовлечение (реакции
     поднимают охват), и исследование — что аудитории интереснее разбирать."""
@@ -4383,6 +4464,7 @@ async def main():
     asyncio.create_task(send_weekly_poll())
     asyncio.create_task(send_premium_renewal_reminders())
     asyncio.create_task(send_birthday_reminders())
+    asyncio.create_task(send_winback())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

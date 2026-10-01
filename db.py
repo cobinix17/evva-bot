@@ -302,6 +302,10 @@ async def init_db(database_url: str):
         ("last_spin_date", "DATE"),
         ("gender",        "TEXT"),
         ("regen_day",       "DATE"),
+        # Дата письма-возврата тем, кто получил разбор и ничего не купил.
+        # NULL = не отправляли. Храним дату, а не флаг: по ней видно, когда
+        # касание было, и это пригодится, если захочется второго.
+        ("winback_at",      "TIMESTAMP"),
         ("regen_day_count", "INTEGER DEFAULT 0"),
     ]:
         try:
@@ -1249,6 +1253,41 @@ async def has_reading(user_id: int, razbor_key: str) -> bool:
         'SELECT 1 FROM generated_readings WHERE user_id = $1 AND razbor_key = $2 LIMIT 1',
         user_id, razbor_key
     ) is not None
+
+WINBACK_AFTER_DAYS = 3
+
+async def claim_winback_candidates(after_days: int = WINBACK_AFTER_DAYS) -> list[dict]:
+    """Кто получил разбор `after_days` дней назад и ничего не купил — и сразу
+    помечает их, чтобы повторная рассылка не ушла.
+
+    Выборка и пометка одним запросом по той же причине, что в днях рождения:
+    перезапуск бота посреди рассылки иначе пройдёт по списку второй раз.
+
+    Отсекаем здесь только то, что дёшево и надёжно проверить в SQL. Факт
+    покупки проверяется ЕЩЁ РАЗ перед отправкой: между выборкой и письмом
+    человек мог купить сам, и «ты ничего не взяла» выглядело бы глупо.
+    Премиум проверяется там же — его срок истекает по времени, а не по
+    событию, и в SQL это лишняя возня с датами.
+    """
+    rows = await db_pool.fetch(
+        """
+        UPDATE users SET winback_at = NOW()
+        WHERE user_id IN (
+            SELECT u.user_id FROM users u
+            JOIN (
+                SELECT user_id, MAX(updated_at) AS last_reading
+                FROM generated_readings GROUP BY user_id
+            ) g ON g.user_id = u.user_id
+            WHERE u.winback_at IS NULL
+              AND COALESCE(u.notifications, TRUE)
+              AND COALESCE(u.purchased, '[]') IN ('[]', '')
+              AND g.last_reading < NOW() - ($1 || ' days')::interval
+        )
+        RETURNING user_id, first_name, gender, purchased, premium_until
+        """,
+        str(after_days)
+    )
+    return [dict(r) for r in rows]
 
 async def list_received_readings(user_id: int) -> list[str]:
     """Ключи разборов, которые человек РЕАЛЬНО получил (есть готовый текст),
